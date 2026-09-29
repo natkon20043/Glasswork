@@ -15,6 +15,10 @@ using Json = nlohmann::json;
 Json position(const TextBuffer &buffer, Position caret);
 Position position(const TextBuffer &buffer, const Json &value);
 std::string fileURI(const std::string &absolutePath);
+/// The wire form of a message: a Content-Length header followed by the JSON.
+std::string frameMessage(const Json &message);
+/// The path a file:// URI stands for (percent escapes decoded); empty if it isn't a file URI.
+std::string pathFromURI(const std::string &uri);
 
 // Streaming framing, independent of the process and UI, to handle split/coalesced reads.
 class Decoder {

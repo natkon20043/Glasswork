@@ -196,6 +196,7 @@ std::optional<size_t> indentColumns(const std::string &text, size_t tabSize) {
 - (BOOL)isLineFolded:(size_t)line;
 - (BOOL)isLineFoldable:(size_t)line;
 - (void)toggleFoldAtLine:(size_t)line;
+- (int)diagnosticSeverityForLine:(size_t)line;
 @property (nonatomic) BOOL gutterHover;
 - (const std::vector<gw::LineChange> &)lineChanges;
 - (const std::vector<gw::Section> &)sectionList;
@@ -257,6 +258,12 @@ std::optional<size_t> indentColumns(const std::string &text, size_t tabSize) {
             [[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(4, top + 5, 3, lineHeight - 10) xRadius:1.5 yRadius:1.5] fill];
         }
         [[NSString stringWithFormat:@"%zu", line + 1] drawInRect:label withAttributes:line == caretLine ? active : normal];
+        int severity = [editor diagnosticSeverityForLine:line];
+        if (severity > 0 && severity <= 2) {
+            [(severity == 1 ? NSColor.systemRedColor : NSColor.systemOrangeColor) setFill];
+            NSRect dot = NSMakeRect(10, top + (lineHeight - 6) / 2, 6, 6);
+            [[NSBezierPath bezierPathWithOvalInRect:dot] fill];
+        }
         [self drawFoldMarkerForLine:line top:top lineHeight:lineHeight];
     }
     [self drawChangeBarsWithLineHeight:lineHeight visible:visible];
@@ -548,6 +555,13 @@ static constexpr CGFloat kMiniChar = 1.25;
     uint32_t _wrapColumns;
     BOOL _gutterHover;
 
+    // Language intelligence: problems to underline, hover, typing notifications.
+    std::vector<GWDiagnostic> _diagnostics;
+    NSString *_pendingTyped;
+    gw::Range _hoverWord;
+    BOOL _hoverActive;
+    NSPoint _hoverPoint;
+
     // Bracket nesting depth at the start of each line, for colouring brackets by depth.
     std::vector<int> _depthAt;
     size_t _depthValid;
@@ -616,6 +630,15 @@ static constexpr CGFloat kMiniChar = 1.25;
 - (BOOL)isFlipped { return YES; }
 - (BOOL)isOpaque { return NO; }
 - (BOOL)acceptsFirstResponder { return YES; }
+
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    for (NSTrackingArea *area in self.trackingAreas) {
+        [self removeTrackingArea:area];
+    }
+    NSTrackingAreaOptions options = NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect;
+    [self addTrackingArea:[[NSTrackingArea alloc] initWithRect:NSZeroRect options:options owner:self userInfo:nil]];
+}
 - (gw::Document *)document { return _document; }
 - (gw::Document *)currentDocument { return _document; }
 - (gw::Highlighter *)highlighter { return _highlighter; }
@@ -1496,6 +1519,8 @@ static constexpr CGFloat kMiniChar = 1.25;
         }
     }
 
+    [self drawDiagnosticsFromLine:first toLine:last];
+
     // Matching brackets get a thin rounded outline.
     if (auto match = [self bracketMatch]) {
         [_matchColor setStroke];
@@ -1519,6 +1544,199 @@ static constexpr CGFloat kMiniChar = 1.25;
                                      NSBackgroundColorAttributeName: _backgroundColor};
         [_markedText drawAtPoint:NSMakePoint(NSMaxX(caret), caret.origin.y - 3 + _baseline - _font.ascender) withAttributes:attributes];
     }
+}
+
+// MARK: Problems (squiggles)
+
+- (void)setDiagnostics:(std::vector<GWDiagnostic>)diagnostics {
+    std::sort(diagnostics.begin(), diagnostics.end(), [](const GWDiagnostic &a, const GWDiagnostic &b) {
+        if (a.range.start.line != b.range.start.line) return a.range.start.line < b.range.start.line;
+        return a.severity < b.severity;
+    });
+    _diagnostics = std::move(diagnostics);
+    self.needsDisplay = YES;
+    _gutter.needsDisplay = YES;
+}
+
+- (int)diagnosticSeverityForLine:(size_t)line {
+    auto begin = std::lower_bound(_diagnostics.begin(), _diagnostics.end(), line,
+                                  [](const GWDiagnostic &item, size_t value) { return item.range.start.line < value; });
+    if (begin == _diagnostics.end() || begin->range.start.line != line) {
+        return 0;
+    }
+    return begin->severity;  // sorted: the first one is the most severe
+}
+
+- (NSColor *)colorForSeverity:(int)severity {
+    switch (severity) {
+        case 1: return NSColor.systemRedColor;
+        case 2: return NSColor.systemOrangeColor;
+        case 3: return NSColor.systemBlueColor;
+        default: return [NSColor.secondaryLabelColor colorWithAlphaComponent:0.9];
+    }
+}
+
+/// A wavy line under a stretch of text.
+- (void)drawSquiggleFrom:(CGFloat)left to:(CGFloat)right top:(CGFloat)top color:(NSColor *)color {
+    CGFloat baselineY = top + _baseline + 3;
+    CGFloat width = std::max(right - left, _charWidth * 0.8);
+    NSBezierPath *path = [NSBezierPath bezierPath];
+    path.lineWidth = 1.1;
+    path.lineCapStyle = NSLineCapStyleRound;
+    const CGFloat step = 2.5;
+    [path moveToPoint:NSMakePoint(left, baselineY)];
+    BOOL up = YES;
+    for (CGFloat x = left + step; x <= left + width + step; x += step) {
+        [path lineToPoint:NSMakePoint(std::min(x, left + width), baselineY + (up ? -1.6 : 1.0))];
+        up = !up;
+    }
+    [color setStroke];
+    [path stroke];
+}
+
+- (void)drawDiagnosticsFromLine:(size_t)first toLine:(size_t)last {
+    if (_diagnostics.empty()) {
+        return;
+    }
+    auto begin = std::lower_bound(_diagnostics.begin(), _diagnostics.end(), first,
+                                  [](const GWDiagnostic &item, size_t value) { return item.range.start.line < value; });
+    const auto &buffer = _document->buffer();
+    BOOL showInline = GWServices.shared.settings.inlineDiagnostics && !_wrapEnabled;
+    size_t lastInlineLine = SIZE_MAX;
+    for (auto item = begin; item != _diagnostics.end() && item->range.start.line <= last; ++item) {
+        size_t line = item->range.start.line;
+        if (line >= buffer.lineCount() || [self isLineHidden:line]) {
+            continue;
+        }
+        NSColor *color = [self colorForSeverity:item->severity];
+        const std::string &text = buffer.line(line);
+        size_t startByte = std::min(item->range.start.column, text.size());
+        size_t endByte = item->range.end.line == line ? std::min(item->range.end.column, text.size()) : text.size();
+        if (endByte <= startByte) {
+            // A point: underline the word there, or the next character.
+            gw::Range word = buffer.wordAt({line, startByte});
+            if (word.start.line == line && word.end.column > word.start.column) {
+                startByte = word.start.column;
+                endByte = word.end.column;
+            } else {
+                endByte = std::min(text.size(), buffer.nextCharacter({line, startByte}).column);
+            }
+        }
+        [self enumerateSegmentsInLine:line fromByte:startByte toByte:endByte continuesPastEnd:NO
+                                block:^(CGFloat left, CGFloat right, CGFloat top) {
+            [self drawSquiggleFrom:left to:right top:top color:color];
+        }];
+        if (showInline && line != lastInlineLine && [self rowsForLine:line] == 1 && !_folds.isFoldHeader(line)) {
+            lastInlineLine = line;
+            [self drawInlineMessage:item->message severity:item->severity forLine:line];
+        }
+    }
+}
+
+/// The problem's text after the end of the line, tinted like the squiggle (like Error Lens).
+- (void)drawInlineMessage:(const std::string &)message severity:(int)severity forLine:(size_t)line {
+    NSString *full = @(message.c_str());
+    NSRange newline = [full rangeOfString:@"\n"];
+    if (newline.location != NSNotFound) {
+        full = [full substringToIndex:newline.location];
+    }
+    if (full.length == 0) {
+        return;
+    }
+    NSColor *color = [self colorForSeverity:severity];
+    LineLayout *layout = [self layoutForLine:line];
+    CGFloat endX = self.textLeft + layout->offsetInRow(0, static_cast<uint32_t>(layout->unitToByte.size() - 1));
+    CGFloat left = endX + _charWidth * 3;
+    CGFloat available = NSMaxX(self.visibleRect) - left - 24;
+    if (available < 60) {
+        return;
+    }
+    NSDictionary *attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:_font.pointSize - 1.5],
+                                 NSForegroundColorAttributeName: [color colorWithAlphaComponent:0.85]};
+    NSSize size = [full sizeWithAttributes:attributes];
+    CGFloat width = std::min(size.width, available);
+    CGFloat top = [self yForLine:line];
+    NSRect chip = NSMakeRect(left - 6, top + 3, width + 12, _lineHeight - 6);
+    [[color colorWithAlphaComponent:0.10] setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:chip xRadius:5 yRadius:5] fill];
+    NSRect textRect = NSMakeRect(left, top + (_lineHeight - size.height) / 2, width, size.height);
+    [full drawWithRect:textRect options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine attributes:attributes];
+}
+
+// MARK: Hover
+
+/// The rectangle a stretch of one line covers, in the editor's own coordinates.
+- (NSRect)viewRectForRange:(gw::Range)range {
+    if (!_document) {
+        return NSZeroRect;
+    }
+    gw::Position start = _document->buffer().clamp(range.start);
+    gw::Position end = _document->buffer().clamp(range.end);
+    CGFloat left = [self xForPosition:start];
+    CGFloat right = end.line == start.line ? [self xForPosition:end] : left + _charWidth;
+    return NSMakeRect(left, [self yForPosition:start], std::max<CGFloat>(right - left, _charWidth), _lineHeight);
+}
+
+- (NSRect)screenRectForPosition:(gw::Position)position {
+    if (!_document) {
+        return NSZeroRect;
+    }
+    position = _document->buffer().clamp(position);
+    NSRect rect = NSMakeRect([self xForPosition:position], [self yForPosition:position], _charWidth, _lineHeight);
+    NSRect inWindow = [self convertRect:rect toView:nil];
+    return [self.window convertRectToScreen:inWindow];
+}
+
+- (void)cancelHover {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(hoverTimerFired) object:nil];
+    if (_hoverActive) {
+        _hoverActive = NO;
+        if (self.onHoverEnd) self.onHoverEnd();
+    }
+}
+
+- (void)mouseMoved:(NSEvent *)event {
+    if (!_document || !self.onHoverRequest) return;
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    if (point.x < self.textLeft) {
+        [self cancelHover];
+        _hoverWord = gw::Range{{SIZE_MAX, 0}, {SIZE_MAX, 0}};
+        return;
+    }
+    gw::Position position = [self positionForPoint:point];
+    const auto &buffer = _document->buffer();
+    gw::Range word = buffer.wordAt(position);
+    const std::string &text = buffer.line(position.line);
+    bool onWord = word.start.line == position.line && word.end.column > word.start.column &&
+                  position.column < text.size() && !std::isspace(static_cast<unsigned char>(text[position.column]));
+    // The pointer must really be over the text, not just to the right of the line.
+    if (onWord) {
+        CGFloat endX = [self xForPosition:{position.line, text.size()}];
+        onWord = point.x <= endX + _charWidth || [self rowsForLine:position.line] > 1;
+    }
+    if (!onWord) {
+        [self cancelHover];
+        _hoverWord = gw::Range{{SIZE_MAX, 0}, {SIZE_MAX, 0}};
+        return;
+    }
+    if (_hoverWord.start == word.start && _hoverWord.end == word.end) {
+        return;  // still on the same word
+    }
+    [self cancelHover];
+    _hoverWord = word;
+    _hoverPoint = point;
+    [self performSelector:@selector(hoverTimerFired) withObject:nil afterDelay:0.5];
+}
+
+- (void)hoverTimerFired {
+    if (!_document || !self.onHoverRequest || _hoverWord.start.line == SIZE_MAX) return;
+    _hoverActive = YES;
+    self.onHoverRequest(_hoverWord.start, _hoverWord);
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    _hoverWord = gw::Range{{SIZE_MAX, 0}, {SIZE_MAX, 0}};
+    [self cancelHover];
 }
 
 // MARK: Folding
@@ -2016,6 +2234,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 }
 
 - (void)selectionDidChange {
+    [self cancelHover];
     if (_document && !_folds.empty()) {
         // A caret can't sit on a hidden line: opening the fold that hides it shows it.
         if (_folds.unfoldHiding(_document->selection.caret.line)) {
@@ -2038,8 +2257,11 @@ static constexpr CGFloat kMiniChar = 1.25;
     self.needsDisplay = YES;
     _minimap.needsDisplay = YES;
     [self scheduleSectionsRefresh];
+    NSString *typed = _pendingTyped;
+    _pendingTyped = nil;
     [self selectionDidChange];
     if (self.onEdit) self.onEdit();
+    if (self.onTypedText) self.onTypedText(typed);
 }
 
 - (void)moveCaretTo:(gw::Position)position extend:(BOOL)extend {
@@ -2107,6 +2329,9 @@ static constexpr CGFloat kMiniChar = 1.25;
 }
 
 - (void)doCommandBySelector:(SEL)selector {
+    if (self.onCompletionKey && self.onCompletionKey(selector)) {
+        return;  // the completion list used the key
+    }
     if ([self respondsToSelector:selector]) {
         ((void (*)(id, SEL, id))[self methodForSelector:selector])(self, selector, nil);
     }
@@ -2232,6 +2457,7 @@ static constexpr CGFloat kMiniChar = 1.25;
     if (!_document) return;
     _markedText = nil;
     NSString *plain = [string isKindOfClass:NSAttributedString.class] ? [(NSAttributedString *)string string] : string;
+    _pendingTyped = plain;  // didEdit reports it to the completion popup
     std::string text = plain.UTF8String ? plain.UTF8String : "";
     if (text.empty()) return;
 

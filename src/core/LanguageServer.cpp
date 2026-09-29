@@ -1,6 +1,7 @@
 #include "LanguageServer.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <charconv>
 #include <csignal>
@@ -85,6 +86,29 @@ std::string fileURI(const std::string &path) {
         }
     }
     return result;
+}
+
+std::string frameMessage(const Json &message) {
+    std::string body = message.dump();
+    return "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+}
+
+std::string pathFromURI(const std::string &uri) {
+    constexpr std::string_view prefix = "file://";
+    if (uri.compare(0, prefix.size(), prefix) != 0) {
+        return std::string();
+    }
+    std::string path;
+    for (size_t index = prefix.size(); index < uri.size(); ++index) {
+        if (uri[index] == '%' && index + 2 < uri.size() + 0 && std::isxdigit(static_cast<unsigned char>(uri[index + 1])) &&
+            std::isxdigit(static_cast<unsigned char>(uri[index + 2]))) {
+            path += static_cast<char>(std::stoi(uri.substr(index + 1, 2), nullptr, 16));
+            index += 2;
+        } else {
+            path += uri[index];
+        }
+    }
+    return path;
 }
 
 void Decoder::append(std::string_view bytes) {

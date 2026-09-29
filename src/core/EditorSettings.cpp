@@ -138,6 +138,8 @@ EditorSettings parseSettings(const std::string& jsonc, std::string* error) {
     readValue(document, "editor.indentGuides", settings.indentGuides);
     readValue(document, "editor.bracketPairColorization", settings.bracketPairColors);
     readValue(document, "editor.sectionDividers", settings.sectionDividers);
+    readValue(document, "editor.inlineDiagnostics", settings.inlineDiagnostics);
+    readValue(document, "lsp.enabled", settings.languageServers);
     readValue(document, "editor.rainbowVariables", settings.colors.rainbowVariables);
     readValue(document, "files.autoSave", settings.autoSave);
     readValue(document, "terminal.fontSize", settings.terminalFontSize);
@@ -212,6 +214,10 @@ std::string serializeSettings(const EditorSettings& settings) {
         << "  \"editor.bracketPairColorization\": " << boolean(settings.bracketPairColors) << ",\n"
         << "  \"editor.sectionDividers\": " << boolean(settings.sectionDividers)
         << ",  // lines above \"// MARK: - Name\" comments\n"
+        << "  \"editor.inlineDiagnostics\": " << boolean(settings.inlineDiagnostics)
+        << ",  // show each problem's message at the end of its line\n"
+        << "  \"lsp.enabled\": " << boolean(settings.languageServers)
+        << ",  // language servers: problems, completion, hover, rename\n"
         << "  \"editor.highlightOccurrences\": " << boolean(settings.highlightOccurrences)
         << ",  // highlight the word under the caret everywhere\n"
         << "\n"

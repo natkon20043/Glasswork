@@ -12,6 +12,8 @@
 #import "Palette.h"
 #import "SearchPanel.h"
 #import "Services.h"
+#import "LanguageService.h"
+#import "CompletionPopup.h"
 #import "SidebarSwitcher.h"
 #import "SourceControlPanel.h"
 #import "StartupTiming.h"
@@ -90,11 +92,6 @@ std::vector<gw::Color> tintsForDiff(const std::string &text) {
     }
     return tints;
 }
-
-struct LanguageSession {
-    std::unique_ptr<gw::lsp::Client> client;
-    std::string root;
-};
 
 constexpr CGFloat kMargin = 8;
 constexpr CGFloat kSidebarWidth = 250;
@@ -411,10 +408,12 @@ bool looksBinary(const char *path) {
     // snapshot replaces the old one when the folder changes, so a running search keeps its own.
     std::shared_ptr<const FileIndex> _fileIndex;
     NSUInteger _indexGeneration;          // ignores results from an older folder's scan
-    dispatch_queue_t _languageQueue;
-    std::shared_ptr<LanguageSession> _languageSession;
-    NSUInteger _languageRequest;
-    BOOL _languageBusy;
+    // Language servers: problems, hover, completion, rename, format.
+    GWLanguageService *_language;
+    GWSuggestionPopup *_suggestions;
+    NSUInteger _hoverToken;
+    NSUInteger _suggestionToken;
+    gw::Position _suggestionWordStart;
 
     // Sidebar modes: files, source control, search.
     GWSidebarSwitcher *_switcher;
@@ -446,8 +445,6 @@ bool looksBinary(const char *path) {
                                                        defer:NO];
     if ((self = [super initWithWindow:window])) {
         _selected = -1;
-        _languageQueue = dispatch_queue_create("Glasswork.language-server", DISPATCH_QUEUE_SERIAL);
-        _languageSession = std::make_shared<LanguageSession>();
         window.titlebarAppearsTransparent = YES;
         window.titleVisibility = NSWindowTitleHidden;
         window.opaque = NO;
@@ -468,6 +465,7 @@ bool looksBinary(const char *path) {
 
         GWStartupMark(@"  window and toolbar created");
         [self buildInterface];
+        [self setUpLanguageService];
         GWStartupMark(@"  interface built");
         [window center];
         [window setFrameAutosaveName:@"GlassworkMainWindow"];
@@ -847,6 +845,7 @@ bool looksBinary(const char *path) {
 
 - (void)applyTheme {
     GWServices *services = GWServices.shared;
+    _language.enabled = services.settings.languageServers;
     const gw::Theme &theme = services.theme;
     BOOL dark = theme.isDark();
     self.window.appearance = [NSAppearance appearanceNamed:dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
@@ -896,6 +895,7 @@ bool looksBinary(const char *path) {
     tab.document->languageId = language;
     tab.highlighter->setGrammar(services.grammars.forLanguage(language));
     tab.configuration = extensions.configuration(language);
+    [_language trackDocument:tab.document.get()];  // a new language may mean a different server
 }
 
 - (Tab *)currentTab {
@@ -928,13 +928,14 @@ bool looksBinary(const char *path) {
         [editor document:raw changed:change];
     };
     [self configureLanguageForTab:*tab];
+    gw::Document *newDocument = tab->document.get();
     NSInteger position = index < 0 || index > static_cast<NSInteger>(_tabs.size()) ? static_cast<NSInteger>(_tabs.size()) : index;
     _tabs.insert(_tabs.begin() + position, std::move(tab));
+    [_language trackDocument:newDocument];
     [self showTab:position];
 }
 
 - (void)showTab:(NSInteger)index {
-    ++_languageRequest;
     if (Tab *current = [self currentTab]) current->scroll = _card.scrollView.contentView.bounds.origin;
     _selected = index;
     Tab *tab = [self currentTab];
@@ -942,6 +943,7 @@ bool looksBinary(const char *path) {
         [_editorView setDocument:tab->document.get() highlighter:tab->highlighter.get() configuration:tab->configuration];
         [_editorView setLineChanges:tab->changes];
         [_editorView setLineTints:tab->lineTints];
+        [_editorView setDiagnostics:[_language diagnosticsForDocument:tab->document.get()]];
         [self refreshChangesForTab:tab];
         [_findBar documentChanged];
         if (_root.chatVisible) {
@@ -969,6 +971,7 @@ bool looksBinary(const char *path) {
     Tab &tab = *_tabs[static_cast<size_t>(index)];
     if (tab.document->isDirty() && ![self confirmCloseDocument:*tab.document]) return;
     if (index == _selected) [_editorView setDocument:nullptr highlighter:nullptr configuration:{}];
+    [_language untrackDocument:tab.document.get()];
     _tabs.erase(_tabs.begin() + index);
     NSInteger next = _tabs.empty() ? -1 : std::min(index, static_cast<NSInteger>(_tabs.size()) - 1);
     _selected = -1;  // the closed tab's scroll position doesn't need saving
@@ -997,7 +1000,9 @@ bool looksBinary(const char *path) {
 }
 
 - (void)documentEdited {
-    ++_languageRequest;
+    if (Tab *editedTab = [self currentTab]) {
+        [_language documentDidChange:editedTab->document.get()];
+    }
     [self refresh];
     [self scheduleChangeRefresh];
     [_findBar documentChanged];
@@ -1092,6 +1097,7 @@ bool looksBinary(const char *path) {
 }
 
 - (void)caretMoved {
+    [self dropSuggestionsIfCaretLeftWord];
     [self updateStatus];
     [self updateBreadcrumb];
     [GWColorInspector.shared refresh];
@@ -1486,6 +1492,18 @@ bool looksBinary(const char *path) {
         [left addObject:segment(@"selection.pin.in.out", muted, [NSString stringWithFormat:@"%lu selected", (unsigned long)selected.length])];
     }
     if (services.installingDefaults) [left addObject:segment(@"arrow.down.circle.fill", muted, @"Installing language support…")];
+    NSUInteger errorCount = [_language errorCount];
+    NSUInteger warningCount = [_language warningCount];
+    if (errorCount > 0) {
+        [left addObject:segment(@"xmark.octagon.fill", NSColor.systemRedColor, [NSString stringWithFormat:@"%lu", (unsigned long)errorCount])];
+    }
+    if (warningCount > 0) {
+        [left addObject:segment(@"exclamationmark.triangle.fill", NSColor.systemOrangeColor, [NSString stringWithFormat:@"%lu", (unsigned long)warningCount])];
+    }
+    NSString *serverStatus = [_language statusTextForLanguage:@(document.languageId.c_str())];
+    if (serverStatus.length > 0) {
+        [left addObject:segment(@"bolt.horizontal.circle", muted, serverStatus)];
+    }
     _statusLeft.attributedStringValue = join(left);
 
     NSString *name = document.path() ? @(document.path()->filename().c_str()) : @"untitled";
@@ -1983,6 +2001,7 @@ bool looksBinary(const char *path) {
         tab->document->movedTo(std::filesystem::path(newPath.UTF8String));
         tab->realPath = [newPath stringByResolvingSymlinksInPath].UTF8String;
         tab->headLoaded = false;
+        [_language documentDidMove:tab->document.get() fromPath:tabPath];
         [self configureLanguageForTab:*tab];
     }
     Tab *current = [self currentTab];
@@ -2317,6 +2336,49 @@ static double timed(void (^work)(void)) {
 
 - (IBAction)debugNewFileSheet:(id)sender {
     [_fileTree createFileInFolder:_fileTree.rootURL];
+}
+
+/// Developer check: acts as if the pointer had rested on the word at the caret.
+- (IBAction)debugHoverAtCaret:(id)sender {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr) {
+        return;
+    }
+    gw::Position caret = tab->document->selection.caret;
+    gw::Range word = tab->document->buffer().wordAt(caret);
+    [self hoverAtPosition:word.start word:word];
+}
+
+/// Developer check: types "sq" at the caret, one letter at a time, as a person would.
+- (IBAction)debugTypeSq:(id)sender {
+    [self.window makeFirstResponder:_editorView];
+    [_editorView insertText:@"s" replacementRange:NSMakeRange(NSNotFound, 0)];
+    [_editorView insertText:@"q" replacementRange:NSMakeRange(NSNotFound, 0)];
+}
+
+/// Developer check: presses Tab in the editor (accepts the highlighted suggestion).
+- (IBAction)debugPressTab:(id)sender {
+    [_editorView doCommandBySelector:@selector(insertTab:)];
+}
+
+/// Developer check: renames the symbol at the caret to "squared" without asking.
+- (IBAction)debugRenameToSquared:(id)sender {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr) {
+        return;
+    }
+    gw::Document *document = tab->document.get();
+    gw::lsp::Json params = [_language positionParamsForDocument:document position:document->selection.caret];
+    params["newName"] = "squared";
+    __weak GWMainWindowController *weakSelf = self;
+    [_language request:@"textDocument/rename" params:params document:document requireSameVersion:NO
+            completion:^(const gw::lsp::Json &result, NSString *error) {
+        if (error != nil) {
+            fprintf(stderr, "rename failed: %s\n", error.UTF8String);
+            return;
+        }
+        [weakSelf applyWorkspaceEdit:result];
+    }];
 }
 
 - (IBAction)debugTerminalDemo:(id)sender {
@@ -2709,6 +2771,9 @@ static double timed(void (^work)(void)) {
     if (!document.isDirty()) {
         std::string error;
         gw::Document::ReloadResult result = document.reloadFromDisk(&error);
+        if (result == gw::Document::ReloadResult::Reloaded) {
+            [_language documentDidChange:&document];
+        }
         if (result == gw::Document::ReloadResult::Reloaded && tab == [self currentTab]) {
             [_editorView invalidateLayout];
             [_editorView flashLines:document.reloadedFirstLine count:document.reloadedLineCount];
@@ -2764,20 +2829,434 @@ static double timed(void (^work)(void)) {
 
 // MARK: - Code intelligence
 
-- (IBAction)completeCode:(id)sender {
-    [self runLanguageCommand:@"textDocument/completion"];
+/// Creates the language service and connects it to the editor: problems, hover and completion.
+- (void)setUpLanguageService {
+    __weak GWMainWindowController *weakSelf = self;
+    _language = [GWLanguageService new];
+    _language.enabled = GWServices.shared.settings.languageServers;
+    _language.onDiagnosticsChanged = ^(gw::Document *document) {
+        [weakSelf diagnosticsChangedForDocument:document];
+    };
+    _language.onStatusChanged = ^{
+        [weakSelf updateStatus];
+    };
+
+    _suggestions = [GWSuggestionPopup new];
+    _suggestions.onAccept = ^(GWSuggestion *suggestion) {
+        [weakSelf acceptSuggestion:suggestion];
+    };
+
+    _editorView.onHoverRequest = ^(gw::Position position, gw::Range word) {
+        [weakSelf hoverAtPosition:position word:word];
+    };
+    _editorView.onHoverEnd = ^{
+        GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf != nil) {
+            ++strongSelf->_hoverToken;
+        }
+        [GWHoverPopover hide];
+    };
+    _editorView.onCompletionKey = ^BOOL(SEL selector) {
+        GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return NO;
+        }
+        return [strongSelf->_suggestions handleSelector:selector];
+    };
+    _editorView.onTypedText = ^(NSString *typed) {
+        [weakSelf editorTypedText:typed];
+    };
 }
 
+- (void)diagnosticsChangedForDocument:(gw::Document *)document {
+    Tab *tab = [self currentTab];
+    if (tab != nullptr && tab->document.get() == document) {
+        [_editorView setDiagnostics:[_language diagnosticsForDocument:document]];
+    }
+    [self updateStatus];
+}
+
+// ---- Hover
+
+/// The plain text of a hover answer, which a server may give as a string, a marked string, a
+/// list of them, or a MarkupContent.
+static NSString *markdownFromHover(const gw::lsp::Json &contents) {
+    using Json = gw::lsp::Json;
+    auto fromOne = [](const Json &piece) -> std::string {
+        if (piece.is_string()) {
+            return piece.get<std::string>();
+        }
+        if (piece.is_object() && piece.contains("value")) {
+            std::string value = piece["value"].get<std::string>();
+            if (piece.contains("language") && piece["language"].is_string()) {
+                return "```" + piece["language"].get<std::string>() + "\n" + value + "\n```";
+            }
+            return value;
+        }
+        return std::string();
+    };
+    std::string result;
+    if (contents.is_array()) {
+        for (const Json &piece : contents) {
+            std::string text = fromOne(piece);
+            if (!text.empty()) {
+                if (!result.empty()) {
+                    result += "\n\n";
+                }
+                result += text;
+            }
+        }
+    } else {
+        result = fromOne(contents);
+    }
+    return @(result.c_str());
+}
+
+- (void)hoverAtPosition:(gw::Position)position word:(gw::Range)word {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr || !tab->document->path()) {
+        return;
+    }
+    gw::Document *document = tab->document.get();
+    NSUInteger token = ++_hoverToken;
+
+    // Problems that touch this word.
+    NSMutableArray<NSString *> *problems = [NSMutableArray array];
+    for (const GWDiagnostic &diagnostic : [_language diagnosticsForDocument:document]) {
+        bool sameLine = diagnostic.range.start.line == position.line;
+        bool overlaps = diagnostic.range.start.column <= word.end.column && diagnostic.range.end.column >= word.start.column;
+        if (sameLine && overlaps) {
+            NSString *marker = diagnostic.severity == 1 ? @"⛔️ " : @"⚠️ ";
+            [problems addObject:[marker stringByAppendingString:@(diagnostic.message.c_str())]];
+        }
+    }
+    __weak GWMainWindowController *weakSelf = self;
+    void (^show)(NSString *) = ^(NSString *markdown) {
+        GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil || token != strongSelf->_hoverToken) {
+            return;
+        }
+        NSRect rect = [strongSelf->_editorView viewRectForRange:word];
+        [GWHoverPopover showMarkdown:markdown problems:problems relativeToRect:rect ofView:strongSelf->_editorView];
+    };
+    if (![_language serverSupports:@"hoverProvider" forDocument:document]) {
+        if (problems.count > 0) {
+            show(nil);
+        }
+        return;
+    }
+    [_language request:@"textDocument/hover"
+                params:[_language positionParamsForDocument:document position:position]
+              document:document
+    requireSameVersion:YES
+            completion:^(const gw::lsp::Json &result, NSString *error) {
+        NSString *markdown = nil;
+        if (error == nil && result.is_object() && result.contains("contents")) {
+            markdown = markdownFromHover(result["contents"]);
+        }
+        if (markdown.length > 0 || problems.count > 0) {
+            show(markdown);
+        }
+    }];
+}
+
+// ---- Completion
+
+/// Where the word being typed starts (the caret if it isn't in a word).
+- (gw::Position)wordStartBeforeCaret {
+    Tab *tab = [self currentTab];
+    gw::Position caret = tab->document->selection.caret;
+    const std::string &line = tab->document->buffer().line(caret.line);
+    size_t column = std::min(caret.column, line.size());
+    while (column > 0 && gw::isWordByte(static_cast<unsigned char>(line[column - 1]))) {
+        --column;
+    }
+    return {caret.line, column};
+}
+
+/// The letters typed so far in the current word.
+- (NSString *)typedPrefix {
+    Tab *tab = [self currentTab];
+    gw::Position caret = tab->document->selection.caret;
+    gw::Position start = [self wordStartBeforeCaret];
+    if (start.line != caret.line || start.column >= caret.column) {
+        return @"";
+    }
+    std::string text = tab->document->buffer().text({start, caret});
+    return @(text.c_str());
+}
+
+- (void)editorTypedText:(NSString *)typed {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr || !tab->document->path() || !_language.enabled) {
+        return;
+    }
+    if (typed == nil) {
+        // A deletion or other change: keep the list in step, or drop it.
+        if (_suggestions.visible) {
+            [_suggestions filterWithPrefix:[self typedPrefix]];
+        }
+        return;
+    }
+    unichar last = typed.length > 0 ? [typed characterAtIndex:typed.length - 1] : 0;
+    BOOL wordCharacter = (last >= 'a' && last <= 'z') || (last >= 'A' && last <= 'Z') || (last >= '0' && last <= '9') || last == '_';
+    NSString *triggers = [_language completionTriggerCharactersForDocument:tab->document.get()];
+    BOOL triggerCharacter = typed.length == 1 && [triggers containsString:typed];
+
+    if (_suggestions.visible && wordCharacter) {
+        [_suggestions filterWithPrefix:[self typedPrefix]];
+        return;
+    }
+    [_suggestions hide];
+    if (triggerCharacter || (wordCharacter && [self typedPrefix].length >= 1)) {
+        NSUInteger token = ++_suggestionToken;
+        __weak GWMainWindowController *weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(0.09 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            GWMainWindowController *strongSelf = weakSelf;
+            if (strongSelf != nil && token == strongSelf->_suggestionToken) {
+                [strongSelf requestSuggestionsExplicitly:NO];
+            }
+        });
+    }
+}
+
+/// The caret moved: a list for a word we've left is stale.
+- (void)dropSuggestionsIfCaretLeftWord {
+    if (!_suggestions.visible) {
+        return;
+    }
+    Tab *tab = [self currentTab];
+    if (tab == nullptr) {
+        [_suggestions hide];
+        return;
+    }
+    gw::Position caret = tab->document->selection.caret;
+    gw::Position start = [self wordStartBeforeCaret];
+    bool movedOffLine = caret.line != _suggestionWordStart.line;
+    bool movedBeforeWord = start.line == _suggestionWordStart.line && caret.column < _suggestionWordStart.column;
+    if (movedOffLine || movedBeforeWord || !tab->document->selection.empty()) {
+        [_suggestions hide];
+    }
+}
+
+- (IBAction)completeCode:(id)sender {
+    [self requestSuggestionsExplicitly:YES];
+}
+
+- (void)requestSuggestionsExplicitly:(BOOL)explicitly {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr || !tab->document->path()) {
+        if (explicitly) {
+            [self languageMessage:@"Save this file first so the language server can understand it."];
+        }
+        return;
+    }
+    gw::Document *document = tab->document.get();
+    if (![_language serverSupports:@"completionProvider" forDocument:document]) {
+        if (explicitly) {
+            NSString *status = [_language statusTextForLanguage:@(document->languageId.c_str())];
+            NSString *hint = [_language installHintForLanguage:@(document->languageId.c_str())];
+            if (status.length == 0) {
+                [self languageMessage:@"There is no language server for this kind of file yet."];
+            } else if (hint.length > 0) {
+                [self languageMessage:hint];
+            } else {
+                _statusLeft.stringValue = [status stringByAppendingString:@" · not ready yet"];
+            }
+        }
+        return;
+    }
+    gw::Position caret = document->selection.caret;
+    gw::Position wordStart = [self wordStartBeforeCaret];
+    NSUInteger token = _suggestionToken;
+    __weak GWMainWindowController *weakSelf = self;
+    [_language request:@"textDocument/completion"
+                params:[_language positionParamsForDocument:document position:caret]
+              document:document
+    requireSameVersion:YES
+            completion:^(const gw::lsp::Json &result, NSString *error) {
+        GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil || error != nil || (!explicitly && token != strongSelf->_suggestionToken)) {
+            return;
+        }
+        [strongSelf showSuggestionsFromResult:result wordStart:wordStart];
+    }];
+}
+
+- (void)showSuggestionsFromResult:(const gw::lsp::Json &)result wordStart:(gw::Position)wordStart {
+    using Json = gw::lsp::Json;
+    Json rows = result;
+    if (result.is_object()) {
+        rows = result.value("items", Json::array());
+    }
+    if (!rows.is_array() || rows.empty()) {
+        return;
+    }
+    NSMutableArray<GWSuggestion *> *items = [NSMutableArray array];
+    for (const Json &row : rows) {
+        if (!row.is_object()) {
+            continue;
+        }
+        GWSuggestion *item = [GWSuggestion new];
+        std::string label = row.value("label", "");
+        if (label.empty()) {
+            continue;
+        }
+        item.label = @(label.c_str());
+        item.detail = @(row.value("detail", "").c_str());
+        item.filterText = @(row.value("filterText", label).c_str());
+        item.sortText = @(row.value("sortText", label).c_str());
+        item.kind = row.value("kind", 0);
+        item.raw = std::make_shared<Json>(row);
+        [items addObject:item];
+        if (items.count >= 400) {
+            break;
+        }
+    }
+    if (items.count == 0) {
+        return;
+    }
+    Tab *tab = [self currentTab];
+    if (tab == nullptr) {
+        return;
+    }
+    _suggestionWordStart = wordStart;
+    [_suggestions setItems:items];
+    NSRect caretRect = [_editorView screenRectForPosition:tab->document->selection.caret];
+    [_suggestions showBelowScreenRect:caretRect parentWindow:self.window];
+    [_suggestions filterWithPrefix:[self typedPrefix]];
+}
+
+/// A snippet body with its tab stops removed: "foo(${1:a}, ${2:b})$0" → "foo(a, b)".
+static std::string plainTextFromSnippet(const std::string &snippet) {
+    std::string result;
+    for (size_t index = 0; index < snippet.size(); ++index) {
+        char c = snippet[index];
+        if (c == '\\' && index + 1 < snippet.size()) {
+            result += snippet[++index];
+            continue;
+        }
+        if (c != '$') {
+            result += c;
+            continue;
+        }
+        if (index + 1 < snippet.size() && std::isdigit(static_cast<unsigned char>(snippet[index + 1]))) {
+            while (index + 1 < snippet.size() && std::isdigit(static_cast<unsigned char>(snippet[index + 1]))) {
+                ++index;
+            }
+            continue;
+        }
+        if (index + 1 < snippet.size() && snippet[index + 1] == '{') {
+            size_t close = snippet.find('}', index);
+            std::string inside = snippet.substr(index + 2, close == std::string::npos ? std::string::npos : close - index - 2);
+            size_t colon = inside.find(':');
+            if (colon != std::string::npos) {
+                result += inside.substr(colon + 1);
+            }
+            if (close == std::string::npos) {
+                break;
+            }
+            index = close;
+            continue;
+        }
+        result += c;
+    }
+    return result;
+}
+
+- (void)acceptSuggestion:(GWSuggestion *)suggestion {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr || suggestion.raw == nullptr) {
+        return;
+    }
+    using Json = gw::lsp::Json;
+    const Json &item = *suggestion.raw;
+    gw::Document *document = tab->document.get();
+    const gw::TextBuffer &buffer = document->buffer();
+    gw::Position caret = document->selection.caret;
+
+    gw::Range range{[self wordStartBeforeCaret], caret};
+    std::string text = item.value("insertText", item.value("label", ""));
+    try {
+        if (item.contains("textEdit") && item["textEdit"].is_object()) {
+            const Json &edit = item["textEdit"];
+            const Json &editRange = edit.contains("range") ? edit["range"] : edit.at("replace");
+            range = {gw::lsp::position(buffer, editRange.at("start")), gw::lsp::position(buffer, editRange.at("end"))};
+            text = edit.at("newText").get<std::string>();
+        }
+    } catch (const std::exception &) {
+        // Keep the plain replacement of the typed word.
+    }
+    if (item.value("insertTextFormat", 1) == 2) {
+        text = plainTextFromSnippet(text);
+    }
+    // The range from the server can end before what was typed since; cover up to the caret.
+    if (range.end < caret && range.end.line == caret.line) {
+        range.end = caret;
+    }
+    // Extra edits (such as an added #include) apply together with the main one, as one undo step.
+    std::vector<std::pair<gw::Range, std::string>> edits;
+    edits.push_back({range, text});
+    if (item.contains("additionalTextEdits") && item["additionalTextEdits"].is_array()) {
+        for (const Json &extra : item["additionalTextEdits"]) {
+            try {
+                gw::Range extraRange{gw::lsp::position(buffer, extra.at("range").at("start")),
+                                     gw::lsp::position(buffer, extra.at("range").at("end"))};
+                edits.push_back({extraRange, extra.value("newText", "")});
+            } catch (const std::exception &) {
+            }
+        }
+    }
+    [self applyEdits:edits toCurrentDocumentPlacingCaretAfterFirst:YES];
+}
+
+/// Applies edits (positions in the document as it is now) as one undoable step. They are
+/// applied last-to-first so earlier positions stay valid.
+- (void)applyEdits:(std::vector<std::pair<gw::Range, std::string>>)edits toCurrentDocumentPlacingCaretAfterFirst:(BOOL)placeCaret {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr || tab->document->readOnly) {
+        return;
+    }
+    gw::Range firstRange = edits.front().first;
+    std::string firstText = edits.front().second;
+    std::stable_sort(edits.begin(), edits.end(), [](const auto &a, const auto &b) {
+        return b.first.start < a.first.start;  // descending
+    });
+    __block gw::Position caretAfter = firstRange.start;
+    [_editorView editDocument:^(gw::Document &document) {
+        for (const auto &[range, replacement] : edits) {
+            document.replace(range, replacement);
+        }
+    }];
+    if (placeCaret) {
+        // Put the caret after the text that replaced the first edit's range.
+        gw::Position end = gw::endOfInsertion(firstRange.start, firstText);
+        for (const auto &[range, replacement] : edits) {
+            bool isAbove = range.start < firstRange.start;
+            if (isAbove) {
+                size_t removedLines = range.end.line - range.start.line;
+                size_t addedLines = static_cast<size_t>(std::count(replacement.begin(), replacement.end(), '\n'));
+                if (addedLines >= removedLines) {
+                    end.line += addedLines - removedLines;
+                } else {
+                    end.line -= removedLines - addedLines;
+                }
+            }
+        }
+        caretAfter = tab->document->buffer().clamp(end);
+        tab->document->selection = {caretAfter, caretAfter};
+        [_editorView jumpToPosition:caretAfter];
+    }
+}
+
+// ---- Go to definition / references / problems
+
 - (IBAction)goToDefinition:(id)sender {
-    [self runLanguageCommand:@"textDocument/definition"];
+    [self requestLocationsForMethod:@"textDocument/definition" title:@"Definitions…" openSingleResult:YES];
 }
 
 - (IBAction)findReferences:(id)sender {
-    [self runLanguageCommand:@"textDocument/references"];
-}
-
-- (IBAction)checkProblems:(id)sender {
-    [self runLanguageCommand:@"diagnostics"];
+    [self requestLocationsForMethod:@"textDocument/references" title:@"References…" openSingleResult:NO];
 }
 
 - (void)languageMessage:(NSString *)message {
@@ -2787,209 +3266,103 @@ static double timed(void (^work)(void)) {
     [alert beginSheetModalForWindow:self.window completionHandler:nil];
 }
 
-- (void)runLanguageCommand:(NSString *)command {
-    if (_languageBusy) {
-        _statusLeft.stringValue = @"clangd · finishing the current request…";
-        return;
-    }
+/// A document the language server can work with, or nil (with a message) if there is none.
+- (gw::Document *)documentForLanguageCommand {
     Tab *tab = [self currentTab];
-    if (!tab || !tab->document->path()) {
-        [self languageMessage:@"Save this file first so clangd can resolve its project and includes."];
+    if (tab == nullptr || !tab->document->path()) {
+        [self languageMessage:@"Save this file first so the language server can resolve its project."];
+        return nullptr;
+    }
+    gw::Document *document = tab->document.get();
+    NSString *languageId = @(document->languageId.c_str());
+    if (![_language hasServerForLanguage:languageId]) {
+        [self languageMessage:@"There is no language server for this kind of file yet."];
+        return nullptr;
+    }
+    NSString *hint = [_language installHintForLanguage:languageId];
+    if (hint.length > 0) {
+        [self languageMessage:hint];
+        return nullptr;
+    }
+    return document;
+}
+
+- (void)requestLocationsForMethod:(NSString *)method title:(NSString *)title openSingleResult:(BOOL)openSingle {
+    gw::Document *document = [self documentForLanguageCommand];
+    if (document == nullptr) {
         return;
     }
-    auto supported = [](const std::string &language) {
-        return language == "c" || language == "cpp" || language == "objective-c" || language == "objective-cpp";
-    };
-    if (!supported(tab->document->languageId)) {
-        [self languageMessage:@"Code intelligence currently supports C, C++, Objective-C and Objective-C++. Other language servers are a future milestone."];
-        return;
+    gw::lsp::Json params = [_language positionParamsForDocument:document position:document->selection.caret];
+    if ([method isEqualToString:@"textDocument/references"]) {
+        params["context"] = {{"includeDeclaration", true}};
     }
-    NSUInteger request = ++_languageRequest;
-    std::vector<gw::lsp::Snapshot> documents;
-    for (const auto &open : _tabs) {
-        const auto &document = *open->document;
-        if (document.path() && supported(document.languageId)) {
-            // A monotonic wire version also covers closing/reopening a file or Save As.
-            documents.push_back({gw::lsp::fileURI(document.path()->string()), document.languageId,
-                                 document.buffer().text(), static_cast<uint64_t>(request)});
-        }
-    }
-    std::string path = tab->document->path()->string();
-    std::string uri = gw::lsp::fileURI(path);
-    gw::Position caret = tab->document->selection.caret;
-    uint64_t version = tab->document->version();
-    std::string originalText = tab->document->buffer().text();
-    auto position = gw::lsp::position(tab->document->buffer(), caret);
-    NSURL *rootURL = _fileTree.rootURL ?: [NSURL fileURLWithPath:@(path.c_str())].URLByDeletingLastPathComponent;
-    std::string root = gw::lsp::fileURI(rootURL.path.UTF8String);
-    auto session = _languageSession;
-    _languageBusy = YES;
-    _statusLeft.stringValue = @"clangd · working…";
+    _statusLeft.stringValue = @"Asking the language server…";
     __weak GWMainWindowController *weakSelf = self;
-    dispatch_async(_languageQueue, ^{
-        gw::lsp::Json result;
-        std::string error;
-        try {
-            if (!session->client || session->root != root) {
-                session->client.reset();
-                session->client = std::make_unique<gw::lsp::Client>(root);
-                session->root = root;
-            }
-            session->client->synchronize(documents);
-            if ([command isEqualToString:@"diagnostics"]) {
-                auto current = std::find_if(documents.begin(), documents.end(), [&](const auto &document) {
-                    return document.uri == uri;
-                });
-                result = session->client->diagnostics(*current);
-            } else {
-                gw::lsp::Json parameters = {{"textDocument", {{"uri", uri}}}, {"position", position}};
-                if ([command isEqualToString:@"textDocument/references"]) {
-                    parameters["context"] = {{"includeDeclaration", true}};
-                }
-                result = session->client->request(command.UTF8String, parameters);
-            }
-        } catch (const std::exception &failure) {
-            error = failure.what();
-            session->client.reset();
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            GWMainWindowController *controller = weakSelf;
-            if (!controller) {
-                return;
-            }
-            controller->_languageBusy = NO;
-            [controller updateStatus];
-            if (controller->_languageRequest != request) {
-                return;
-            }
-            Tab *current = [controller currentTab];
-            if (!current || !current->document->path() || current->document->path()->string() != path ||
-                current->document->version() != version || current->document->buffer().text() != originalText ||
-                current->document->selection.caret != caret) {
-                return; // Never apply an old result to a different edit or caret position.
-            }
-            if (!error.empty()) {
-                [controller languageMessage:@(error.c_str())];
-                return;
-            }
-            [controller showLanguageResult:result command:command path:path version:version caret:caret request:request];
-        });
-    });
-}
-
-- (void)openLanguageLocation:(const gw::lsp::Json &)location {
-    try {
-        std::string uri = location.value("uri", location.value("targetUri", ""));
-        NSURL *url = [NSURL URLWithString:@(uri.c_str())];
-        if (!url.isFileURL) {
+    [_language request:method params:params document:document requireSameVersion:NO
+            completion:^(const gw::lsp::Json &result, NSString *error) {
+        GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
             return;
         }
-        [self openURL:url];
-        Tab *tab = [self currentTab];
-        if (!tab || !tab->document->path() || tab->document->path()->string() != url.path.UTF8String) {
+        [strongSelf updateStatus];
+        if (error != nil) {
+            [strongSelf languageMessage:error];
             return;
         }
-        const auto &range = location.contains("targetSelectionRange") ? location.at("targetSelectionRange") : location.at("range");
-        [_editorView jumpToPosition:gw::lsp::position(tab->document->buffer(), range.at("start"))];
-    } catch (const std::exception &) {
-        [self languageMessage:@"The language server returned an invalid source location."];
-    }
+        [strongSelf showLocations:result title:title openSingleResult:openSingle];
+    }];
 }
 
-- (void)showLanguageResult:(const gw::lsp::Json &)result
-                  command:(NSString *)command
-                     path:(const std::string &)path
-                  version:(uint64_t)version
-                    caret:(gw::Position)caret
-                  request:(NSUInteger)request {
+- (void)showLocations:(const gw::lsp::Json &)result title:(NSString *)title openSingleResult:(BOOL)openSingle {
     using Json = gw::lsp::Json;
-    NSMutableArray<GWPaletteItem *> *items = [NSMutableArray array];
-    BOOL completion = [command isEqualToString:@"textDocument/completion"];
-    BOOL diagnostics = [command isEqualToString:@"diagnostics"];
     Json rows = result;
-    if (completion && result.is_object()) {
-        rows = result.value("items", Json::array());
-    } else if (result.is_object()) {
+    if (result.is_object()) {
         rows = Json::array({result});
     }
+    NSMutableArray<GWPaletteItem *> *items = [NSMutableArray array];
     __weak GWMainWindowController *weakSelf = self;
-    try {
-        if (rows.is_array()) {
-            for (const auto &row : rows) {
-                GWPaletteItem *item = [GWPaletteItem new];
-                item.symbolColor = NSColor.controlAccentColor;
-                if (completion) {
-                    // Snippets and multi-edit completions need a snippet/transaction engine.
-                    if (row.value("insertTextFormat", 1) == 2 ||
-                        (row.contains("additionalTextEdits") && !row.at("additionalTextEdits").empty())) {
-                        continue;
-                    }
-                    item.title = @(row.value("label", "Completion").c_str());
-                    item.subtitle = @(row.value("detail", "").c_str());
-                    item.symbol = @"curlybraces";
-                    Json completionItem = row;
-                    item.run = ^{
-                        GWMainWindowController *controller = weakSelf;
-                        if (!controller || controller->_languageRequest != request) return;
-                        Tab *current = [controller currentTab];
-                        if (!current || !current->document->path() || current->document->path()->string() != path ||
-                            current->document->version() != version || current->document->selection.caret != caret) return;
-                        try {
-                            const auto &buffer = current->document->buffer();
-                            gw::Range range{buffer.wordAt(caret).start, caret};
-                            std::string text = completionItem.value("insertText", completionItem.value("label", ""));
-                            if (completionItem.contains("textEdit")) {
-                                const auto &edit = completionItem.at("textEdit");
-                                const auto &editRange = edit.contains("range") ? edit.at("range") : edit.at("replace");
-                                range = {gw::lsp::position(buffer, editRange.at("start")),
-                                         gw::lsp::position(buffer, editRange.at("end"))};
-                                text = edit.at("newText").get<std::string>();
-                            }
-                            [controller->_editorView replaceRange:range withText:text];
-                        } catch (const std::exception &) {
-                            [controller languageMessage:@"This completion could not be applied."];
-                        }
-                    };
-                } else {
-                    Json location = row;
-                    if (diagnostics) {
-                        location["uri"] = gw::lsp::fileURI(path);
-                        item.title = @(row.value("message", "Compiler diagnostic").c_str());
-                        bool error = row.value("severity", 1) == 1;
-                        item.symbol = error ? @"xmark.octagon.fill" : @"exclamationmark.triangle.fill";
-                        item.symbolColor = error ? NSColor.systemRedColor : NSColor.systemOrangeColor;
-                    } else {
-                        std::string uri = row.value("uri", row.value("targetUri", ""));
-                        NSURL *url = [NSURL URLWithString:@(uri.c_str())];
-                        item.title = url.lastPathComponent ?: @"Source location";
-                        item.symbol = @"arrow.turn.down.right";
-                    }
-                    const auto &range = location.contains("targetSelectionRange") ? location.at("targetSelectionRange") : location.at("range");
-                    size_t line = range.at("start").at("line").get<size_t>() + 1;
-                    std::string locationURI = location.value("uri", location.value("targetUri", ""));
-                    NSURL *url = [NSURL URLWithString:@(locationURI.c_str())];
-                    item.subtitle = [NSString stringWithFormat:@"%@ · line %zu", url.path ?: @"", line];
-                    item.run = ^{
-                        GWMainWindowController *controller = weakSelf;
-                        if (controller) [controller openLanguageLocation:location];
-                    };
-                }
-                [items addObject:item];
+    if (rows.is_array()) {
+        for (const Json &row : rows) {
+            if (!row.is_object()) {
+                continue;
             }
+            std::string uri = row.value("uri", row.value("targetUri", ""));
+            const Json *range = nullptr;
+            if (row.contains("targetSelectionRange")) {
+                range = &row["targetSelectionRange"];
+            } else if (row.contains("range")) {
+                range = &row["range"];
+            }
+            if (range == nullptr || uri.empty()) {
+                continue;
+            }
+            std::string path = gw::lsp::pathFromURI(uri);
+            size_t line = (*range)["start"].value("line", 0) + 1;
+            GWPaletteItem *item = [GWPaletteItem new];
+            NSString *relative = [self projectRelativePath:@(path.c_str())];
+            item.title = @(std::filesystem::path(path).filename().c_str());
+            item.subtitle = [NSString stringWithFormat:@"%@ · line %zu", relative, line];
+            item.symbol = @"arrow.turn.down.right";
+            item.symbolColor = NSColor.controlAccentColor;
+            Json location = row;
+            item.run = ^{
+                [weakSelf openLanguageLocation:location];
+            };
+            [items addObject:item];
         }
-    } catch (const std::exception &) {
-        [self languageMessage:@"The language server returned an unexpected result."];
-        return;
     }
     if (items.count == 0) {
-        [self languageMessage:diagnostics ? @"No compiler problems found in this file." : @"No results at this position."];
+        [self languageMessage:@"No results at this position."];
         return;
     }
-    if ([command isEqualToString:@"textDocument/definition"] && items.count == 1) {
+    if (openSingle && items.count == 1) {
         items.firstObject.run();
         return;
     }
-    NSString *placeholder = completion ? @"Complete code…" : (diagnostics ? @"Problems in this file…" : @"References…");
+    [self showPaletteWithItems:items placeholder:title];
+}
+
+- (void)showPaletteWithItems:(NSArray<GWPaletteItem *> *)items placeholder:(NSString *)placeholder {
     [GWPalette.shared showOverWindow:self.window placeholder:placeholder provider:^NSArray<GWPaletteItem *> *(NSString *query) {
         NSMutableArray *filtered = [NSMutableArray array];
         for (GWPaletteItem *item in items) {
@@ -3000,6 +3373,254 @@ static double timed(void (^work)(void)) {
             if (filtered.count == 100) break;
         }
         return filtered;
+    }];
+}
+
+- (void)openLanguageLocation:(const gw::lsp::Json &)location {
+    try {
+        std::string uri = location.value("uri", location.value("targetUri", ""));
+        std::string path = gw::lsp::pathFromURI(uri);
+        if (path.empty()) {
+            return;
+        }
+        NSURL *url = [NSURL fileURLWithPath:@(path.c_str())];
+        [self openURL:url];
+        Tab *tab = [self currentTab];
+        if (!tab || !tab->document->path() || tab->document->path()->string() != path) {
+            return;
+        }
+        const auto &range = location.contains("targetSelectionRange") ? location.at("targetSelectionRange") : location.at("range");
+        [_editorView jumpToPosition:gw::lsp::position(tab->document->buffer(), range.at("start"))];
+    } catch (const std::exception &) {
+        [self languageMessage:@"The language server returned an invalid source location."];
+    }
+}
+
+/// ⇧⌘M: the problems in the current file, as a list to jump through.
+- (IBAction)checkProblems:(id)sender {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr) {
+        return;
+    }
+    gw::Document *document = tab->document.get();
+    const std::vector<GWDiagnostic> &diagnostics = [_language diagnosticsForDocument:document];
+    if (diagnostics.empty()) {
+        NSString *status = [_language statusTextForLanguage:@(document->languageId.c_str())];
+        NSString *hint = [_language installHintForLanguage:@(document->languageId.c_str())];
+        if (hint.length > 0) {
+            [self languageMessage:hint];
+        } else if (status.length == 0) {
+            [self languageMessage:@"There is no language server for this kind of file yet."];
+        } else {
+            [self languageMessage:@"No problems found in this file."];
+        }
+        return;
+    }
+    NSMutableArray<GWPaletteItem *> *items = [NSMutableArray array];
+    __weak GWMainWindowController *weakSelf = self;
+    for (const GWDiagnostic &diagnostic : diagnostics) {
+        GWPaletteItem *item = [GWPaletteItem new];
+        item.title = @(diagnostic.message.c_str());
+        BOOL isError = diagnostic.severity == 1;
+        item.symbol = isError ? @"xmark.octagon.fill" : @"exclamationmark.triangle.fill";
+        item.symbolColor = isError ? NSColor.systemRedColor : NSColor.systemOrangeColor;
+        item.subtitle = [NSString stringWithFormat:@"line %zu", diagnostic.range.start.line + 1];
+        gw::Position where = diagnostic.range.start;
+        item.run = ^{
+            GWMainWindowController *strongSelf = weakSelf;
+            if (strongSelf != nil) {
+                [strongSelf->_editorView jumpToPosition:where];
+            }
+        };
+        [items addObject:item];
+    }
+    [self showPaletteWithItems:items placeholder:@"Problems in this file…"];
+}
+
+// ---- Rename and format
+
+/// Applies TextEdits (from a server) to a document, as one undo step. Ranges are read from the
+/// document first, so the edits don't disturb each other.
+static std::vector<std::pair<gw::Range, std::string>> editsFromLsp(const gw::lsp::Json &edits, const gw::TextBuffer &buffer) {
+    std::vector<std::pair<gw::Range, std::string>> result;
+    for (const gw::lsp::Json &edit : edits) {
+        try {
+            gw::Range range{gw::lsp::position(buffer, edit.at("range").at("start")), gw::lsp::position(buffer, edit.at("range").at("end"))};
+            result.push_back({range, edit.value("newText", "")});
+        } catch (const std::exception &) {
+        }
+    }
+    return result;
+}
+
+- (IBAction)renameSymbol:(id)sender {
+    gw::Document *document = [self documentForLanguageCommand];
+    if (document == nullptr) {
+        return;
+    }
+    if (![_language serverSupports:@"renameProvider" forDocument:document]) {
+        [self languageMessage:@"The language server for this file doesn't support renaming."];
+        return;
+    }
+    std::string current = [_editorView wordAtCaret];
+    if (current.empty()) {
+        [self languageMessage:@"Put the caret on a name to rename it."];
+        return;
+    }
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"Rename Symbol";
+    alert.informativeText = [NSString stringWithFormat:@"Rename “%s” everywhere it is used.", current.c_str()];
+    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 300, 24)];
+    field.stringValue = @(current.c_str());
+    alert.accessoryView = field;
+    [alert addButtonWithTitle:@"Rename"];
+    [alert addButtonWithTitle:@"Cancel"];
+    alert.window.initialFirstResponder = field;
+    gw::Position caret = document->selection.caret;
+    __weak GWMainWindowController *weakSelf = self;
+    [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+        GWMainWindowController *strongSelf = weakSelf;
+        NSString *newName = [field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        if (strongSelf == nil || response != NSAlertFirstButtonReturn || newName.length == 0 ||
+            newName.UTF8String == current) {
+            return;
+        }
+        gw::lsp::Json params = [strongSelf->_language positionParamsForDocument:document position:caret];
+        params["newName"] = newName.UTF8String;
+        strongSelf->_statusLeft.stringValue = @"Renaming…";
+        [strongSelf->_language request:@"textDocument/rename" params:params document:document requireSameVersion:NO
+                            completion:^(const gw::lsp::Json &result, NSString *error) {
+            [weakSelf updateStatus];
+            if (error != nil) {
+                [weakSelf languageMessage:error];
+                return;
+            }
+            [weakSelf applyWorkspaceEdit:result];
+        }];
+    }];
+}
+
+/// Applies a WorkspaceEdit from a server: open files are edited in the editor (undoable),
+/// other files are changed on disk.
+- (void)applyWorkspaceEdit:(const gw::lsp::Json &)edit {
+    using Json = gw::lsp::Json;
+    std::vector<std::pair<std::string, Json>> fileEdits;  // uri and its TextEdits
+    if (edit.is_object() && edit.contains("documentChanges") && edit["documentChanges"].is_array()) {
+        for (const Json &change : edit["documentChanges"]) {
+            if (change.contains("textDocument") && change.contains("edits")) {
+                fileEdits.push_back({change["textDocument"].value("uri", ""), change["edits"]});
+            }
+        }
+    } else if (edit.is_object() && edit.contains("changes") && edit["changes"].is_object()) {
+        for (const auto &[uri, edits] : edit["changes"].items()) {
+            fileEdits.push_back({uri, edits});
+        }
+    }
+    if (fileEdits.empty()) {
+        [self languageMessage:@"The language server found nothing to change."];
+        return;
+    }
+    size_t changedFiles = 0;
+    size_t totalEdits = 0;
+    NSMutableArray<NSString *> *failures = [NSMutableArray array];
+    for (const auto &[uri, edits] : fileEdits) {
+        std::string path = gw::lsp::pathFromURI(uri);
+        if (path.empty()) {
+            continue;
+        }
+        totalEdits += edits.size();
+        Tab *openTab = nullptr;
+        for (auto &tab : _tabs) {
+            if (tab->document->path() && tab->document->path()->string() == path) {
+                openTab = tab.get();
+                break;
+            }
+        }
+        if (openTab != nullptr) {
+            std::vector<std::pair<gw::Range, std::string>> parsed = editsFromLsp(edits, openTab->document->buffer());
+            std::stable_sort(parsed.begin(), parsed.end(), [](const auto &a, const auto &b) { return b.first.start < a.first.start; });
+            gw::Document *document = openTab->document.get();
+            if (openTab == [self currentTab]) {
+                [_editorView editDocument:^(gw::Document &doc) {
+                    for (const auto &[range, text] : parsed) {
+                        doc.replace(range, text);
+                    }
+                }];
+            } else {
+                document->beginUndoGroup();
+                for (const auto &[range, text] : parsed) {
+                    document->replace(range, text);
+                }
+                document->endUndoGroup();
+            }
+            ++changedFiles;
+            continue;
+        }
+        std::string error;
+        auto document = gw::Document::open(path, &error);
+        if (!document) {
+            [failures addObject:@(path.c_str())];
+            continue;
+        }
+        std::vector<std::pair<gw::Range, std::string>> parsed = editsFromLsp(edits, document->buffer());
+        std::stable_sort(parsed.begin(), parsed.end(), [](const auto &a, const auto &b) { return b.first.start < a.first.start; });
+        for (const auto &[range, text] : parsed) {
+            document->replace(range, text);
+        }
+        if (document->save(&error)) {
+            ++changedFiles;
+        } else {
+            [failures addObject:@(path.c_str())];
+        }
+    }
+    [self refresh];
+    [_git refresh];
+    if (failures.count > 0) {
+        [self showErrorTitle:@"Some files couldn't be changed" message:[failures componentsJoinedByString:@"\n"]];
+    } else {
+        _statusLeft.stringValue = [NSString stringWithFormat:@"Changed %zu place%s in %zu file%s", totalEdits, totalEdits == 1 ? "" : "s",
+                                   changedFiles, changedFiles == 1 ? "" : "s"];
+    }
+}
+
+/// ⇧⌥F: lets the language server tidy the whole file.
+- (IBAction)formatDocument:(id)sender {
+    gw::Document *document = [self documentForLanguageCommand];
+    if (document == nullptr) {
+        return;
+    }
+    if (![_language serverSupports:@"documentFormattingProvider" forDocument:document]) {
+        [self languageMessage:@"The language server for this file can't format it."];
+        return;
+    }
+    gw::lsp::Json params = {
+        {"textDocument", {{"uri", gw::lsp::fileURI(document->path()->string())}}},
+        {"options", {{"tabSize", GWServices.shared.settings.tabSize}, {"insertSpaces", true}}},
+    };
+    __weak GWMainWindowController *weakSelf = self;
+    _statusLeft.stringValue = @"Formatting…";
+    [_language request:@"textDocument/formatting" params:params document:document requireSameVersion:YES
+            completion:^(const gw::lsp::Json &result, NSString *error) {
+        GWMainWindowController *strongSelf = weakSelf;
+        [strongSelf updateStatus];
+        if (strongSelf == nil) {
+            return;
+        }
+        if (error != nil) {
+            [strongSelf languageMessage:error];
+            return;
+        }
+        Tab *tab = [strongSelf currentTab];
+        if (tab == nullptr || tab->document.get() != document || !result.is_array() || result.empty()) {
+            return;
+        }
+        auto edits = editsFromLsp(result, document->buffer());
+        if (edits.empty()) {
+            return;
+        }
+        gw::Position caret = document->selection.caret;
+        [strongSelf applyEdits:edits toCurrentDocumentPlacingCaretAfterFirst:NO];
+        [strongSelf->_editorView jumpToPosition:caret];
     }];
 }
 
@@ -3015,6 +3636,7 @@ static double timed(void (^work)(void)) {
         [self startWatchingFolder:url.path];
         _chat.projectFolder = url.path;
         _search.rootFolder = url.path;
+        _language.rootFolder = url.path;
         _terminal.projectFolder = url.path;
         _sidebarTitle.stringValue = url.lastPathComponent;
         _openFolderButton.hidden = YES;
@@ -3092,6 +3714,7 @@ static double timed(void (^work)(void)) {
         [alert runModal];
         return NO;
     }
+    [_language documentDidSave:tab.document.get()];
     [self refresh];
     [_git refresh];
     return YES;
@@ -3187,6 +3810,7 @@ static double timed(void (^work)(void)) {
         if (tab->document->isDirty() && ![self confirmCloseDocument:*tab->document]) return NO;
     }
     [self saveSession];
+    [_language shutdown];
     return YES;
 }
 

@@ -22,6 +22,10 @@ struct EditorSettings {
     bool indentGuides = true;
     bool bracketPairColors = true;
     bool sectionDividers = true;
+    /// Show each problem's message at the end of its line.
+    bool inlineDiagnostics = true;
+    /// Run language servers (completion, problems, hover, rename…).
+    bool languageServers = true;
 
     /// Save files a moment after the last edit, and when the window loses focus.
     bool autoSave = false;

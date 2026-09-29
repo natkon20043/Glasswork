@@ -230,6 +230,9 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
         [self item:@"Go to Definition" action:@selector(goToDefinition:) key:@"d" modifiers:command | NSEventModifierFlagControl],
         [self item:@"Find References…" action:@selector(findReferences:) key:@"r" modifiers:command | NSEventModifierFlagControl],
         [self item:@"Check File for Problems…" action:@selector(checkProblems:) key:@"m" modifiers:command | shift],
+        NSMenuItem.separatorItem,
+        [self item:@"Rename Symbol…" action:@selector(renameSymbol:) key:[NSString stringWithFormat:@"%C", (unichar)NSF2FunctionKey] modifiers:0],
+        [self item:@"Format Document" action:@selector(formatDocument:) key:@"f" modifiers:option | shift],
     ] parent:main];
     [self submenu:@"Terminal" items:@[
         [self item:@"Toggle Terminal" action:@selector(toggleTerminal:) key:@"`" modifiers:NSEventModifierFlagControl],

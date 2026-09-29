@@ -28,6 +28,7 @@ The first configuration downloads nlohmann/json and Oniguruma. A from-scratch bu
 - Find and replace in the file (⌘F, ⌥⌘F) and across the project (⇧⌘F), with case, whole word and regular expression options and file filters.
 - MARK dividers, TODO/FIXME markers, rainbow brackets, indent guides, rainbow variable names, occurrence highlighting, a colour inspector and per-name colours.
 - Files changed outside the editor (by Claude, a build, git) reload straight away; the changed lines flash. Unsaved edits are never overwritten without asking.
+- Soft word wrap (⌥Z, or `editor.wordWrap`) breaks at words and keeps a line's indentation on the rows below it. Code folding (⌥⌘[ and ⌥⌘], Fold All / Unfold All in the Edit menu, or the arrows in the line numbers) folds by indentation in every language.
 - Optional auto-save, and the open files, caret and scroll position of each folder come back when you reopen it.
 
 **File tree**
@@ -63,29 +64,36 @@ Inside Glasswork, on that file (`GLASSWORK_BENCH=1`): typing a character and red
 
 Typing and scrolling latency of Zed could not be measured from outside the app (it needs the Accessibility permission), so there is no side-by-side figure for those. Run `./build/glasswork_bench` for the core numbers (search, fuzzy matching, diff, undo).
 
-## C-family code intelligence
+## Language servers
 
-Use the **Go** menu while editing a saved C/C++/Objective-C/Objective-C++ file:
+Glasswork talks to language servers over LSP, in the background, so typing never waits on them. A server starts the first time you open a file in its language and stops when you quit.
 
-| Command | Shortcut |
-| --- | --- |
-| Complete Code | Control–Space |
-| Go to Definition | Control–Command–D |
-| Find References | Control–Command–R |
-| Check File for Problems | Shift–Command–M |
+| Language | Server | Where it comes from |
+| --- | --- | --- |
+| C, C++, Objective-C(++) | clangd | Xcode (nothing to install) |
+| Swift | sourcekit-lsp | Xcode (nothing to install) |
+| Python | pyright-langserver | `npm install -g pyright` |
+| TypeScript, JavaScript | typescript-language-server | `npm install -g typescript typescript-language-server` |
+| Rust | rust-analyzer | `rustup component add rust-analyzer` |
+| Go | gopls | `go install golang.org/x/tools/gopls@latest` |
 
-The commands lazily start one local clangd process, off the UI thread. Open unsaved buffers are synchronized before each request; you do not have to save each change. Definitions open at the exact symbol column. References and diagnostics appear in the glass picker and navigate to their source locations. Completion insertion is undoable. If macOS reserves a shortcut (such as Control–Space), use the Go menu.
+If a server isn't installed, the status bar says so and the menu commands tell you how to install it. Turn everything off with `"lsp.enabled": false`.
 
-Open the project folder and provide a `compile_commands.json` for accurate includes and compiler flags. CMake users can enable `CMAKE_EXPORT_COMPILE_COMMANDS`; clangd searches normal locations such as the project's `build` directory. Without compiler flags, fallback parsing may report missing includes or misleading diagnostics.
+What you get:
+
+- **Problems** as you type: wavy underlines, a dot in the line numbers, the message at the end of the line (`editor.inlineDiagnostics`), and error and warning counts in the status bar. ⇧⌘M lists the problems in the file.
+- **Hover** (rest the pointer on a name): the declaration and documentation, plus any problems on it.
+- **Completion** as you type, fuzzy-filtered, with ↑↓, ↩ or ⇥ to accept and ⎋ to close. ⌃Space opens it on demand.
+- **Go to Definition** (⌃⌘D), **Find References** (⌃⌘R), **Rename Symbol** (F2, across all files) and **Format Document** (⇧⌥F), all in the Go menu.
+
+Open the project folder and provide a `compile_commands.json` for accurate C-family includes. CMake users can set `CMAKE_EXPORT_COMPILE_COMMANDS`; clangd searches normal places such as the project's `build` folder.
 
 Current boundaries:
 
-- Completion and diagnostics are requested explicitly; no automatic popup or live gutter diagnostics yet.
-- Only the active Xcode clangd is configured. Other language servers need a server configuration layer.
-- Snippet completions and completion items with additional edits are not offered yet.
-- Requests have a timeout, run serially and ignore results after document/caret changes. A failed server is restarted on the next command.
-- The client supports UTF-16 LSP positions, full-document synchronization and framed JSON-RPC. It does not run downloaded extension JavaScript.
-- Idle servers can retain project indexes in memory until the window/controller closes or the app exits.
+- Snippet completions insert their placeholder text without tab stops.
+- Documents over 4 MB aren't sent to servers.
+- Files are sent whole after each pause in typing, not as incremental edits.
+- The client does not run downloaded extension JavaScript, and semantic-token colouring isn't used yet.
 
 ## Developer hooks
 
@@ -95,14 +103,14 @@ Environment variables for checking the interface without clicking:
 - `GLASSWORK_PROMPT="text"` sends a message to Claude a few seconds after launch.
 - `GLASSWORK_BENCH=1` runs the interaction benchmark on the file opened at launch, then quits.
 - `GLASSWORK_TIMING=1` prints a startup timeline.
+- `GLASSWORK_LSP_TRACE=1` prints every message to and from the language servers.
+- `GLASSWORK_LSP_CLANGD=1 ./build/glasswork_lsp_server_tests` also runs the checks against the real clangd.
 
 ## Next milestones
 
-1. Continuous diagnostics, inline completion UI, hover documentation and signature help.
-2. Workspace edits: rename, code actions, formatting.
-3. Configurable language servers and semantic tokens.
-4. Soft wrap and code folding.
-5. Debug Adapter Protocol.
+1. Signature help, code actions (quick fixes) and semantic-token colours.
+2. Incremental document sync and multi-cursor editing.
+3. Debug Adapter Protocol.
 
 VS Code extension compatibility currently means themes, grammars and declarative language configuration. Running its general JavaScript extension ecosystem requires an extension host/API compatibility project; it is not provided by LSP alone.
 

@@ -47,6 +47,7 @@ add_library(glasswork_core STATIC
     src/core/Sections.cpp
     src/core/Fuzzy.cpp
     src/core/LanguageServer.cpp
+    src/core/LspServer.cpp
     src/core/Process.cpp
     src/core/LineDiff.cpp
     src/core/Git.cpp
@@ -70,6 +71,10 @@ add_test(NAME core COMMAND glasswork_tests)
 add_executable(glasswork_layout_tests tests/layout_tests.cpp)
 target_link_libraries(glasswork_layout_tests PRIVATE glasswork_core)
 add_test(NAME layout COMMAND glasswork_layout_tests)
+add_executable(glasswork_lsp_server_tests tests/lsp_server_tests.cpp)
+target_link_libraries(glasswork_lsp_server_tests PRIVATE glasswork_core)
+target_compile_definitions(glasswork_lsp_server_tests PRIVATE TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+add_test(NAME lsp_server COMMAND glasswork_lsp_server_tests)
 add_executable(glasswork_lsp_tests tests/language_server_tests.cpp)
 target_link_libraries(glasswork_lsp_tests PRIVATE glasswork_core)
 add_test(NAME language_protocol COMMAND glasswork_lsp_tests)
@@ -120,6 +125,8 @@ add_executable(Glasswork MACOSX_BUNDLE
     src/app/MainWindow.mm
     src/app/EditorView.mm
     src/app/FileTree.mm
+    src/app/LanguageService.mm
+    src/app/CompletionPopup.mm
     src/app/FileIcons.mm
     src/app/ColorInspector.mm
     src/app/Palette.mm

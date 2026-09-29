@@ -485,17 +485,17 @@ void ChildProcess::terminate() {
 
     // If it ignores the polite request, force it after a short grace period.
     int processId = processId_;
-    std::thread([this, processId] {
+    // This thread may outlive the ChildProcess, so it only looks at the process id (kill with
+    // signal 0 says whether it still exists), never at members of `this`.
+    std::thread([processId] {
         for (int attempt = 0; attempt < 20; ++attempt) {
-            if (!running_.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (kill(processId, 0) != 0) {
                 return;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        if (running_.load()) {
-            kill(-processId, SIGKILL);
-            kill(processId, SIGKILL);
-        }
+        kill(-processId, SIGKILL);
+        kill(processId, SIGKILL);
     }).detach();
 }
 

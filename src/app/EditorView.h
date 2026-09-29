@@ -7,6 +7,7 @@
 #include "Highlighter.hpp"
 #include "LineDiff.hpp"
 #include "Sections.hpp"
+#include "LanguageService.h"
 
 #include "Theme.hpp"
 
@@ -71,6 +72,24 @@ NS_ASSUME_NONNULL_BEGIN
 /// Tints whole lines (one colour per line, 0 for none). Used to colour added and removed
 /// lines in diff tabs.
 - (void)setLineTints:(std::vector<gw::Color>)tints;
+
+// MARK: Language intelligence
+
+/// Problems to underline (and mark in the line numbers).
+- (void)setDiagnostics:(std::vector<GWDiagnostic>)diagnostics;
+/// The pointer rested on a word: `position` is its start. Answer by showing something near it.
+@property (nonatomic, copy, nullable) void (^onHoverRequest)(gw::Position position, gw::Range word);
+/// The pointer moved away (or the editor changed): hide what the hover showed.
+@property (nonatomic, copy, nullable) void (^onHoverEnd)(void);
+/// Called for keys the editor would act on (moveUp:, moveDown:, insertNewline:, insertTab:,
+/// cancelOperation:). Return YES to say the completion list used the key.
+@property (nonatomic, copy, nullable) BOOL (^onCompletionKey)(SEL selector);
+/// Called after every edit: what was typed, or nil for a deletion or other change.
+@property (nonatomic, copy, nullable) void (^onTypedText)(NSString *_Nullable typed);
+/// The rectangle covered by a stretch of one line, in the editor's own coordinates.
+- (NSRect)viewRectForRange:(gw::Range)range;
+/// The rectangle of a position on screen (for placing popups).
+- (NSRect)screenRectForPosition:(gw::Position)position;
 
 // MARK: Find
 
