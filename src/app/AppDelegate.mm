@@ -14,7 +14,9 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
 };
 
 @implementation GWAppDelegate {
-    GWMainWindowController *_window;
+    GWMainWindowController *_window;                          // the first window (the debug hooks use it)
+    NSMutableArray<GWMainWindowController *> *_windows;       // every open window
+    NSPoint _cascadePoint;
     NSMenu *_themeMenu;
     NSMenu *_installedMenu;
     NSMutableArray<NSURL *> *_pendingURLs;  // files opened before launch finished
@@ -31,7 +33,8 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
     GWStartupMark(@"applicationDidFinishLaunching");
     [GWServices.shared bootstrap];
     GWStartupMark(@"services ready (extensions scanned, theme loaded)");
-    _window = [GWMainWindowController new];
+    _windows = [NSMutableArray array];
+    _window = [self makeWindowController];
     GWStartupMark(@"main window built");
     [_window showWindow:nil];
     GWStartupMark(@"main window shown");
@@ -57,8 +60,10 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
                 if ([self->_window respondsToSelector:selector]) {
                     [NSApp sendAction:selector to:self->_window from:nil];
                 } else {
-                    // Not a window action: send it down the responder chain (the editor).
-                    [self->_window debugPerformEditorAction:selector];
+                    // Not a window action: try the editor, then the app itself (New Window…).
+                    if (![self->_window debugPerformEditorAction:selector] && [self respondsToSelector:selector]) {
+                        [NSApp sendAction:selector to:self from:nil];
+                    }
                 }
             });
         }
@@ -93,14 +98,71 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
         [_pendingURLs addObjectsFromArray:urls];
         return;
     }
-    for (NSURL *url in urls) [_window openURL:url];
-    [_window showWindow:nil];
+    GWMainWindowController *target = [self frontWindowController];
+    for (NSURL *url in urls) [target openURL:url];
+    [target showWindow:nil];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender { return YES; }
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
-    return !_window || [_window confirmCloseAll] ? NSTerminateNow : NSTerminateCancel;
+    // Every window gets to ask about unsaved changes; cancelling in one keeps the app open.
+    for (GWMainWindowController *controller in [_windows copy]) {
+        if (![controller confirmCloseAll]) {
+            return NSTerminateCancel;
+        }
+    }
+    return NSTerminateNow;
+}
+
+// MARK: Windows
+
+/// A new window, kept in the list until it closes.
+- (GWMainWindowController *)makeWindowController {
+    GWMainWindowController *controller = [GWMainWindowController new];
+    [_windows addObject:controller];
+    __weak GWAppDelegate *weakSelf = self;
+    __weak GWMainWindowController *weakController = controller;
+    [NSNotificationCenter.defaultCenter addObserverForName:NSWindowWillCloseNotification object:controller.window queue:nil
+                                                usingBlock:^(NSNotification *note) {
+        GWAppDelegate *strongSelf = weakSelf;
+        GWMainWindowController *closing = weakController;
+        if (strongSelf != nil && closing != nil) {
+            [strongSelf->_windows removeObject:closing];
+        }
+    }];
+    return controller;
+}
+
+/// The controller of the window the user is working in.
+- (GWMainWindowController *)frontWindowController {
+    for (GWMainWindowController *controller in _windows) {
+        if (controller.window == NSApp.keyWindow) {
+            return controller;
+        }
+    }
+    return _windows.lastObject ?: _window;
+}
+
+- (IBAction)newWindow:(id)sender {
+    GWMainWindowController *controller = [self makeWindowController];
+    // Offset from the one before, so they don't sit exactly on top of each other.
+    NSWindow *front = [self frontWindowController].window;
+    if (controller.window != front && front != nil) {
+        NSRect frame = front.frame;
+        [controller.window setFrame:NSOffsetRect(frame, 28, -28) display:NO];
+    }
+    [controller showWindow:nil];
+}
+
+- (IBAction)openFolderInNewWindow:(id)sender {
+    GWMainWindowController *controller = [self makeWindowController];
+    NSWindow *front = [self frontWindowController].window;
+    if (front != nil && front != controller.window) {
+        [controller.window setFrame:NSOffsetRect(front.frame, 28, -28) display:NO];
+    }
+    [controller showWindow:nil];
+    [controller openFolder:nil];
 }
 
 // MARK: Menu bar
@@ -143,6 +205,8 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
 
     [self submenu:@"File" items:@[
         [self item:@"New File" action:@selector(newDocument:) key:@"n"],
+        [self item:@"New Window" action:@selector(newWindow:) key:@"n" modifiers:command | shift],
+        [self item:@"Open Folder in New Window…" action:@selector(openFolderInNewWindow:) key:@"o" modifiers:command | option | shift],
         [self item:@"Open…" action:@selector(openDocument:) key:@"o"],
         [self item:@"Open Folder…" action:@selector(openFolder:) key:@"o" modifiers:command | shift],
         NSMenuItem.separatorItem,

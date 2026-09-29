@@ -500,7 +500,12 @@ bool looksBinary(const char *path) {
         [self setUpLanguageService];
         GWStartupMark(@"  interface built");
         [window center];
-        [window setFrameAutosaveName:@"GlassworkMainWindow"];
+        // The first window remembers where it was; later ones are placed by the app.
+        static BOOL sFirstWindow = YES;
+        if (sFirstWindow) {
+            sFirstWindow = NO;
+            [window setFrameAutosaveName:@"GlassworkMainWindow"];
+        }
         GWStartupMark(@"  window placed");
 
         NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
