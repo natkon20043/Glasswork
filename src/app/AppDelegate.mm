@@ -306,6 +306,10 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
         [self item:@"Format Document" action:@selector(formatDocument:) key:@"f" modifiers:option | shift],
     ] parent:main];
     [self submenu:@"Terminal" items:@[
+        [self item:@"Build" action:@selector(buildProject:) key:@"b" modifiers:command | shift],
+        [self item:@"Run Task…" action:@selector(runTask:) key:@"b" modifiers:command | option],
+        [self item:@"Run Current File" action:@selector(runCurrentFile:) key:@"r" modifiers:command | option],
+        NSMenuItem.separatorItem,
         [self item:@"Toggle Terminal" action:@selector(toggleTerminal:) key:@"`" modifiers:NSEventModifierFlagControl],
         [self item:@"New Terminal" action:@selector(newTerminal:) key:@"`" modifiers:NSEventModifierFlagControl | shift],
         [self item:@"Close Terminal" action:@selector(closeTerminal:) key:@""],

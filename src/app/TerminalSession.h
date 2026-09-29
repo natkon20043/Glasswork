@@ -42,6 +42,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSString *)currentDirectory;
 /// Re-reads the running program's name (for the tab title).
 - (void)refreshProcessName;
+/// True when the shell is waiting for a command (nothing is running in front of it).
+- (BOOL)isIdleAtShellPrompt;
 
 @end
 

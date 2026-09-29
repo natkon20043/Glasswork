@@ -37,6 +37,7 @@ add_library(glasswork_core STATIC
     src/core/Folding.cpp
     src/core/EditorConfig.cpp
     src/core/SemanticTokens.cpp
+    src/core/Tasks.cpp
     src/core/Highlighter.cpp
     src/core/Jsonc.cpp
     src/core/textmate/Regex.cpp

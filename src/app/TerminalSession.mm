@@ -244,6 +244,19 @@ static const size_t kSliceBytes = 192 * 1024;
     }
 }
 
+- (BOOL)isIdleAtShellPrompt {
+    if (!_pty || !self.isRunning) {
+        return NO;
+    }
+    std::string name = _pty->foregroundProcessName();
+    for (const char *shell : {"zsh", "bash", "sh", "fish", "dash", "ksh", "tcsh", "-zsh", "-bash", "-fish"}) {
+        if (name == shell) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
 - (void)dealloc {
     if (_pty) {
         _pty->onOutput = nullptr;

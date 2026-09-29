@@ -6,6 +6,7 @@
 #include "Folding.hpp"
 #include "RowMap.hpp"
 #include "SemanticTokens.hpp"
+#include "Tasks.hpp"
 #include "TextBuffer.hpp"
 #include "Wrap.hpp"
 
@@ -308,6 +309,40 @@ TEST(semanticTokensFollowEdits) {
     gw::adjustSemanticTokensForEdit(tokens, 0, 0, 0);
     CHECK_EQ(tokens.size(), size_t(3));
     CHECK_EQ(tokens[0].line, 1u);
+}
+
+// ---- Tasks
+
+TEST(tasksAreDetectedFromBuildFiles) {
+    std::filesystem::path base = std::filesystem::temp_directory_path() / ("gw-tasks-" + std::to_string(::getpid()));
+    std::filesystem::create_directories(base);
+    std::ofstream(base / "CMakeLists.txt") << "project(x)\n";
+    std::ofstream(base / "package.json") << R"({"scripts": {"build": "tsc", "test": "jest", "lint": "eslint ."}})";
+    std::ofstream(base / "yarn.lock") << "";
+    std::ofstream(base / "Makefile") << "all: main\nmain:\n\tcc x.c\ntest:\n\t./a.out\nCC := cc\n";
+
+    std::vector<gw::Task> tasks = gw::detectTasks(base);
+    auto find = [&](const std::string& command) {
+        for (const gw::Task& task : tasks) {
+            if (task.command == command) return true;
+        }
+        return false;
+    };
+    CHECK(find("cmake --build build"));
+    CHECK(find("yarn run build"));      // the project uses yarn
+    CHECK(find("yarn run lint"));
+    CHECK(find("make"));
+    CHECK(find("make main"));
+    CHECK(!find("make CC"));            // a variable, not a target
+    CHECK(tasks.front().kind == gw::Task::Kind::Build);  // builds come first
+    std::filesystem::remove_all(base);
+}
+
+TEST(runningASingleFile) {
+    CHECK_EQ(gw::commandToRunFile("/p/a b.py", "python"), std::string("python3 '/p/a b.py'"));
+    CHECK(gw::commandToRunFile("/p/main.cpp", "cpp").find("clang++") == 0);
+    CHECK(gw::commandToRunFile("/p/notes.txt", "plaintext").empty());
+    CHECK_EQ(gw::shellQuote("it's"), std::string("'it'\\''s'"));
 }
 
 }  // namespace

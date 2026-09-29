@@ -26,6 +26,7 @@
 #include "Document.hpp"
 #include "EditorConfig.hpp"
 #include "Fuzzy.hpp"
+#include "Tasks.hpp"
 #include "Highlighter.hpp"
 #include "LanguageServer.hpp"
 #include "LineDiff.hpp"
@@ -1869,6 +1870,98 @@ static bool isImageExtension(NSString *extension) {
     [self buildTerminalPanel];
     [self setTerminalVisible:YES];
     [_terminal newTerminalRunning:command];
+}
+
+// MARK: - Tasks (build, run, test)
+
+/// Runs a shell command from the project folder in the tasks terminal.
+- (void)runTaskCommand:(const std::string &)command {
+    [self buildTerminalPanel];
+    [self setTerminalVisible:YES];
+    NSString *folder = _fileTree.rootURL.path;
+    NSString *full = @(command.c_str());
+    if (folder.length > 0) {
+        full = [NSString stringWithFormat:@"cd %@ && %s", [self shellQuoted:folder], command.c_str()];
+    }
+    [_terminal runTaskCommand:full];
+}
+
+/// ⇧⌘B: pick from what the project can do.
+- (IBAction)runTask:(id)sender {
+    NSString *folder = _fileTree.rootURL.path;
+    if (folder.length == 0) {
+        [self showErrorTitle:@"Open a folder first" message:@"Tasks come from the build files in your project folder."];
+        return;
+    }
+    std::vector<gw::Task> tasks = gw::detectTasks(folder.UTF8String);
+    if (tasks.empty()) {
+        [self showErrorTitle:@"No tasks found" message:@"Glasswork looks for CMakeLists.txt, Package.swift, Cargo.toml, go.mod, package.json and Makefiles in the project folder."];
+        return;
+    }
+    NSMutableArray<GWPaletteItem *> *items = [NSMutableArray array];
+    __weak GWMainWindowController *weakSelf = self;
+    for (const gw::Task &task : tasks) {
+        GWPaletteItem *item = [GWPaletteItem new];
+        item.title = @(task.label.c_str());
+        item.subtitle = @(task.command.c_str());
+        switch (task.kind) {
+            case gw::Task::Kind::Build: item.symbol = @"hammer.fill"; item.symbolColor = NSColor.systemOrangeColor; break;
+            case gw::Task::Kind::Run: item.symbol = @"play.fill"; item.symbolColor = NSColor.systemGreenColor; break;
+            case gw::Task::Kind::Test: item.symbol = @"checkmark.seal.fill"; item.symbolColor = NSColor.systemTealColor; break;
+            default: item.symbol = @"terminal.fill"; item.symbolColor = NSColor.secondaryLabelColor; break;
+        }
+        std::string command = task.command;
+        item.run = ^{
+            GWMainWindowController *strongSelf = weakSelf;
+            [strongSelf saveAllDirtyFilesQuietly];
+            [strongSelf runTaskCommand:command];
+        };
+        [items addObject:item];
+    }
+    [self showPaletteWithItems:items placeholder:@"Run task…"];
+}
+
+/// ⌘B: the project's main build.
+- (IBAction)buildProject:(id)sender {
+    NSString *folder = _fileTree.rootURL.path;
+    std::vector<gw::Task> tasks = folder.length > 0 ? gw::detectTasks(folder.UTF8String) : std::vector<gw::Task>();
+    for (const gw::Task &task : tasks) {
+        if (task.kind == gw::Task::Kind::Build) {
+            [self saveAllDirtyFilesQuietly];
+            [self runTaskCommand:task.command];
+            return;
+        }
+    }
+    [self runTask:sender];  // no build found: show what there is (or explain)
+}
+
+/// ⌥⌘R: run the file in front (a script, or a single C/C++ file).
+- (IBAction)runCurrentFile:(id)sender {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr || !tab->document->path()) {
+        [self showErrorTitle:@"Nothing to run" message:@"Save the file first."];
+        return;
+    }
+    std::string command = gw::commandToRunFile(*tab->document->path(), tab->document->languageId);
+    if (command.empty()) {
+        [self showErrorTitle:@"Can't run this file" message:@"Glasswork can run scripts (Python, JavaScript, Swift, shell, Ruby, Go…) and single C, C++ and Rust files."];
+        return;
+    }
+    if (tab->document->isDirty()) {
+        [self saveTab:*tab];
+    }
+    [self runTaskCommand:command];
+}
+
+/// Saves every file with unsaved changes before a build, the way people expect. Files that
+/// changed on disk meanwhile are left alone.
+- (void)saveAllDirtyFilesQuietly {
+    for (auto &tab : _tabs) {
+        if (tab->isVirtual || !tab->document->path() || !tab->document->isDirty() || tab->document->fileChangedOnDisk()) {
+            continue;
+        }
+        [self saveTab:*tab];
+    }
 }
 
 // MARK: - Claude

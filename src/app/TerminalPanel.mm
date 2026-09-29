@@ -123,6 +123,7 @@
     GWTerminalView *_terminalView;
 
     NSMutableArray<GWTerminalSession *> *_sessions;
+    __weak GWTerminalSession *_taskSession;  // the terminal builds and runs go to
     NSMutableArray<GWTerminalTab *> *_tabs;
     NSInteger _selected;
     NSTimer *_titleTimer;
@@ -313,6 +314,18 @@
 
 - (void)focusTerminal {
     [_view.window makeFirstResponder:_terminalView];
+}
+
+- (void)runTaskCommand:(NSString *)command {
+    GWTerminalSession *taskSession = _taskSession;
+    NSUInteger index = taskSession ? [_sessions indexOfObject:taskSession] : NSNotFound;
+    if (index != NSNotFound && [taskSession isIdleAtShellPrompt]) {
+        [self selectIndex:static_cast<NSInteger>(index)];
+        [taskSession sendText:[command stringByAppendingString:@"\n"]];
+        return;
+    }
+    [self newTerminalRunning:command];
+    _taskSession = _sessions.lastObject;
 }
 
 - (void)sendText:(NSString *)text {

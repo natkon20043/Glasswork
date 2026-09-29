@@ -47,6 +47,9 @@ The first configuration downloads nlohmann/json and Oniguruma. A from-scratch bu
 - ⇧⌘L sends the selected code as context; Explain, Find Problems, Write Tests and Improve are in the Claude menu.
 - Earlier conversations are listed from Claude Code's own saved sessions and can be resumed.
 
+**Tasks**
+- Build (⇧⌘B), Run Task… (⌥⌘B) and Run Current File (⌥⌘R) find what your project can do — CMake, Swift packages, Cargo, Go modules, Xcode projects, npm/pnpm/yarn scripts, Makefile targets — and run it in a terminal set aside for tasks, after saving your files. Scripts (Python, JavaScript, Swift, shell, Ruby, Go…) and single C, C++ and Rust files run directly. File names in the output are clickable.
+
 **Terminal**
 - ⌃` toggles a real terminal (xterm-256color, true colour, mouse, alternate screen, scrollback, wide characters). Vim, htop, tmux and `claude` itself work in it.
 

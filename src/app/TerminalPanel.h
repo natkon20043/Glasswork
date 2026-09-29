@@ -21,6 +21,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Opens a terminal, optionally running a command first, and shows it.
 - (void)newTerminalRunning:(nullable NSString *)command;
+/// Runs a command in the terminal set aside for tasks (builds, runs). It reuses that terminal when
+/// its shell is free, and opens a new one otherwise.
+- (void)runTaskCommand:(NSString *)command;
 - (void)closeCurrentTerminal;
 - (void)focusTerminal;
 /// Types text into the current terminal (no Return).
