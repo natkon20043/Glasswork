@@ -24,7 +24,10 @@ The first configuration downloads nlohmann/json and Oniguruma. A from-scratch bu
 **Editing**
 - TextMate grammars and themes from Open VSX (Extensions menu), declarative language configuration.
 - Quick Open (⌘P), command palette (⇧⌘P), section picker (⌃6), go to line (⌃G).
-- Line commands: move (⌥↑/⌥↓), duplicate (⇧⌥↑/⇧⌥↓), delete (⇧⌘K), insert line below/above (⌘↩ / ⇧⌘↩), toggle comment (⌘/), indent/outdent, select next occurrence (⌘D). Brackets and quotes close themselves and wrap a selection.
+- Line commands: move (⌥↑/⌥↓), duplicate (⇧⌥↑/⇧⌥↓), delete (⇧⌘K), insert line below/above (⌘↩ / ⇧⌘↩), toggle comment (⌘/), indent/outdent. Brackets and quotes close themselves and wrap a selection.
+- Multiple cursors: ⌥-click, ⌘D for the next occurrence, ⌃⌘G for every occurrence, ⌥⌘↑/⌥⌘↓ for cursors above and below. Typing, deleting, Return, cut, copy, paste and movement act at every cursor as one undo step; Esc goes back to one.
+- `.editorconfig` files set the indent style and size per file type, and `files.trimTrailingWhitespace` / `files.insertFinalNewline` (or the same keys in `.editorconfig`) clean up on save.
+- Markdown files open a live rendered preview beside the tab (⇧⌘V); images (png, jpg, gif, svg, pdf…) open in their own tab.
 - Find and replace in the file (⌘F, ⌥⌘F) and across the project (⇧⌘F), with case, whole word and regular expression options and file filters.
 - MARK dividers, TODO/FIXME markers, rainbow brackets, indent guides, rainbow variable names, occurrence highlighting, a colour inspector and per-name colours.
 - Files changed outside the editor (by Claude, a build, git) reload straight away; the changed lines flash. Unsaved edits are never overwritten without asking.
@@ -60,7 +63,7 @@ Measured on this Mac (Apple silicon, macOS 26), opening the same 25 MB, 658,552-
 
 (`bench/launch_bench.m` measures both the same way. Zed keeps working in the background for about 28 seconds after start, so its "idle" time is not compared here.)
 
-Inside Glasswork, on that file (`GLASSWORK_BENCH=1`): typing a character and redrawing takes 3.1 ms, a screenful of scrolling 2.8 ms, and jumping to a far line 16 ms. The tokenizer runs at about 20,000 lines per second, so a jump highlights a small stretch around the target first and the rest is filled in behind it.
+Inside Glasswork, on that file (`GLASSWORK_BENCH=1`): typing a character and redrawing takes 1.3 ms, pressing Return 2.2 ms, a screenful of scrolling 2.0 ms, and jumping to a far line 11 ms. The tokenizer runs at about 20,000 lines per second, so a jump highlights a small stretch around the target first and the rest is filled in behind it.
 
 Typing and scrolling latency of Zed could not be measured from outside the app (it needs the Accessibility permission), so there is no side-by-side figure for those. Run `./build/glasswork_bench` for the core numbers (search, fuzzy matching, diff, undo).
 
@@ -86,6 +89,7 @@ What you get:
 - **Completion** as you type, fuzzy-filtered, with ↑↓, ↩ or ⇥ to accept and ⎋ to close. ⌃Space opens it on demand.
 - **Signature help** while typing a call: the function's signature with the current argument in bold.
 - **Quick Fix** (⌘.) applies the fixes a server offers for the problems at the caret.
+- **Go to Symbol in File** (⌘R) and **in Project** (⌘T).
 - **Go to Definition** (⌃⌘D), **Find References** (⌃⌘R), **Rename Symbol** (F2, across all files) and **Format Document** (⇧⌥F), all in the Go menu.
 
 Open the project folder and provide a `compile_commands.json` for accurate C-family includes. CMake users can set `CMAKE_EXPORT_COMPILE_COMMANDS`; clangd searches normal places such as the project's `build` folder.
@@ -111,7 +115,7 @@ Environment variables for checking the interface without clicking:
 ## Next milestones
 
 1. Refactoring code actions that need the server to run commands, and semantic-token colours.
-2. Incremental document sync and multi-cursor editing.
+2. Incremental document sync, column selection and split editors.
 3. Debug Adapter Protocol.
 
 VS Code extension compatibility currently means themes, grammars and declarative language configuration. Running its general JavaScript extension ecosystem requires an extension host/API compatibility project; it is not provided by LSP alone.

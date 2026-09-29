@@ -47,12 +47,23 @@ NSString *GWSymbolForFile(NSString *filename) { return @(KindFor(filename).symbo
 NSColor *GWColorForFile(NSString *filename) { return Hex(KindFor(filename).color); }
 
 NSAttributedString *GWSymbolString(NSString *symbol, NSColor *color, CGFloat pointSize) {
-    NSImage *image = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:nil];
-    NSImageSymbolConfiguration *configuration = [[NSImageSymbolConfiguration configurationWithPointSize:pointSize
-                                                                                                 weight:NSFontWeightSemibold]
-        configurationByApplyingConfiguration:[NSImageSymbolConfiguration configurationWithHierarchicalColor:color]];
+    // The status bar rebuilds these on every keystroke, and making a symbol image is not cheap,
+    // so finished images are kept (main thread only, like all the drawing that uses them).
+    static NSMutableDictionary<NSString *, NSImage *> *cache = [NSMutableDictionary dictionary];
+    NSString *key = [NSString stringWithFormat:@"%@|%.1f|%@", symbol, pointSize, color.description];
+    NSImage *tinted = cache[key];
+    if (tinted == nil) {
+        NSImage *image = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:nil];
+        NSImageSymbolConfiguration *configuration = [[NSImageSymbolConfiguration configurationWithPointSize:pointSize
+                                                                                                     weight:NSFontWeightSemibold]
+            configurationByApplyingConfiguration:[NSImageSymbolConfiguration configurationWithHierarchicalColor:color]];
+        tinted = [image imageWithSymbolConfiguration:configuration];
+        if (tinted != nil && cache.count < 500) {
+            cache[key] = tinted;
+        }
+    }
     NSTextAttachment *attachment = [NSTextAttachment new];
-    attachment.image = [image imageWithSymbolConfiguration:configuration];
+    attachment.image = tinted;
     NSMutableAttributedString *string = [[NSAttributedString attributedStringWithAttachment:attachment] mutableCopy];
     [string addAttribute:NSBaselineOffsetAttributeName value:@(-1.5) range:NSMakeRange(0, string.length)];
     return string;
