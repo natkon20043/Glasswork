@@ -4,6 +4,7 @@
 
 #include "Document.hpp"
 #include "LspServer.hpp"
+#include "SemanticTokens.hpp"
 
 #include <memory>
 #include <string>
@@ -35,6 +36,8 @@ struct GWDiagnostic {
 
 /// A file's diagnostics changed.
 @property (nonatomic, copy, nullable) void (^onDiagnosticsChanged)(gw::Document *document);
+/// Semantic highlighting for a file arrived (or changed).
+@property (nonatomic, copy, nullable) void (^onSemanticTokensChanged)(gw::Document *document);
 /// The state of a server changed (starting, ready, missing, stopped). Read `statusText`.
 @property (nonatomic, copy, nullable) void (^onStatusChanged)(void);
 
@@ -53,6 +56,8 @@ struct GWDiagnostic {
 
 /// Problems the server reported for a document.
 - (const std::vector<GWDiagnostic> &)diagnosticsForDocument:(gw::Document *)document;
+/// The semantic tokens last received for a document (null if none).
+- (std::shared_ptr<const gw::SemanticTokenSet>)semanticTokensForDocument:(gw::Document *)document;
 /// Totals over every followed file.
 - (NSUInteger)errorCount;
 - (NSUInteger)warningCount;

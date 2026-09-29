@@ -139,6 +139,7 @@ EditorSettings parseSettings(const std::string& jsonc, std::string* error) {
     readValue(document, "editor.bracketPairColorization", settings.bracketPairColors);
     readValue(document, "editor.sectionDividers", settings.sectionDividers);
     readValue(document, "editor.inlineDiagnostics", settings.inlineDiagnostics);
+    readValue(document, "editor.semanticHighlighting", settings.semanticHighlighting);
     readValue(document, "lsp.enabled", settings.languageServers);
     readValue(document, "editor.rainbowVariables", settings.colors.rainbowVariables);
     readValue(document, "files.autoSave", settings.autoSave);
@@ -221,6 +222,8 @@ std::string serializeSettings(const EditorSettings& settings) {
         << ",  // lines above \"// MARK: - Name\" comments\n"
         << "  \"editor.inlineDiagnostics\": " << boolean(settings.inlineDiagnostics)
         << ",  // show each problem's message at the end of its line\n"
+        << "  \"editor.semanticHighlighting\": " << boolean(settings.semanticHighlighting)
+        << ",  // colour types and functions by what the language server knows they are\n"
         << "  \"lsp.enabled\": " << boolean(settings.languageServers)
         << ",  // language servers: problems, completion, hover, rename\n"
         << "  \"editor.highlightOccurrences\": " << boolean(settings.highlightOccurrences)

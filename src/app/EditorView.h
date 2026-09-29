@@ -86,6 +86,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) BOOL (^onCompletionKey)(SEL selector);
 /// Called after every edit: what was typed, or nil for a deletion or other change.
 @property (nonatomic, copy, nullable) void (^onTypedText)(NSString *_Nullable typed);
+/// Colours from a language server's semantic highlighting (types, functions, macros…); pass an
+/// empty pointer to clear them.
+- (void)setSemanticTokens:(std::shared_ptr<const gw::SemanticTokenSet>)tokens;
 /// The rectangle covered by a stretch of one line, in the editor's own coordinates.
 - (NSRect)viewRectForRange:(gw::Range)range;
 /// The rectangle of a position on screen (for placing popups).

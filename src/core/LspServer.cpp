@@ -176,7 +176,18 @@ bool LanguageServer::start(std::string* error) {
               {"references", Json::object()},
               {"rename", {{"prepareSupport", false}}},
               {"formatting", Json::object()},
-              {"publishDiagnostics", {{"versionSupport", true}}}}}}}}}};
+              {"publishDiagnostics", {{"versionSupport", true}}},
+              {"semanticTokens",
+               {{"requests", {{"full", true}}},
+                {"tokenTypes", Json::array({"namespace", "type", "class", "enum", "interface", "struct", "typeParameter",
+                                            "parameter", "variable", "property", "enumMember", "event", "function", "method",
+                                            "macro", "keyword", "modifier", "comment", "string", "number", "regexp",
+                                            "operator", "decorator"})},
+                {"tokenModifiers", Json::array({"declaration", "definition", "readonly", "static", "deprecated", "abstract",
+                                                "async", "modification", "documentation", "defaultLibrary"})},
+                {"formats", Json::array({"relative"})},
+                {"multilineTokenSupport", false},
+                {"overlappingTokenSupport", false}}}}}}}}}};
     int handshakeId = initialize["id"];
     {
         std::lock_guard<std::mutex> lock(mutex_);

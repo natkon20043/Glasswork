@@ -1,5 +1,7 @@
 #import "LanguageService.h"
 
+#import "Services.h"
+
 #include <map>
 #include <memory>
 #include <set>
@@ -19,6 +21,8 @@ struct Tracked {
     uint64_t sentVersion = 0;
     std::vector<GWDiagnostic> diagnostics;
     bool pendingChange = false;
+    std::shared_ptr<const gw::SemanticTokenSet> semantic;
+    uint64_t semanticRequestedVersion = 0;
 };
 
 struct ServerEntry {
@@ -303,8 +307,80 @@ struct ServerEntry {
         }
         tracked.diagnostics = std::move(converted);
         if (self.onDiagnosticsChanged) self.onDiagnosticsChanged(document);
+        // The server has just looked at the file, so its token colours are fresh too.
+        [self requestSemanticTokensForDocument:document];
         return;
     }
+}
+
+- (void)requestSemanticTokensForDocument:(gw::Document *)document {
+    auto found = _tracked.find(document);
+    if (found == _tracked.end() || !GWServices.shared.settings.semanticHighlighting) {
+        return;
+    }
+    Tracked &tracked = found->second;
+    uint64_t version = document->version();
+    if (tracked.semanticRequestedVersion == version) {
+        return;
+    }
+    ServerEntry &entry = _servers[tracked.serverName];
+    if (entry.server == nullptr || !entry.server->isReady() || !entry.server->supports("semanticTokensProvider")) {
+        return;
+    }
+    gw::lsp::Json capabilities = entry.server->capabilities();
+    const gw::lsp::Json &provider = capabilities["semanticTokensProvider"];
+    if (!provider.is_object() || !provider.contains("legend")) {
+        return;
+    }
+    bool wantsFull = provider.contains("full") && (provider["full"].is_object() || provider["full"] == true);
+    if (!wantsFull) {
+        return;
+    }
+    tracked.semanticRequestedVersion = version;
+    auto typeNames = std::make_shared<std::vector<std::string>>();
+    auto modifierNames = std::make_shared<std::vector<std::string>>();
+    for (const gw::lsp::Json &name : provider["legend"].value("tokenTypes", gw::lsp::Json::array())) {
+        typeNames->push_back(name.is_string() ? name.get<std::string>() : std::string());
+    }
+    for (const gw::lsp::Json &name : provider["legend"].value("tokenModifiers", gw::lsp::Json::array())) {
+        modifierNames->push_back(name.is_string() ? name.get<std::string>() : std::string());
+    }
+    __weak GWLanguageService *weakSelf = self;
+    entry.server->request("textDocument/semanticTokens/full", {{"textDocument", {{"uri", tracked.uri}}}},
+                          [weakSelf, document, version, typeNames, modifierNames](const gw::lsp::Json &result, const std::string &error) {
+        if (!error.empty() || !result.is_object() || !result["data"].is_array()) {
+            return;
+        }
+        auto numbers = std::make_shared<std::vector<uint32_t>>();
+        numbers->reserve(result["data"].size());
+        for (const gw::lsp::Json &number : result["data"]) {
+            numbers->push_back(number.is_number_unsigned() ? number.get<uint32_t>() : 0);
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            GWLanguageService *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            auto tracked = strongSelf->_tracked.find(document);
+            if (tracked == strongSelf->_tracked.end() || document->version() != version) {
+                return;  // closed, or edited since: newer tokens are on their way
+            }
+            auto set = std::make_shared<gw::SemanticTokenSet>();
+            set->tokens = gw::decodeSemanticTokens(*numbers);
+            set->typeNames = *typeNames;
+            set->modifierNames = *modifierNames;
+            tracked->second.semantic = set;
+            if (strongSelf.onSemanticTokensChanged) strongSelf.onSemanticTokensChanged(document);
+        });
+    });
+}
+
+- (std::shared_ptr<const gw::SemanticTokenSet>)semanticTokensForDocument:(gw::Document *)document {
+    auto found = _tracked.find(document);
+    if (found == _tracked.end()) {
+        return nullptr;
+    }
+    return found->second.semantic;
 }
 
 - (const std::vector<GWDiagnostic> &)diagnosticsForDocument:(gw::Document *)document {

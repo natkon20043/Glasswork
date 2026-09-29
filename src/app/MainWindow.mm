@@ -986,6 +986,7 @@ bool looksBinary(const char *path) {
         [_editorView setLineChanges:tab->changes];
         [_editorView setLineTints:tab->lineTints];
         [_editorView setDiagnostics:[_language diagnosticsForDocument:tab->document.get()]];
+        [_editorView setSemanticTokens:[_language semanticTokensForDocument:tab->document.get()]];
         [self refreshChangesForTab:tab];
         [_findBar documentChanged];
         if (_root.chatVisible) {
@@ -3139,6 +3140,13 @@ static double timed(void (^work)(void)) {
     };
     _language.onStatusChanged = ^{
         [weakSelf updateStatus];
+    };
+    _language.onSemanticTokensChanged = ^(gw::Document *document) {
+        GWMainWindowController *strongSelf = weakSelf;
+        Tab *tab = [strongSelf currentTab];
+        if (tab != nullptr && tab->document.get() == document) {
+            [strongSelf->_editorView setSemanticTokens:[strongSelf->_language semanticTokensForDocument:document]];
+        }
     };
 
     _suggestions = [GWSuggestionPopup new];

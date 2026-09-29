@@ -5,6 +5,7 @@
 #include "EditorConfig.hpp"
 #include "Folding.hpp"
 #include "RowMap.hpp"
+#include "SemanticTokens.hpp"
 #include "TextBuffer.hpp"
 #include "Wrap.hpp"
 
@@ -260,6 +261,53 @@ TEST(editorConfigFilesAreFoundAndCombined) {
     gw::EditorConfigResult other = gw::editorConfigFor(base / "inner" / "a.cpp");
     CHECK_EQ(*other.indentSize, 2);
     std::filesystem::remove_all(base);
+}
+
+// ---- Semantic tokens
+
+TEST(semanticTokensDecodeRelativePositions) {
+    // line 0: two tokens; then line 2: one token (its start is counted from the line start).
+    std::vector<uint32_t> data = {
+        0, 4, 3, 1, 0,   // line 0, column 4, length 3, type 1
+        0, 5, 2, 2, 1,   // same line, 5 further on: column 9
+        2, 1, 6, 0, 0,   // two lines down, column 1
+    };
+    std::vector<gw::SemanticToken> tokens = gw::decodeSemanticTokens(data);
+    CHECK_EQ(tokens.size(), size_t(3));
+    CHECK_EQ(tokens[0].line, 0u);
+    CHECK_EQ(tokens[0].startUnit, 4u);
+    CHECK_EQ(tokens[1].startUnit, 9u);
+    CHECK_EQ(tokens[1].modifiers, 1u);
+    CHECK_EQ(tokens[2].line, 2u);
+    CHECK_EQ(tokens[2].startUnit, 1u);
+    CHECK_EQ(tokens[2].lengthUnits, 6u);
+    // A truncated list keeps the whole tokens and drops the rest.
+    CHECK_EQ(gw::decodeSemanticTokens({0, 1, 2, 3, 4, 9, 9}).size(), size_t(1));
+}
+
+TEST(semanticTokenScopes) {
+    CHECK_EQ(gw::scopeForSemanticType("function", {}), std::string("entity.name.function"));
+    CHECK_EQ(gw::scopeForSemanticType("class", {}), std::string("entity.name.type.class"));
+    CHECK(gw::scopeForSemanticType("variable", {}).empty());   // left to the grammar and rainbow colours
+    CHECK(gw::scopeForSemanticType("keyword", {}).empty());
+}
+
+TEST(semanticTokensFollowEdits) {
+    std::vector<gw::SemanticToken> tokens;
+    for (uint32_t line = 0; line < 6; ++line) {
+        tokens.push_back({line, 0, 1, 0, 0});
+    }
+    // Lines 2..3 replaced by three lines: one more line in the file.
+    gw::adjustSemanticTokensForEdit(tokens, 2, 3, 1);
+    CHECK_EQ(tokens.size(), size_t(4));        // lines 2 and 3 lost their tokens
+    CHECK_EQ(tokens[0].line, 0u);
+    CHECK_EQ(tokens[1].line, 1u);
+    CHECK_EQ(tokens[2].line, 5u);              // old line 4 is now line 5
+    CHECK_EQ(tokens[3].line, 6u);
+    // An edit that keeps the line count only drops the edited line.
+    gw::adjustSemanticTokensForEdit(tokens, 0, 0, 0);
+    CHECK_EQ(tokens.size(), size_t(3));
+    CHECK_EQ(tokens[0].line, 1u);
 }
 
 }  // namespace

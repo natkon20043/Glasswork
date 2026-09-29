@@ -581,6 +581,10 @@ static constexpr CGFloat kMiniChar = 1.25;
     size_t _cursorIndexInLoop;
     size_t _cursorCountInLoop;
 
+    // Semantic highlighting from the language server, and the style each token kind gets.
+    gw::SemanticTokenSet _semantic;
+    std::unordered_map<uint32_t, std::optional<gw::TextStyle>> _semanticStyles;
+
     // Language intelligence: problems to underline, hover, typing notifications.
     std::vector<GWDiagnostic> _diagnostics;
     NSString *_pendingTyped;
@@ -837,6 +841,7 @@ static constexpr CGFloat kMiniChar = 1.25;
     GWServices *services = GWServices.shared;
     _tabSize = _tabSizeOverride > 0 ? _tabSizeOverride : static_cast<size_t>(std::max(1, services.settings.tabSize));
     _wrapEnabled = services.settings.wordWrap;
+    _semanticStyles.clear();
     _font = [services editorFontBold:NO italic:NO];
     _charWidth = [@"0" sizeWithAttributes:@{NSFontAttributeName: _font}].width;
     _lineHeight = std::ceil(_font.pointSize * 1.65);
@@ -1133,6 +1138,7 @@ static constexpr CGFloat kMiniChar = 1.25;
         }
         layout.highlighted = true;
     }
+    [self applySemanticTokensToLine:index text:attributed unitCount:string.length];
     // Colour brackets by nesting depth (skipping strings and comments).
     bool bracketColors = GWServices.shared.settings.bracketPairColors;
     std::optional<int> depth;
@@ -1373,6 +1379,12 @@ static constexpr CGFloat kMiniChar = 1.25;
     }
     if (!_wrapEnabled && _folds.empty() && _rowMap.empty()) {
         return;
+    }
+    if (!_semantic.tokens.empty()) {
+        size_t lastLineBefore = change.lastLine >= static_cast<size_t>(std::max(0L, change.lineDelta))
+                                    ? static_cast<size_t>(static_cast<long>(change.lastLine) - change.lineDelta)
+                                    : change.firstLine;
+        gw::adjustSemanticTokensForEdit(_semantic.tokens, change.firstLine, std::max(change.firstLine, lastLineBefore), change.lineDelta);
     }
     bool linesMoved = change.lineDelta != 0;
     bool foldsChanged = _folds.all().size() != foldCountBefore;
@@ -1729,6 +1741,62 @@ static constexpr CGFloat kMiniChar = 1.25;
     [[NSBezierPath bezierPathWithRoundedRect:chip xRadius:5 yRadius:5] fill];
     NSRect textRect = NSMakeRect(left, top + (_lineHeight - size.height) / 2, width, size.height);
     [full drawWithRect:textRect options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine attributes:attributes];
+}
+
+// MARK: Semantic highlighting
+
+- (void)setSemanticTokens:(std::shared_ptr<const gw::SemanticTokenSet>)tokens {
+    if (tokens != nullptr) {
+        _semantic = *tokens;
+    } else {
+        _semantic = gw::SemanticTokenSet();
+    }
+    _semanticStyles.clear();
+    _layouts.clear();
+    self.needsDisplay = YES;
+    _minimap.needsDisplay = YES;
+}
+
+/// The look for a kind of token, or nothing if the grammar's own colour should stay.
+- (std::optional<gw::TextStyle>)styleForSemanticType:(uint32_t)type {
+    auto cached = _semanticStyles.find(type);
+    if (cached != _semanticStyles.end()) {
+        return cached->second;
+    }
+    std::optional<gw::TextStyle> result;
+    if (type < _semantic.typeNames.size()) {
+        std::string scope = gw::scopeForSemanticType(_semantic.typeNames[type], _semantic.modifierNames);
+        if (!scope.empty()) {
+            const gw::Theme &theme = GWServices.shared.theme;
+            gw::TextStyle style = theme.styleFor(std::vector<std::string>{"source", scope});
+            gw::Color plain = theme.color("editor.foreground", theme.isDark() ? 0xD4D4D4FF : 0x1E1E1EFF);
+            if (style.foreground != plain) {
+                result = style;  // the theme really has a colour for this kind of name
+            }
+        }
+    }
+    _semanticStyles[type] = result;
+    return result;
+}
+
+/// Paints the tokens the language server knows the meaning of, over the grammar's colours.
+- (void)applySemanticTokensToLine:(size_t)line text:(NSMutableAttributedString *)text unitCount:(NSUInteger)unitCount {
+    if (_semantic.tokens.empty() || !GWServices.shared.settings.semanticHighlighting) {
+        return;
+    }
+    auto first = std::lower_bound(_semantic.tokens.begin(), _semantic.tokens.end(), line,
+                                  [](const gw::SemanticToken &token, size_t value) { return token.line < value; });
+    for (auto token = first; token != _semantic.tokens.end() && token->line == line; ++token) {
+        std::optional<gw::TextStyle> style = [self styleForSemanticType:token->type];
+        if (!style || token->startUnit >= unitCount) {
+            continue;
+        }
+        NSUInteger length = std::min<NSUInteger>(token->lengthUnits, unitCount - token->startUnit);
+        if (length == 0) {
+            continue;
+        }
+        [self applyStyle:*style toString:text range:NSMakeRange(token->startUnit, length)];
+    }
 }
 
 // MARK: Hover

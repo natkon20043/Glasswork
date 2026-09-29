@@ -22,6 +22,8 @@ struct EditorSettings {
     bool indentGuides = true;
     bool bracketPairColors = true;
     bool sectionDividers = true;
+    /// Colour types, functions and macros by what a language server knows they are.
+    bool semanticHighlighting = true;
     /// Show each problem's message at the end of its line.
     bool inlineDiagnostics = true;
     /// Run language servers (completion, problems, hover, rename…).
