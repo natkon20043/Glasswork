@@ -15,6 +15,21 @@
 #include "RowMap.hpp"
 #include "Wrap.hpp"
 
+/// At the start of a command: with several cursors, runs the whole command once for each
+/// (see forEachSelection) and returns.
+#define GW_FOR_EACH_CURSOR(...)                                                              \
+    if (_multiDepth == 0 && _document && !_document->extraSelections.empty()) {              \
+        [self forEachSelection:^{ __VA_ARGS__ } mergingLines:NO];                            \
+        return;                                                                              \
+    }
+
+/// The same for commands that act on whole lines: cursors on one line count once.
+#define GW_FOR_EACH_CURSOR_LINE(...)                                                         \
+    if (_multiDepth == 0 && _document && !_document->extraSelections.empty()) {              \
+        [self forEachSelection:^{ __VA_ARGS__ } mergingLines:YES];                           \
+        return;                                                                              \
+    }
+
 namespace {
 
 /// Lines of tokenizing allowed per call while drawing; beyond it, lines draw plain and
@@ -558,6 +573,14 @@ static constexpr CGFloat kMiniChar = 1.25;
     uint32_t _wrapColumns;
     BOOL _gutterHover;
 
+    // Multi-cursor editing: while a command runs at each cursor in turn, the view isn't refreshed
+    // until the last one is done.
+    int _multiDepth;
+    BOOL _multiEdited;
+    BOOL _multiMoved;
+    size_t _cursorIndexInLoop;
+    size_t _cursorCountInLoop;
+
     // Language intelligence: problems to underline, hover, typing notifications.
     std::vector<GWDiagnostic> _diagnostics;
     NSString *_pendingTyped;
@@ -676,6 +699,7 @@ static constexpr CGFloat kMiniChar = 1.25;
     range = range.normalized();
     range.start = _document->buffer().clamp(range.start);
     range.end = _document->buffer().clamp(range.end);
+    _document->extraSelections.clear();
     _document->selection = {range.start, range.end};
     _document->preferredX.reset();
     NSRect visible = self.visibleRect;
@@ -1460,8 +1484,20 @@ static constexpr CGFloat kMiniChar = 1.25;
     gw::Position caretPosition = _document->selection.caret;
     size_t caretLine = caretPosition.line;
 
+    // Every selection that covers text: the main one and those of extra cursors.
+    std::vector<gw::Range> selectionRanges;
+    if (!selection.empty()) {
+        selectionRanges.push_back(selection);
+    }
+    for (const gw::Selection &extra : _document->extraSelections) {
+        if (!extra.empty()) {
+            selectionRanges.push_back(extra.range());
+        }
+    }
+    bool hasExtraCursors = !_document->extraSelections.empty();
+
     // Current line: a soft rounded band on the row the caret is on.
-    if (selection.empty() && caretLine >= first && caretLine <= last) {
+    if (selection.empty() && !hasExtraCursors && caretLine >= first && caretLine <= last) {
         [_lineHighlight setFill];
         NSRect band = NSMakeRect(NSMinX(visible) + 4, [self yForPosition:caretPosition] + 1, NSWidth(visible) - 8, _lineHeight - 2);
         [[NSBezierPath bezierPathWithRoundedRect:band xRadius:7 yRadius:7] fill];
@@ -1514,11 +1550,14 @@ static constexpr CGFloat kMiniChar = 1.25;
     for (size_t line = first; line <= last; ++line) {
         if ([self isLineHidden:line]) continue;
         CGFloat y = [self yForLine:line];
-        // Selection behind the text, with softly rounded ends.
-        if (!selection.empty() && line >= selection.start.line && line <= selection.end.line) {
-            size_t startByte = line == selection.start.line ? selection.start.column : 0;
-            size_t endByte = line == selection.end.line ? selection.end.column : buffer.line(line).size();
-            BOOL continues = line < selection.end.line;
+        // Selections behind the text, with softly rounded ends.
+        for (const gw::Range &covered : selectionRanges) {
+            if (line < covered.start.line || line > covered.end.line) {
+                continue;
+            }
+            size_t startByte = line == covered.start.line ? covered.start.column : 0;
+            size_t endByte = line == covered.end.line ? covered.end.column : buffer.line(line).size();
+            BOOL continues = line < covered.end.line;
             [_selectionColor setFill];
             [self enumerateSegmentsInLine:line fromByte:startByte toByte:endByte continuesPastEnd:continues
                                     block:^(CGFloat left, CGFloat right, CGFloat top) {
@@ -1538,6 +1577,17 @@ static constexpr CGFloat kMiniChar = 1.25;
     }
 
     [self drawDiagnosticsFromLine:first toLine:last];
+
+    // The other cursors are plain bars (only the main one blinks).
+    for (const gw::Selection &extra : _document->extraSelections) {
+        gw::Position at = _document->buffer().clamp(extra.caret);
+        if (at.line < first || at.line > last || [self isLineHidden:at.line]) {
+            continue;
+        }
+        NSRect bar = NSMakeRect(std::round([self xForPosition:at]) - 1, [self yForPosition:at] + 3, 2, _lineHeight - 6);
+        [[_caretColor colorWithAlphaComponent:0.9] setFill];
+        [[NSBezierPath bezierPathWithRoundedRect:bar xRadius:1 yRadius:1] fill];
+    }
 
     // Matching brackets get a thin rounded outline.
     if (auto match = [self bracketMatch]) {
@@ -2092,6 +2142,7 @@ static constexpr CGFloat kMiniChar = 1.25;
         return;
     }
     gw::Position target = _document->buffer().clamp(position);
+    _document->extraSelections.clear();
     _document->selection = {target, target};
     [self scrollToLineCentered:target.line];
     [self selectionDidChange];
@@ -2252,6 +2303,10 @@ static constexpr CGFloat kMiniChar = 1.25;
 }
 
 - (void)selectionDidChange {
+    if (_multiDepth > 0) {
+        _multiMoved = YES;
+        return;
+    }
     [self cancelHover];
     if (_document && !_folds.empty()) {
         // A caret can't sit on a hidden line: opening the fold that hides it shows it.
@@ -2267,6 +2322,10 @@ static constexpr CGFloat kMiniChar = 1.25;
 }
 
 - (void)didEdit {
+    if (_multiDepth > 0) {
+        _multiEdited = YES;
+        return;
+    }
     _layouts.clear();
     const auto &buffer = _document->buffer();
     size_t caretLine = _document->selection.caret.line;
@@ -2284,6 +2343,9 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 - (void)moveCaretTo:(gw::Position)position extend:(BOOL)extend {
     if (!_document) return;
+    if (_multiDepth == 0) {
+        _document->extraSelections.clear();
+    }
     position = _document->buffer().clamp(position);
     if (extend) {
         _document->selection.caret = position;
@@ -2291,6 +2353,218 @@ static constexpr CGFloat kMiniChar = 1.25;
         _document->selection = {position, position};
     }
     [self selectionDidChange];
+}
+
+// MARK: Multiple cursors
+
+- (std::vector<gw::Selection>)selectionsInOrder {
+    std::vector<gw::Selection> all;
+    all.push_back(_document->selection);
+    for (const gw::Selection &extra : _document->extraSelections) {
+        all.push_back(extra);
+    }
+    std::stable_sort(all.begin(), all.end(), [](const gw::Selection &a, const gw::Selection &b) {
+        return a.range().start < b.range().start;
+    });
+    return all;
+}
+
+/// Two selections that overlap, or carets in the same place, are really one.
+static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
+    gw::Range first = a.range();
+    gw::Range second = b.range();
+    if (first.start < second.end && second.start < first.end) {
+        return true;
+    }
+    if (a.empty() && second.start <= first.start && first.start <= second.end) {
+        return true;
+    }
+    if (b.empty() && first.start <= second.start && second.start <= first.end) {
+        return true;
+    }
+    return false;
+}
+
+/// Drops extra cursors that landed on top of the main one or on each other.
+- (void)normalizeCursors {
+    std::vector<gw::Selection> kept;
+    std::vector<gw::Selection> extras = _document->extraSelections;
+    std::stable_sort(extras.begin(), extras.end(), [](const gw::Selection &a, const gw::Selection &b) {
+        return a.range().start < b.range().start;
+    });
+    for (const gw::Selection &extra : extras) {
+        if (selectionsOverlap(extra, _document->selection)) {
+            continue;
+        }
+        bool duplicate = false;
+        for (const gw::Selection &existing : kept) {
+            if (selectionsOverlap(extra, existing)) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) {
+            kept.push_back(extra);
+        }
+    }
+    _document->extraSelections = kept;
+}
+
+/// Runs `body` once with each cursor as the only one, last cursor first. Edits made for one
+/// cursor move the others (the document keeps them in place), and the whole run is one undo
+/// step. With `mergingLines`, cursors on the same line count as one (for commands that act on
+/// whole lines).
+- (void)forEachSelection:(void (^)(void))body mergingLines:(BOOL)mergeLines {
+    gw::Document &document = *_document;
+    struct Entry {
+        gw::Selection selection;
+        bool primary;
+    };
+    std::vector<Entry> entries;
+    entries.push_back({document.selection, true});
+    for (const gw::Selection &extra : document.extraSelections) {
+        entries.push_back({extra, false});
+    }
+    std::stable_sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
+        return a.selection.range().start < b.selection.range().start;
+    });
+    if (mergeLines) {
+        std::vector<Entry> merged;
+        for (const Entry &entry : entries) {
+            if (!merged.empty() && entry.selection.range().start.line <= merged.back().selection.range().end.line) {
+                if (entry.primary) {
+                    merged.back().primary = true;
+                }
+                continue;
+            }
+            merged.push_back(entry);
+        }
+        entries = merged;
+    }
+    std::vector<gw::Selection> current;
+    size_t primaryIndex = 0;
+    for (size_t index = 0; index < entries.size(); ++index) {
+        current.push_back(entries[index].selection);
+        if (entries[index].primary) {
+            primaryIndex = index;
+        }
+    }
+
+    ++_multiDepth;
+    _multiEdited = NO;
+    _multiMoved = NO;
+    document.beginUndoGroup();
+    _cursorCountInLoop = entries.size();
+    for (size_t index = entries.size(); index-- > 0;) {
+        _cursorIndexInLoop = index;
+        document.selection = current[index];
+        document.extraSelections.clear();
+        for (size_t other = 0; other < current.size(); ++other) {
+            if (other != index) {
+                document.extraSelections.push_back(current[other]);
+            }
+        }
+        document.preferredX.reset();
+        body();
+        current[index] = document.selection;
+        if (document.extraSelections.size() == current.size() - 1) {
+            size_t next = 0;
+            for (size_t other = 0; other < current.size(); ++other) {
+                if (other != index) {
+                    current[other] = document.extraSelections[next++];
+                }
+            }
+        }
+    }
+    document.endUndoGroup();
+    --_multiDepth;
+
+    document.selection = current[primaryIndex];
+    document.extraSelections.clear();
+    for (size_t index = 0; index < current.size(); ++index) {
+        if (index != primaryIndex) {
+            document.extraSelections.push_back(current[index]);
+        }
+    }
+    [self normalizeCursors];
+    if (_multiEdited) {
+        [self didEdit];
+    } else if (_multiMoved) {
+        [self selectionDidChange];
+    }
+    self.needsDisplay = YES;
+}
+
+/// ⌥⌘↑ / ⌥⌘↓: another cursor on the line above or below, at the same column.
+- (void)addCursorInDirection:(long)direction {
+    if (!_document) return;
+    gw::Position caret = _document->selection.caret;
+    double x = _document->preferredX.value_or([self xForPosition:caret]);
+    double top = [self yForPosition:caret];
+    long row = static_cast<long>(std::floor(top / _lineHeight + 0.5)) + direction;
+    long totalRows = _rowMap.empty() ? static_cast<long>(_document->buffer().lineCount()) : static_cast<long>(_rowMap.totalRows());
+    if (row < 0 || row >= totalRows) {
+        NSBeep();
+        return;
+    }
+    gw::Position target = [self positionForPoint:NSMakePoint(x, row * _lineHeight + _lineHeight / 2)];
+    if (target == caret) {
+        return;
+    }
+    _document->extraSelections.push_back(_document->selection);
+    _document->selection = {target, target};
+    _document->preferredX = x;
+    [self normalizeCursors];
+    [self selectionDidChange];
+    self.needsDisplay = YES;
+}
+
+- (NSUInteger)cursorCount { return _document ? 1 + _document->extraSelections.size() : 0; }
+
+- (IBAction)addCursorAbove:(id)sender { [self addCursorInDirection:-1]; }
+- (IBAction)addCursorBelow:(id)sender { [self addCursorInDirection:1]; }
+
+/// ⌃⌘G: a cursor on every occurrence of the selected text (or the word at the caret).
+- (IBAction)selectAllOccurrences:(id)sender {
+    if (!_document) return;
+    const auto &buffer = _document->buffer();
+    gw::Selection selection = _document->selection;
+    std::string needle;
+    if (selection.empty()) {
+        needle = [self wordAtCaret];
+    } else if (selection.range().start.line == selection.range().end.line) {
+        needle = buffer.text(selection.range());
+    }
+    if (needle.empty()) {
+        NSBeep();
+        return;
+    }
+    std::vector<gw::Selection> found;
+    for (size_t line = 0; line < buffer.lineCount(); ++line) {
+        const std::string &text = buffer.line(line);
+        size_t at = text.find(needle);
+        while (at != std::string::npos) {
+            bool wholeWord = true;
+            if (selection.empty()) {
+                bool startsWord = at == 0 || !gw::isWordByte(static_cast<unsigned char>(text[at - 1]));
+                size_t end = at + needle.size();
+                bool endsWord = end >= text.size() || !gw::isWordByte(static_cast<unsigned char>(text[end]));
+                wholeWord = startsWord && endsWord;
+            }
+            if (wholeWord) {
+                found.push_back({{line, at}, {line, at + needle.size()}});
+            }
+            at = text.find(needle, at + needle.size());
+        }
+    }
+    if (found.size() < 1) {
+        return;
+    }
+    _document->selection = found.front();
+    _document->extraSelections.assign(found.begin() + 1, found.end());
+    [self normalizeCursors];
+    [self selectionDidChange];
+    self.needsDisplay = YES;
 }
 
 // MARK: Mouse
@@ -2321,6 +2595,12 @@ static constexpr CGFloat kMiniChar = 1.25;
     };
 
     if (event.modifierFlags & NSEventModifierFlagShift) anchor = _document->selection.anchor;
+    if (event.modifierFlags & NSEventModifierFlagOption) {
+        // ⌥-click: keep what is selected and start another cursor here.
+        _document->extraSelections.push_back(_document->selection);
+    } else {
+        _document->extraSelections.clear();
+    }
     _document->selection = selectForClick(position);
     [self selectionDidChange];
 
@@ -2357,6 +2637,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 // Horizontal movement.
 - (void)moveHorizontally:(int)direction byWord:(BOOL)word extend:(BOOL)extend {
+    GW_FOR_EACH_CURSOR([self moveHorizontally:direction byWord:word extend:extend];)
     const auto &buffer = _document->buffer();
     gw::Selection selection = _document->selection;
     _document->preferredX.reset();
@@ -2383,6 +2664,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 // Vertical movement keeps the column the caret "wants" across short lines. It moves by screen
 // rows, so a wrapped line takes several presses and folded lines are stepped over.
 - (void)moveVertically:(long)rows extend:(BOOL)extend {
+    GW_FOR_EACH_CURSOR([self moveVertically:rows extend:extend];)
     const auto &buffer = _document->buffer();
     gw::Position caret = _document->selection.caret;
     double x = _document->preferredX.value_or([self xForPosition:caret]);
@@ -2417,12 +2699,14 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 // Line start goes to the first non-blank character, then to column 0 ("smart home").
 - (void)moveToLineStartExtend:(BOOL)extend {
+    GW_FOR_EACH_CURSOR([self moveToLineStartExtend:extend];)
     gw::Position caret = _document->selection.caret;
     size_t indent = _document->buffer().indentEnd(caret.line);
     _document->preferredX.reset();
     [self moveCaretTo:{caret.line, caret.column == indent ? 0 : indent} extend:extend];
 }
 - (void)moveToLineEndExtend:(BOOL)extend {
+    GW_FOR_EACH_CURSOR([self moveToLineEndExtend:extend];)
     gw::Position caret = _document->selection.caret;
     _document->preferredX.reset();
     [self moveCaretTo:{caret.line, _document->buffer().line(caret.line).size()} extend:extend];
@@ -2443,12 +2727,20 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 - (void)selectAll:(id)sender {
     if (!_document) return;
+    _document->extraSelections.clear();
     _document->selection = {{0, 0}, _document->buffer().end()};
     [self selectionDidChange];
 }
 
 - (void)cancelOperation:(id)sender {
     if (!_document) return;
+    if (!_document->extraSelections.empty()) {
+        // Escape first goes back to a single cursor.
+        _document->extraSelections.clear();
+        self.needsDisplay = YES;
+        [self updateCaretAnimated:NO];
+        return;
+    }
     [self moveCaretTo:_document->selection.caret extend:NO];
 }
 
@@ -2473,6 +2765,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
     if (!_document) return;
+    GW_FOR_EACH_CURSOR([self insertText:string replacementRange:replacementRange];)
     _markedText = nil;
     NSString *plain = [string isKindOfClass:NSAttributedString.class] ? [(NSAttributedString *)string string] : string;
     _pendingTyped = plain;  // didEdit reports it to the completion popup
@@ -2521,6 +2814,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 - (void)insertNewline:(id)sender {
     if (!_document) return;
+    GW_FOR_EACH_CURSOR([self insertNewline:sender];)
     gw::Position caret = _document->selection.range().start;
     const std::string &line = _document->buffer().line(caret.line);
     size_t indentEnd = std::min(_document->buffer().indentEnd(caret.line), caret.column);
@@ -2550,6 +2844,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 - (void)insertTab:(id)sender {
     if (!_document) return;
+    GW_FOR_EACH_CURSOR([self insertTab:sender];)
     gw::Range range = _document->selection.range();
     if (range.start.line != range.end.line) {
         [self indentLines:sender];
@@ -2568,6 +2863,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 - (void)deleteBackward:(id)sender {
     if (!_document) return;
+    GW_FOR_EACH_CURSOR([self deleteBackward:sender];)
     const auto &buffer = _document->buffer();
     gw::Selection selection = _document->selection;
     if (!selection.empty()) {
@@ -2602,6 +2898,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 - (void)deleteForward:(id)sender {
     if (!_document) return;
+    GW_FOR_EACH_CURSOR([self deleteForward:sender];)
     gw::Position caret = _document->selection.caret;
     _document->deleteSelectionOr({caret, _document->buffer().nextCharacter(caret)});
     [self didEdit];
@@ -2609,6 +2906,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 - (void)deleteWordBackward:(id)sender {
     if (!_document) return;
+    GW_FOR_EACH_CURSOR([self deleteWordBackward:sender];)
     gw::Position caret = _document->selection.caret;
     _document->deleteSelectionOr({_document->buffer().previousWordStart(caret), caret});
     [self didEdit];
@@ -2616,6 +2914,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 - (void)deleteWordForward:(id)sender {
     if (!_document) return;
+    GW_FOR_EACH_CURSOR([self deleteWordForward:sender];)
     gw::Position caret = _document->selection.caret;
     _document->deleteSelectionOr({caret, _document->buffer().nextWordEnd(caret)});
     [self didEdit];
@@ -2623,6 +2922,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 - (void)deleteToBeginningOfLine:(id)sender {
     if (!_document) return;
+    GW_FOR_EACH_CURSOR([self deleteToBeginningOfLine:sender];)
     gw::Position caret = _document->selection.caret;
     gw::Position start = caret.column == 0 ? _document->buffer().previousCharacter(caret) : gw::Position{caret.line, 0};
     _document->deleteSelectionOr({start, caret});
@@ -2664,11 +2964,13 @@ static constexpr CGFloat kMiniChar = 1.25;
 }
 
 - (IBAction)indentLines:(id)sender {
+    GW_FOR_EACH_CURSOR_LINE([self indentLines:sender];)
     std::string unit = [self indentUnit];
     [self transformLines:^std::string(const std::string &line, size_t) { return line.empty() ? line : unit + line; }];
 }
 
 - (IBAction)outdentLines:(id)sender {
+    GW_FOR_EACH_CURSOR_LINE([self outdentLines:sender];)
     bool tabs = _useTabs;
     size_t tabSize = _tabSize;
     [self transformLines:^std::string(const std::string &line, size_t) {
@@ -2685,6 +2987,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 - (IBAction)toggleLineComment:(id)sender {
     if (!_document) return;
+    GW_FOR_EACH_CURSOR_LINE([self toggleLineComment:sender];)
     std::string marker = _configuration.lineComment;
     if (marker.empty()) {
         NSBeep();
@@ -2733,6 +3036,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 /// Moves the selected lines up one line (the line above goes below them).
 - (IBAction)moveLinesUp:(id)sender {
     if (!_document || _document->readOnly) return;
+    _document->extraSelections.clear();
     auto [first, last] = [self selectedLines];
     if (first == 0) return;
 
@@ -2750,6 +3054,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 /// Moves the selected lines down one line (the line below goes above them).
 - (IBAction)moveLinesDown:(id)sender {
     if (!_document || _document->readOnly) return;
+    _document->extraSelections.clear();
     auto [first, last] = [self selectedLines];
     if (last + 1 >= _document->buffer().lineCount()) return;
 
@@ -2767,6 +3072,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 /// Copies the selected lines below themselves; the selection moves to the copy.
 - (IBAction)duplicateLinesDown:(id)sender {
     if (!_document || _document->readOnly) return;
+    _document->extraSelections.clear();
     auto [first, last] = [self selectedLines];
     gw::Selection before = _document->selection;
     size_t count = last - first + 1;
@@ -2781,6 +3087,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 /// Copies the selected lines above themselves; the selection stays on the original lines.
 - (IBAction)duplicateLinesUp:(id)sender {
     if (!_document || _document->readOnly) return;
+    _document->extraSelections.clear();
     auto [first, last] = [self selectedLines];
     gw::Selection before = _document->selection;
     size_t count = last - first + 1;
@@ -2795,6 +3102,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 /// Removes the selected lines entirely.
 - (IBAction)deleteLines:(id)sender {
     if (!_document || _document->readOnly) return;
+    _document->extraSelections.clear();
     auto [first, last] = [self selectedLines];
     const auto &buffer = _document->buffer();
     size_t lineCount = buffer.lineCount();
@@ -2839,6 +3147,8 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 /// ⌘D: with nothing selected, select the word at the caret; otherwise jump to the next place the
 /// selected text appears (wrapping around at the end of the file).
+/// ⌘D: with nothing selected, select the word at the caret; after that, each press adds the next
+/// place the selected text appears (wrapping around at the end of the file) as another cursor.
 - (IBAction)selectNextOccurrence:(id)sender {
     if (!_document) return;
     const auto &buffer = _document->buffer();
@@ -2870,27 +3180,37 @@ static constexpr CGFloat kMiniChar = 1.25;
         return;
     }
     std::string needle = buffer.text(range);
+
+    // Search from the end of the last selection in the file.
+    gw::Position searchFrom = range.end;
+    for (const gw::Selection &extra : _document->extraSelections) {
+        if (searchFrom < extra.range().end) {
+            searchFrom = extra.range().end;
+        }
+    }
     size_t lineCount = buffer.lineCount();
-    size_t startLine = range.end.line;
-    // Look after the selection on its own line first, then each following line, then wrap.
     for (size_t step = 0; step <= lineCount; ++step) {
-        size_t line = (startLine + step) % lineCount;
+        size_t line = (searchFrom.line + step) % lineCount;
         const std::string &text = buffer.line(line);
-        size_t searchFrom = 0;
-        if (step == 0) {
-            searchFrom = range.end.column;
-        }
-        size_t found = text.find(needle, searchFrom);
-        if (step == lineCount) {
-            // Back on the starting line after wrapping: only matches before the selection count.
-            found = text.find(needle, 0);
-        }
+        size_t from = step == 0 ? searchFrom.column : 0;
+        size_t found = text.find(needle, from);
         if (found == std::string::npos) {
             continue;
         }
-        gw::Position from = {line, found};
-        gw::Position to = {line, found + needle.size()};
-        [self selectRange:{from, to}];
+        gw::Selection match{{line, found}, {line, found + needle.size()}};
+        bool alreadySelected = selectionsOverlap(match, selection);
+        for (const gw::Selection &extra : _document->extraSelections) {
+            alreadySelected = alreadySelected || selectionsOverlap(match, extra);
+        }
+        if (alreadySelected) {
+            NSBeep();  // wrapped all the way round
+            return;
+        }
+        _document->extraSelections.push_back(selection);
+        _document->selection = match;
+        _document->preferredX.reset();
+        [self selectionDidChange];  // scrolls the new cursor into view
+        self.needsDisplay = YES;
         return;
     }
     NSBeep();
@@ -2898,18 +3218,37 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 // MARK: Clipboard and undo
 
+/// The text of a selection, or the whole line when nothing is selected.
+- (std::string)copyTextOfSelection:(gw::Selection)selection {
+    if (selection.empty()) {
+        return _document->buffer().line(selection.caret.line) + "\n";
+    }
+    return _document->buffer().text(selection.range());
+}
+
 - (void)copy:(id)sender {
     if (!_document) return;
-    gw::Selection selection = _document->selection;
-    std::string text = selection.empty() ? _document->buffer().line(selection.caret.line) + "\n"
-                                         : _document->buffer().text(selection.range());
+    std::string text;
+    if (_document->extraSelections.empty()) {
+        text = [self copyTextOfSelection:_document->selection];
+    } else {
+        // One piece per cursor, top to bottom, one per line.
+        std::vector<gw::Selection> all = [self selectionsInOrder];
+        for (size_t index = 0; index < all.size(); ++index) {
+            std::string piece = [self copyTextOfSelection:all[index]];
+            if (!piece.empty() && piece.back() == '\n' && all[index].empty()) {
+                piece.pop_back();
+            }
+            if (index > 0) text += "\n";
+            text += piece;
+        }
+    }
     [NSPasteboard.generalPasteboard clearContents];
     [NSPasteboard.generalPasteboard setString:@(text.c_str()) forType:NSPasteboardTypeString];
 }
 
-- (void)cut:(id)sender {
-    if (!_document) return;
-    [self copy:sender];
+/// Removes the selection, or the whole line if nothing is selected.
+- (void)deleteSelectionOrLineForCut {
     gw::Selection selection = _document->selection;
     if (selection.empty()) {  // cut the whole line, like VS Code
         size_t line = selection.caret.line;
@@ -2921,6 +3260,19 @@ static constexpr CGFloat kMiniChar = 1.25;
     } else {
         _document->replace(selection.range(), "");
     }
+}
+
+- (void)cut:(id)sender {
+    if (!_document) return;
+    [self copy:sender];
+    if (_multiDepth == 0 && !_document->extraSelections.empty()) {
+        [self forEachSelection:^{
+            [self deleteSelectionOrLineForCut];
+            [self didEdit];
+        } mergingLines:NO];
+        return;
+    }
+    [self deleteSelectionOrLineForCut];
     [self didEdit];
 }
 
@@ -2928,6 +3280,20 @@ static constexpr CGFloat kMiniChar = 1.25;
     if (!_document) return;
     NSString *string = [NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString];
     if (!string.length) return;
+    if (_multiDepth == 0 && !_document->extraSelections.empty()) {
+        // As many lines as cursors: one line each, in order. Otherwise every cursor gets it all.
+        NSArray<NSString *> *lines = [string componentsSeparatedByString:@"\n"];
+        if (lines.count > 1 && [lines.lastObject length] == 0) {
+            lines = [lines subarrayWithRange:NSMakeRange(0, lines.count - 1)];
+        }
+        BOOL distribute = lines.count == _document->extraSelections.size() + 1;
+        [self forEachSelection:^{
+            NSString *piece = distribute ? lines[self->_cursorIndexInLoop] : string;
+            self->_document->replace(self->_document->selection.range(), piece.UTF8String);
+            [self didEdit];
+        } mergingLines:NO];
+        return;
+    }
     _document->replace(_document->selection.range(), string.UTF8String);
     [self didEdit];
 }

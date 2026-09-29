@@ -435,6 +435,45 @@ TEST(fuzzyScoreAgreesWithFuzzyMatch) {
     }
 }
 
+// MARK: Multiple cursors
+
+TEST(extraSelectionsFollowEdits) {
+    gw::Document document;
+    document.replace({{0, 0}, {0, 0}}, "one\ntwo\nthree");
+    // Carets at the end of each line, the primary on the first.
+    document.selection = {{0, 3}, {0, 3}};
+    document.extraSelections = {{{1, 3}, {1, 3}}, {{2, 5}, {2, 5}}};
+
+    // Typing at the first line moves nothing else sideways (they are on other lines).
+    document.replace({{0, 3}, {0, 3}}, "!");
+    CHECK(document.extraSelections[0].caret == (gw::Position{1, 3}));
+    CHECK(document.extraSelections[1].caret == (gw::Position{2, 5}));
+
+    // A line break above pushes the others down.
+    document.replace({{0, 0}, {0, 0}}, "\n");
+    CHECK(document.extraSelections[0].caret == (gw::Position{2, 3}));
+    CHECK(document.extraSelections[1].caret == (gw::Position{3, 5}));
+}
+
+TEST(extraSelectionsOnTheSameLineShift) {
+    gw::Document document;
+    document.replace({{0, 0}, {0, 0}}, "abcdef");
+    document.selection = {{0, 1}, {0, 1}};
+    document.extraSelections = {{{0, 4}, {0, 4}}};
+    document.replace({{0, 1}, {0, 1}}, "XY");  // two characters go in before the second caret
+    CHECK(document.extraSelections[0].caret == (gw::Position{0, 6}));
+    document.replace({{0, 0}, {0, 3}}, "");    // and three come out again
+    CHECK(document.extraSelections[0].caret == (gw::Position{0, 3}));
+}
+
+TEST(undoClearsExtraSelections) {
+    gw::Document document;
+    document.replace({{0, 0}, {0, 0}}, "text");
+    document.extraSelections = {{{0, 1}, {0, 1}}};
+    document.undo();
+    CHECK(document.extraSelections.empty());
+}
+
 // MARK: Stylist and settings
 
 TEST(stylistColoursVariablesNamesAndScopes) {

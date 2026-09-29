@@ -124,6 +124,14 @@ NS_ASSUME_NONNULL_BEGIN
 /// spaces, -1 to decide from the file; `tabSize` of 0 means the setting from settings.json.
 - (void)setIndentationOverrideUsesTabs:(int)usesTabs tabSize:(size_t)tabSize;
 
+// Multiple cursors.
+/// How many cursors there are (1 normally).
+- (NSUInteger)cursorCount;
+- (IBAction)addCursorAbove:(nullable id)sender;
+- (IBAction)addCursorBelow:(nullable id)sender;
+- (IBAction)selectAllOccurrences:(nullable id)sender;
+- (IBAction)selectNextOccurrence:(nullable id)sender;
+
 // Soft wrap and folding.
 - (IBAction)toggleWordWrap:(nullable id)sender;
 - (IBAction)foldCode:(nullable id)sender;

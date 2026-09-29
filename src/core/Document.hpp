@@ -81,6 +81,10 @@ public:
     std::string languageId;
 
     Selection selection;
+    /// More carets and selections besides `selection` (multi-cursor editing). They follow every
+    /// edit, so a command run at one cursor keeps the others in the right place. Undo and redo
+    /// clear them.
+    std::vector<Selection> extraSelections;
     /// Column the caret wants when moving up/down, in the view's units (points). Kept here so
     /// it survives across views; set to nullopt after any horizontal movement or edit.
     std::optional<double> preferredX;
@@ -139,5 +143,9 @@ private:
 
 /// Position just past `text` if it were inserted at `start`.
 Position endOfInsertion(Position start, std::string_view text);
+
+/// Where a position ends up after the text between `at` and `removedEnd` was replaced by text
+/// that ends at `end`: earlier positions stay, later ones move with the text.
+Position positionAfterEdit(Position p, Position at, Position removedEnd, Position end);
 
 }  // namespace gw

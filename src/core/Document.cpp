@@ -223,8 +223,25 @@ Position Document::apply(Position at, const std::string& removed, const std::str
     buffer_.erase({at, removedEnd});
     Position end = buffer_.insert(at, inserted);
     ++version_;
+    for (Selection& extra : extraSelections) {
+        extra.anchor = positionAfterEdit(extra.anchor, at, removedEnd, end);
+        extra.caret = positionAfterEdit(extra.caret, at, removedEnd, end);
+    }
     notify(at.line, lineDelta, end.line);
     return end;
+}
+
+Position positionAfterEdit(Position p, Position at, Position removedEnd, Position end) {
+    if (p <= at) {
+        return p;  // before the edit (or right at its start): unchanged
+    }
+    if (p < removedEnd) {
+        return end;  // inside the text that was replaced
+    }
+    if (p.line == removedEnd.line) {
+        return Position{end.line, end.column + (p.column - removedEnd.column)};
+    }
+    return Position{p.line + end.line - removedEnd.line, p.column};
 }
 
 void Document::notify(size_t firstLine, long lineDelta, size_t lastLine) {
@@ -303,6 +320,7 @@ bool Document::undo() {
         undoStack_.pop_back();
         apply(edit.at, edit.inserted, edit.removed);
         selection = edit.selectionBefore;
+        extraSelections.clear();
         redoStack_.push_back(std::move(edit));
     } while (group != 0 && !undoStack_.empty() && undoStack_.back().group == group);
     preferredX.reset();
@@ -317,6 +335,7 @@ bool Document::redo() {
         redoStack_.pop_back();
         apply(edit.at, edit.removed, edit.inserted);
         selection = edit.selectionAfter;
+        extraSelections.clear();
         edit.typing = false;  // never merge new typing into a redone step
         undoStack_.push_back(std::move(edit));
     } while (group != 0 && !redoStack_.empty() && redoStack_.back().group == group);

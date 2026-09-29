@@ -1764,7 +1764,9 @@ static bool isImageExtension(NSString *extension) {
     NSMutableArray<NSAttributedString *> *left = [NSMutableArray array];
     [left addObject:segment(@"text.cursor", NSColor.controlAccentColor,
                             [NSString stringWithFormat:@"Ln %zu, Col %lu", caret.line + 1, (unsigned long)prefix.length + 1])];
-    if (!document.selection.empty()) {
+    if (_editorView.cursorCount > 1) {
+        [left addObject:segment(@"cursorarrow.rays", muted, [NSString stringWithFormat:@"%lu cursors", (unsigned long)_editorView.cursorCount])];
+    } else if (!document.selection.empty()) {
         NSString *selected = @(document.buffer().text(document.selection.range()).c_str());
         [left addObject:segment(@"selection.pin.in.out", muted, [NSString stringWithFormat:@"%lu selected", (unsigned long)selected.length])];
     }
@@ -2665,6 +2667,18 @@ static double timed(void (^work)(void)) {
     for (NSString *character in @[@"s", @"q", @"u", @"a", @"r", @"e", @"("]) {
         [_editorView insertText:character replacementRange:NSMakeRange(NSNotFound, 0)];
     }
+}
+
+/// Developer check: types "X" at every cursor.
+- (IBAction)debugTypeX:(id)sender {
+    [self.window makeFirstResponder:_editorView];
+    [_editorView insertText:@"X" replacementRange:NSMakeRange(NSNotFound, 0)];
+}
+
+/// Developer check: types a newline at every cursor.
+- (IBAction)debugPressReturn:(id)sender {
+    [self.window makeFirstResponder:_editorView];
+    [_editorView doCommandBySelector:@selector(insertNewline:)];
 }
 
 - (IBAction)debugTerminalDemo:(id)sender {
