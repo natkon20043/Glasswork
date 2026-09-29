@@ -200,6 +200,7 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
         [self item:@"Show Source Control" action:@selector(showSourceControl:) key:@"g" modifiers:NSEventModifierFlagControl | shift],
         [self item:@"Next Tab" action:@selector(selectNextTab:) key:@"]" modifiers:command | shift],
         [self item:@"Previous Tab" action:@selector(selectPreviousTab:) key:@"[" modifiers:command | shift],
+        [self item:@"Open Markdown Preview" action:@selector(openMarkdownPreview:) key:@"v" modifiers:command | shift],
         NSMenuItem.separatorItem,
         [self item:@"Bigger Text" action:@selector(increaseFontSize:) key:@"="],
         [self item:@"Smaller Text" action:@selector(decreaseFontSize:) key:@"-"],

@@ -13,6 +13,7 @@
 #import "SearchPanel.h"
 #import "Services.h"
 #import "LanguageService.h"
+#import "MarkdownView.h"
 #import "CompletionPopup.h"
 #import "SidebarSwitcher.h"
 #import "SourceControlPanel.h"
@@ -62,6 +63,12 @@ struct Tab {
 
     /// What the project's .editorconfig files say about this file.
     gw::EditorConfigResult editorConfig;
+
+    /// Most tabs show text. A preview tab shows a Markdown file rendered; an image tab shows a picture.
+    enum class Kind { Text, MarkdownPreview, Image };
+    Kind kind = Kind::Text;
+    uint64_t sourceIdentifier = 0;  // the Markdown tab a preview follows
+    std::string imagePath;
 };
 
 /// Colours for the lines of a unified diff: green for added, red for removed.
@@ -185,6 +192,14 @@ bool looksBinary(const char *path) {
 
 // MARK: - Editor card
 
+/// The page a rendered Markdown file sits on: top-left origin, so the text starts at the top.
+@interface GWPreviewPage : NSView
+@end
+
+@implementation GWPreviewPage
+- (BOOL)isFlipped { return YES; }
+@end
+
 /// The rounded card holding the breadcrumb bar, the code and the minimap.
 @interface GWEditorCard : NSView
 @property (nonatomic, weak) GWEditorView *editor;
@@ -192,6 +207,9 @@ bool looksBinary(const char *path) {
 @property (nonatomic, strong) NSScrollView *scrollView;
 @property (nonatomic, strong) NSView *minimap;
 @property (nonatomic, strong) GWFindBar *findBar;
+/// Shows a rendered Markdown file or an image instead of the code.
+@property (nonatomic, strong) NSScrollView *previewScroll;
+@property (nonatomic) BOOL previewMode;
 @end
 
 @implementation GWEditorCard
@@ -221,6 +239,14 @@ bool looksBinary(const char *path) {
     self.editor.gutterView.frame = NSMakeRect(0, top, gutter, height - top);
     self.scrollView.frame = NSMakeRect(gutter, top, width - minimapWidth - gutter, height - top);
     self.minimap.frame = NSMakeRect(width - kMinimapWidth, top + 4, kMinimapWidth - 6, height - top - 8);
+    self.previewScroll.frame = NSMakeRect(0, top, width, height - top);
+    BOOL preview = self.previewMode;
+    self.previewScroll.hidden = !preview;
+    self.scrollView.hidden = preview;
+    self.editor.gutterView.hidden = preview;
+    if (preview) {
+        self.minimap.hidden = YES;
+    }
 
     // The find bar floats over the top right of the code.
     CGFloat barWidth = MIN(500, width - 40);
@@ -413,6 +439,8 @@ bool looksBinary(const char *path) {
     std::shared_ptr<const FileIndex> _fileIndex;
     NSUInteger _indexGeneration;          // ignores results from an older folder's scan
     // Language servers: problems, hover, completion, rename, format.
+    GWMarkdownView *_previewMarkdown;
+    NSImageView *_previewImage;
     GWLanguageService *_language;
     GWSuggestionPopup *_suggestions;
     NSUInteger _hoverToken;
@@ -564,6 +592,14 @@ bool looksBinary(const char *path) {
     scroll.documentView = _editorView;
     _card.scrollView = scroll;
     [_card addSubview:scroll];
+    NSScrollView *previewScroll = [NSScrollView new];
+    previewScroll.drawsBackground = NO;
+    previewScroll.hasVerticalScroller = YES;
+    previewScroll.autohidesScrollers = YES;
+    previewScroll.scrollerStyle = NSScrollerStyleOverlay;
+    previewScroll.hidden = YES;
+    _card.previewScroll = previewScroll;
+    [_card addSubview:previewScroll];
     _card.minimap = _editorView.minimapView;
     [_card addSubview:_card.minimap];
     _card.editor = _editorView;
@@ -960,8 +996,16 @@ bool looksBinary(const char *path) {
         }
         [_card.scrollView.contentView scrollToPoint:tab->scroll];
         [_card.scrollView reflectScrolledClipView:_card.scrollView.contentView];
-        [self.window makeFirstResponder:_editorView];
+        BOOL isPreview = tab->kind != Tab::Kind::Text;
+        _card.previewMode = isPreview;
+        _card.needsLayout = YES;
+        if (isPreview) {
+            [self showPreviewContentForTab:*tab];
+        } else {
+            [self.window makeFirstResponder:_editorView];
+        }
     } else {
+        _card.previewMode = NO;
         [_editorView setDocument:nullptr highlighter:nullptr configuration:{}];
     }
     [self refresh];
@@ -1013,6 +1057,154 @@ bool looksBinary(const char *path) {
     [self scheduleChangeRefresh];
     [_findBar documentChanged];
     [self scheduleAutoSave];
+    [self scheduleMarkdownPreviewRefresh];
+}
+
+// MARK: Previews (Markdown and images)
+
+static bool isImageExtension(NSString *extension) {
+    static NSSet<NSString *> *extensions = [NSSet setWithArray:@[
+        @"png", @"jpg", @"jpeg", @"gif", @"bmp", @"tif", @"tiff", @"heic", @"webp", @"ico", @"icns", @"svg", @"pdf",
+    ]];
+    return [extensions containsObject:extension.lowercaseString];
+}
+
+/// ⇧⌘V: a rendered view of the Markdown file being edited, next to its tab; it follows the text as you type.
+- (IBAction)openMarkdownPreview:(id)sender {
+    Tab *source = [self currentTab];
+    if (source == nullptr) {
+        return;
+    }
+    if (source->kind == Tab::Kind::MarkdownPreview) {
+        return;
+    }
+    if (source->document->languageId != "markdown") {
+        NSBeep();
+        return;
+    }
+    // One preview per file: show the existing one.
+    for (size_t index = 0; index < _tabs.size(); ++index) {
+        if (_tabs[index]->kind == Tab::Kind::MarkdownPreview && _tabs[index]->sourceIdentifier == source->identifier) {
+            [self selectTab:static_cast<NSInteger>(index)];
+            return;
+        }
+    }
+    uint64_t sourceIdentifier = source->identifier;
+    NSInteger sourceIndex = _selected;
+    std::string title = "Preview " + source->document->displayName();
+    auto document = std::make_unique<gw::Document>(gw::Document::readOnlyText("", title));
+    [self addTab:std::move(document) atIndex:sourceIndex + 1 configure:^(Tab &tab) {
+        tab.isVirtual = true;
+        tab.kind = Tab::Kind::MarkdownPreview;
+        tab.sourceIdentifier = sourceIdentifier;
+        tab.key = "preview:" + std::to_string(sourceIdentifier);
+        tab.forcedLanguage = "plaintext";
+    }];
+}
+
+- (void)openImageAtURL:(NSURL *)url {
+    std::string path = url.fileSystemRepresentation;
+    for (size_t index = 0; index < _tabs.size(); ++index) {
+        if (_tabs[index]->kind == Tab::Kind::Image && _tabs[index]->imagePath == path) {
+            [self selectTab:static_cast<NSInteger>(index)];
+            return;
+        }
+    }
+    NSImage *probe = [[NSImage alloc] initWithContentsOfURL:url];
+    if (probe == nil) {
+        [self showErrorTitle:@"Couldn't open the image" message:url.lastPathComponent];
+        return;
+    }
+    auto document = std::make_unique<gw::Document>(gw::Document::readOnlyText("", url.lastPathComponent.UTF8String));
+    [self addTab:std::move(document) atIndex:-1 configure:^(Tab &tab) {
+        tab.isVirtual = true;
+        tab.kind = Tab::Kind::Image;
+        tab.imagePath = path;
+        tab.key = "image:" + path;
+        tab.forcedLanguage = "plaintext";
+    }];
+}
+
+/// Fills the preview area for the selected preview or image tab.
+- (void)showPreviewContentForTab:(Tab &)tab {
+    NSScrollView *scroll = _card.previewScroll;
+    if (tab.kind == Tab::Kind::Image) {
+        NSImage *image = [[NSImage alloc] initWithContentsOfFile:@(tab.imagePath.c_str())];
+        if (_previewImage == nil) {
+            _previewImage = [NSImageView new];
+            _previewImage.imageScaling = NSImageScaleProportionallyDown;
+            _previewImage.imageAlignment = NSImageAlignCenter;
+            _previewImage.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        }
+        _previewImage.image = image;
+        _previewImage.frame = NSMakeRect(0, 0, NSWidth(scroll.contentView.bounds), NSHeight(scroll.contentView.bounds));
+        scroll.documentView = _previewImage;
+        return;
+    }
+    [self refreshMarkdownPreviewForTab:tab keepScroll:NO];
+}
+
+/// Renders the Markdown text of the file the preview follows.
+- (void)refreshMarkdownPreviewForTab:(Tab &)preview keepScroll:(BOOL)keepScroll {
+    Tab *source = [self tabWithIdentifier:preview.sourceIdentifier];
+    NSScrollView *scroll = _card.previewScroll;
+    NSString *markdown = source ? @(source->document->buffer().text().c_str()) : @"The file this preview followed was closed.";
+    if (_previewMarkdown == nil) {
+        _previewMarkdown = [GWMarkdownView new];
+        _previewMarkdown.fontSize = 15;
+        __weak GWMainWindowController *weakSelf = self;
+        _previewMarkdown.onOpenPath = ^(NSString *path, NSInteger line) {
+            [weakSelf openPath:path atLine:line];
+        };
+    }
+    _previewMarkdown.projectRoot = _fileTree.rootURL.path;
+    NSPoint offset = scroll.contentView.bounds.origin;
+
+    // A flipped page that keeps the text in a comfortable column, centred.
+    NSView *page = scroll.documentView;
+    if (![page isKindOfClass:GWPreviewPage.class]) {
+        page = [GWPreviewPage new];
+        page.translatesAutoresizingMaskIntoConstraints = NO;
+        scroll.documentView = page;
+        NSClipView *clip = scroll.contentView;
+        [NSLayoutConstraint activateConstraints:@[
+            [page.topAnchor constraintEqualToAnchor:clip.topAnchor],
+            [page.leadingAnchor constraintEqualToAnchor:clip.leadingAnchor],
+            [page.trailingAnchor constraintEqualToAnchor:clip.trailingAnchor],
+        ]];
+    }
+    if (_previewMarkdown.superview != page) {
+        _previewMarkdown.translatesAutoresizingMaskIntoConstraints = NO;
+        [page addSubview:_previewMarkdown];
+        NSLayoutConstraint *preferredWidth = [_previewMarkdown.widthAnchor constraintEqualToConstant:820];
+        preferredWidth.priority = NSLayoutPriorityDefaultHigh;
+        [NSLayoutConstraint activateConstraints:@[
+            preferredWidth,
+            [_previewMarkdown.widthAnchor constraintLessThanOrEqualToAnchor:page.widthAnchor constant:-64],
+            [_previewMarkdown.centerXAnchor constraintEqualToAnchor:page.centerXAnchor],
+            [_previewMarkdown.topAnchor constraintEqualToAnchor:page.topAnchor constant:28],
+            [_previewMarkdown.bottomAnchor constraintEqualToAnchor:page.bottomAnchor constant:-40],
+        ]];
+    }
+    [_previewMarkdown setMarkdown:markdown];
+    if (keepScroll) {
+        [scroll layoutSubtreeIfNeeded];
+        [scroll.contentView scrollToPoint:offset];
+        [scroll reflectScrolledClipView:scroll.contentView];
+    }
+}
+
+- (void)scheduleMarkdownPreviewRefresh {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(refreshMarkdownPreviewNow) object:nil];
+    [self performSelector:@selector(refreshMarkdownPreviewNow) withObject:nil afterDelay:0.3];
+}
+
+/// Re-renders the visible preview, if it follows a file that was just edited.
+- (void)refreshMarkdownPreviewNow {
+    Tab *tab = [self currentTab];
+    if (tab != nullptr && tab->kind == Tab::Kind::MarkdownPreview) {
+        [self refreshMarkdownPreviewForTab:*tab keepScroll:YES];
+    }
 }
 
 // MARK: .editorconfig and saving
@@ -4165,6 +4357,10 @@ static std::vector<std::pair<gw::Range, std::string>> editsFromLsp(const gw::lsp
             [self selectTab:static_cast<NSInteger>(index)];
             return;
         }
+    }
+    if (isImageExtension(url.pathExtension)) {
+        [self openImageAtURL:url];
+        return;
     }
     if (looksBinary(url.fileSystemRepresentation)) {
         NSAlert *alert = [NSAlert new];
