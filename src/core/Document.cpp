@@ -223,12 +223,12 @@ Position Document::apply(Position at, const std::string& removed, const std::str
     buffer_.erase({at, removedEnd});
     Position end = buffer_.insert(at, inserted);
     ++version_;
-    notify(at.line, lineDelta);
+    notify(at.line, lineDelta, end.line);
     return end;
 }
 
-void Document::notify(size_t firstLine, long lineDelta) {
-    if (onChange) onChange(Change{firstLine, lineDelta});
+void Document::notify(size_t firstLine, long lineDelta, size_t lastLine) {
+    if (onChange) onChange(Change{firstLine, lineDelta, lastLine});
 }
 
 Position Document::replace(Range range, std::string_view text, bool coalesceTyping) {

@@ -130,6 +130,7 @@ EditorSettings parseSettings(const std::string& jsonc, std::string* error) {
     readValue(document, "editor.fontSize", settings.fontSize);
     readValue(document, "editor.fontFamily", settings.fontFamily);
     readValue(document, "editor.tabSize", settings.tabSize);
+    readValue(document, "editor.wordWrap", settings.wordWrap);
     readValue(document, "editor.opacity", settings.editorOpacity);
     readValue(document, "workbench.colorTheme", settings.theme);
     readValue(document, "editor.highlightOccurrences", settings.highlightOccurrences);
@@ -193,6 +194,7 @@ std::string serializeSettings(const EditorSettings& settings) {
         << "  \"editor.fontSize\": " << settings.fontSize << ",\n"
         << "  \"editor.fontFamily\": " << json(settings.fontFamily).dump() << ",  // empty = SF Mono\n"
         << "  \"editor.tabSize\": " << settings.tabSize << ",\n"
+        << "  \"editor.wordWrap\": " << boolean(settings.wordWrap) << ",  // wrap long lines (View > Word Wrap, \u2325Z)\n"
         << "\n"
         << "  // Files\n"
         << "  \"files.autoSave\": " << boolean(settings.autoSave)

@@ -12,6 +12,8 @@ struct EditorSettings {
     double fontSize = 13;
     std::string fontFamily;  // empty: SF Mono
     int tabSize = 4;
+    /// Wrap long lines to the width of the editor instead of scrolling sideways.
+    bool wordWrap = false;
     double editorOpacity = 0.62;
     std::string theme = "Dark Modern";
 

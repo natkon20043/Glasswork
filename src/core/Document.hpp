@@ -25,6 +25,8 @@ struct Selection {
 struct Change {
     size_t firstLine;
     long lineDelta;
+    /// The last line (as numbered after the edit) that holds changed text.
+    size_t lastLine;
 };
 
 /// A text buffer plus everything that makes it editable: file path, selection, undo history
@@ -117,7 +119,7 @@ private:
     };
 
     Position apply(Position at, const std::string& removed, const std::string& inserted);
-    void notify(size_t firstLine, long lineDelta);
+    void notify(size_t firstLine, long lineDelta, size_t lastLine);
 
     /// Remembers what the file looked like when we last read or wrote it.
     void rememberDiskState();

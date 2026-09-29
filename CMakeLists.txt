@@ -31,6 +31,10 @@ find_package(CURL REQUIRED)
 add_library(glasswork_core STATIC
     src/core/TextBuffer.cpp
     src/core/Document.cpp
+    src/core/CharacterWidth.cpp
+    src/core/Wrap.cpp
+    src/core/RowMap.cpp
+    src/core/Folding.cpp
     src/core/Highlighter.cpp
     src/core/Jsonc.cpp
     src/core/textmate/Regex.cpp
@@ -63,6 +67,9 @@ enable_testing()
 add_executable(glasswork_tests tests/core_tests.cpp)
 target_link_libraries(glasswork_tests PRIVATE glasswork_core)
 add_test(NAME core COMMAND glasswork_tests)
+add_executable(glasswork_layout_tests tests/layout_tests.cpp)
+target_link_libraries(glasswork_layout_tests PRIVATE glasswork_core)
+add_test(NAME layout COMMAND glasswork_layout_tests)
 add_executable(glasswork_lsp_tests tests/language_server_tests.cpp)
 target_link_libraries(glasswork_lsp_tests PRIVATE glasswork_core)
 add_test(NAME language_protocol COMMAND glasswork_lsp_tests)

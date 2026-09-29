@@ -11,6 +11,10 @@
 #include <optional>
 #include <unordered_map>
 
+#include "Folding.hpp"
+#include "RowMap.hpp"
+#include "Wrap.hpp"
+
 namespace {
 
 /// Lines of tokenizing allowed per call while drawing; beyond it, lines draw plain and
@@ -35,6 +39,12 @@ struct LineLayout {
     std::vector<Highlight> highlights;
     bool highlighted = false;
 
+    /// Soft wrapping: where each row starts (UTF-16 units, plus the total at the end) and one
+    /// CoreText line per row. Both stay empty for a line that fits on one row.
+    std::vector<uint32_t> rowStartUnits;
+    std::vector<CTLineRef> rowLines;
+    CGFloat continuationIndent = 0;
+
     LineLayout() = default;
     LineLayout(const LineLayout &) = delete;
     LineLayout &operator=(const LineLayout &) = delete;
@@ -43,24 +53,68 @@ struct LineLayout {
           byteToUnit(std::move(other.byteToUnit)),
           unitToByte(std::move(other.unitToByte)),
           highlights(std::move(other.highlights)),
-          highlighted(other.highlighted) {
+          highlighted(other.highlighted),
+          rowStartUnits(std::move(other.rowStartUnits)),
+          rowLines(std::move(other.rowLines)),
+          continuationIndent(other.continuationIndent) {
         other.line = nullptr;
+        other.rowLines.clear();
     }
     LineLayout &operator=(LineLayout &&other) noexcept {
         if (this != &other) {
-            if (line) CFRelease(line);
+            releaseLines();
             line = other.line;
             other.line = nullptr;
             byteToUnit = std::move(other.byteToUnit);
             unitToByte = std::move(other.unitToByte);
             highlights = std::move(other.highlights);
             highlighted = other.highlighted;
+            rowStartUnits = std::move(other.rowStartUnits);
+            rowLines = std::move(other.rowLines);
+            other.rowLines.clear();
+            continuationIndent = other.continuationIndent;
         }
         return *this;
     }
-    ~LineLayout() {
+    ~LineLayout() { releaseLines(); }
+
+    void releaseLines() {
         if (line) CFRelease(line);
+        line = nullptr;
+        for (CTLineRef rowLine : rowLines) {
+            CFRelease(rowLine);
+        }
+        rowLines.clear();
     }
+
+    // ---- Rows (a line that isn't wrapped has exactly one)
+    size_t rowCount() const { return rowStartUnits.empty() ? 1 : rowStartUnits.size() - 1; }
+    uint32_t rowStart(size_t row) const { return rowStartUnits.empty() ? 0 : rowStartUnits[row]; }
+    /// Where the row ends (the next row's start); the last row is unbounded.
+    uint32_t rowEnd(size_t row) const {
+        if (rowStartUnits.empty() || row + 1 >= rowCount()) {
+            return UINT32_MAX;
+        }
+        return rowStartUnits[row + 1];
+    }
+    CTLineRef lineForRow(size_t row) const { return rowLines.empty() ? line : rowLines[row]; }
+    CGFloat indentForRow(size_t row) const { return row == 0 ? 0 : continuationIndent; }
+    /// The row a UTF-16 position is drawn on. A position at a wrap point belongs to the row it starts.
+    size_t rowForUnit(uint32_t unit) const {
+        if (rowStartUnits.empty()) {
+            return 0;
+        }
+        size_t rows = rowCount();
+        auto after = std::upper_bound(rowStartUnits.begin(), rowStartUnits.begin() + static_cast<long>(rows), unit);
+        return static_cast<size_t>(after - rowStartUnits.begin()) - 1;
+    }
+    /// Distance from the left edge of the text to a position, measured on the given row.
+    CGFloat offsetInRow(size_t row, uint32_t unit) const {
+        uint32_t start = rowStart(row);
+        uint32_t local = unit > start ? unit - start : 0;
+        return indentForRow(row) + CTLineGetOffsetForStringIndex(lineForRow(row), local, nullptr);
+    }
+    CGFloat offsetForUnit(uint32_t unit) const { return offsetInRow(rowForUnit(unit), unit); }
 
     uint32_t unitForByte(size_t byte) const { return byteToUnit[std::min(byte, byteToUnit.size() - 1)]; }
     size_t byteForUnit(CFIndex unit) const {
@@ -134,6 +188,15 @@ std::optional<size_t> indentColumns(const std::string &text, size_t tabSize) {
 @property (nonatomic, readonly) NSColor *activeLineNumberColor;
 - (gw::Document *)document;
 - (gw::Highlighter *)highlighter;
+- (CGFloat)yForLine:(size_t)line;
+- (size_t)lineAtY:(CGFloat)y subrow:(nullable size_t *)subrow;
+- (double)fractionalLineAtY:(CGFloat)y;
+- (uint32_t)rowsForLine:(size_t)line;
+- (BOOL)isLineHidden:(size_t)line;
+- (BOOL)isLineFolded:(size_t)line;
+- (BOOL)isLineFoldable:(size_t)line;
+- (void)toggleFoldAtLine:(size_t)line;
+@property (nonatomic) BOOL gutterHover;
 - (const std::vector<gw::LineChange> &)lineChanges;
 - (const std::vector<gw::Section> &)sectionList;
 - (NSColor *)colorForScopes:(const gw::tm::ScopeNode *)scopes;
@@ -171,8 +234,8 @@ std::optional<size_t> indentColumns(const std::string &text, size_t tabSize) {
     CGFloat lineHeight = editor.lineHeight;
     NSRect visible = editor.visibleRect;
     size_t count = document->buffer().lineCount();
-    size_t first = static_cast<size_t>(std::max(0.0, std::floor(NSMinY(visible) / lineHeight)));
-    size_t last = std::min(count - 1, static_cast<size_t>(std::floor(NSMaxY(visible) / lineHeight)));
+    size_t first = [editor lineAtY:NSMinY(visible) subrow:nullptr];
+    size_t last = std::min(count - 1, [editor lineAtY:NSMaxY(visible) subrow:nullptr]);
     size_t caretLine = document->selection.caret.line;
 
     NSMutableParagraphStyle *right = [NSMutableParagraphStyle new];
@@ -183,16 +246,58 @@ std::optional<size_t> indentColumns(const std::string &text, size_t tabSize) {
                              NSForegroundColorAttributeName: editor.activeLineNumberColor, NSParagraphStyleAttributeName: right};
     CGFloat textHeight = editor.lineNumberFont.ascender - editor.lineNumberFont.descender;
     for (size_t line = first; line <= last && first < count; ++line) {
-        CGFloat top = line * lineHeight - NSMinY(visible);  // follow the editor's scroll
-        NSRect label = NSMakeRect(0, top + (lineHeight - textHeight) / 2 - 1, NSWidth(self.bounds) - 12, textHeight + 2);
+        if ([editor isLineHidden:line]) {
+            continue;
+        }
+        CGFloat top = [editor yForLine:line] - NSMinY(visible);  // follow the editor's scroll
+        NSRect label = NSMakeRect(0, top + (lineHeight - textHeight) / 2 - 1, NSWidth(self.bounds) - 26, textHeight + 2);
         if (line == caretLine) {
             // A small accent bar marks the current line.
             [[NSColor.controlAccentColor colorWithAlphaComponent:0.9] setFill];
             [[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(4, top + 5, 3, lineHeight - 10) xRadius:1.5 yRadius:1.5] fill];
         }
         [[NSString stringWithFormat:@"%zu", line + 1] drawInRect:label withAttributes:line == caretLine ? active : normal];
+        [self drawFoldMarkerForLine:line top:top lineHeight:lineHeight];
     }
     [self drawChangeBarsWithLineHeight:lineHeight visible:visible];
+}
+
+/// A small arrow beside blocks that can fold: always for folded ones, and for the rest while the
+/// pointer is over the line numbers.
+- (void)drawFoldMarkerForLine:(size_t)line top:(CGFloat)top lineHeight:(CGFloat)lineHeight {
+    GWEditorView *editor = self.editor;
+    BOOL folded = [editor isLineFolded:line];
+    BOOL showOpen = editor.gutterHover && [editor isLineFoldable:line];
+    if (!folded && !showOpen) {
+        return;
+    }
+    NSColor *color = folded ? editor.activeLineNumberColor : editor.lineNumberColor;
+    NSImageSymbolConfiguration *sizeConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:8.5 weight:NSFontWeightBold];
+    NSImageSymbolConfiguration *colorConfiguration = [NSImageSymbolConfiguration configurationWithPaletteColors:@[color]];
+    NSImage *image = [NSImage imageWithSystemSymbolName:folded ? @"chevron.right" : @"chevron.down" accessibilityDescription:nil];
+    image = [image imageWithSymbolConfiguration:[sizeConfiguration configurationByApplyingConfiguration:colorConfiguration]];
+    NSSize size = image.size;
+    NSRect target = NSMakeRect(NSWidth(self.bounds) - 22, top + (lineHeight - size.height) / 2, size.width, size.height);
+    [image drawInRect:target];
+}
+
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    for (NSTrackingArea *area in self.trackingAreas) {
+        [self removeTrackingArea:area];
+    }
+    NSTrackingAreaOptions options = NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect;
+    [self addTrackingArea:[[NSTrackingArea alloc] initWithRect:NSZeroRect options:options owner:self userInfo:nil]];
+}
+
+- (void)mouseEntered:(NSEvent *)event {
+    self.editor.gutterHover = YES;
+    self.needsDisplay = YES;
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    self.editor.gutterHover = NO;
+    self.needsDisplay = YES;
 }
 
 /// Version control marks: a bar for added and modified lines, a small triangle where lines
@@ -207,9 +312,11 @@ std::optional<size_t> indentColumns(const std::string &text, size_t tabSize) {
     NSColor *removed = [NSColor colorWithSRGBRed:0.96 green:0.40 blue:0.42 alpha:1];
     CGFloat barX = NSWidth(self.bounds) - 6;
 
+    GWEditorView *editor = self.editor;
     for (const gw::LineChange &change : changes) {
-        CGFloat top = change.firstLine * lineHeight - NSMinY(visible);
-        CGFloat height = change.lineCount * lineHeight;
+        CGFloat changeTop = [editor yForLine:change.firstLine];
+        CGFloat top = changeTop - NSMinY(visible);
+        CGFloat height = [editor yForLine:change.firstLine + change.lineCount] - changeTop;
         if (change.kind == gw::LineChangeKind::Removed) {
             if (top < -lineHeight || top > NSHeight(self.bounds) + lineHeight) {
                 continue;
@@ -236,15 +343,27 @@ std::optional<size_t> indentColumns(const std::string &text, size_t tabSize) {
     // A click on a change bar opens its details instead of selecting the line.
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
     GWEditorView *editor = self.editor;
+    // A click on the fold arrow folds or opens the block.
+    BOOL onFoldArrow = point.x >= NSWidth(self.bounds) - 28 && point.x < NSWidth(self.bounds) - 12;
+    if (onFoldArrow && editor.document != nullptr) {
+        size_t clickedLine = [editor lineAtY:point.y + NSMinY(editor.visibleRect) subrow:nullptr];
+        bool inRange = clickedLine < editor.document->buffer().lineCount();
+        if (inRange && ([editor isLineFolded:clickedLine] || [editor isLineFoldable:clickedLine])) {
+            [editor toggleFoldAtLine:clickedLine];
+            return;
+        }
+    }
     if (editor.onChangeMarkerClick != nil && point.x >= NSWidth(self.bounds) - 14 && !editor.lineChanges.empty()) {
         CGFloat lineHeight = editor.lineHeight;
-        size_t line = static_cast<size_t>(std::max(0.0, std::floor((point.y + NSMinY(editor.visibleRect)) / lineHeight)));
+        size_t line = [editor lineAtY:point.y + NSMinY(editor.visibleRect) subrow:nullptr];
         for (const gw::LineChange &change : editor.lineChanges) {
             bool covers = line >= change.firstLine && line < change.firstLine + std::max<size_t>(change.lineCount, 1);
             bool nearRemoval = change.kind == gw::LineChangeKind::Removed && (line == change.firstLine || line + 1 == change.firstLine);
             if ((change.lineCount > 0 && covers) || nearRemoval) {
-                NSRect bar = NSMakeRect(NSWidth(self.bounds) - 6, change.firstLine * lineHeight - NSMinY(editor.visibleRect),
-                                        6, std::max<CGFloat>(change.lineCount * lineHeight, lineHeight));
+                CGFloat barTop = [editor yForLine:change.firstLine];
+                CGFloat barHeight = [editor yForLine:change.firstLine + change.lineCount] - barTop;
+                NSRect bar = NSMakeRect(NSWidth(self.bounds) - 6, barTop - NSMinY(editor.visibleRect),
+                                        6, std::max<CGFloat>(barHeight, lineHeight));
                 editor.onChangeMarkerClick(change.firstLine, bar);
                 return;
             }
@@ -340,8 +459,10 @@ static constexpr CGFloat kMiniChar = 1.25;
 
     // The part of the file currently on screen.
     NSRect visible = editor.visibleRect;
-    CGFloat top = NSMinY(visible) / editor.lineHeight * kMiniLine - offset;
-    CGFloat height = NSHeight(visible) / editor.lineHeight * kMiniLine;
+    double topLine = [editor fractionalLineAtY:NSMinY(visible)];
+    double bottomLine = [editor fractionalLineAtY:NSMaxY(visible)];
+    CGFloat top = topLine * kMiniLine - offset;
+    CGFloat height = (bottomLine - topLine) * kMiniLine;
     NSRect window = NSMakeRect(1, top, NSWidth(self.bounds) - 2, height);
     NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:window xRadius:4 yRadius:4];
     [[NSColor.labelColor colorWithAlphaComponent:0.07] setFill];
@@ -418,6 +539,14 @@ static constexpr CGFloat kMiniChar = 1.25;
     bool _highlightBlocked;  // this frame ran out of highlighting budget
     bool _useTabs;
     size_t _longestLine;
+
+    // Soft wrap and folding. The row map exists only while either is in use; with it empty,
+    // line N is simply at row N.
+    gw::RowMap _rowMap;
+    gw::FoldSet _folds;
+    BOOL _wrapEnabled;
+    uint32_t _wrapColumns;
+    BOOL _gutterHover;
 
     // Bracket nesting depth at the start of each line, for colouring brackets by depth.
     std::vector<int> _depthAt;
@@ -523,7 +652,10 @@ static constexpr CGFloat kMiniChar = 1.25;
     _document->selection = {range.start, range.end};
     _document->preferredX.reset();
     NSRect visible = self.visibleRect;
-    CGFloat top = range.start.line * _lineHeight;
+    if (!_folds.empty() && _folds.unfoldHiding(range.start.line)) {
+        [self rowLayoutChanged];
+    }
+    CGFloat top = [self yForLine:range.start.line];
     BOOL onScreen = top >= NSMinY(visible) + _lineHeight && top <= NSMaxY(visible) - 2 * _lineHeight;
     if (onScreen) {
         [self scrollCaretToVisible];
@@ -549,7 +681,9 @@ static constexpr CGFloat kMiniChar = 1.25;
     }
     NSColor *glow = [NSColor.controlAccentColor colorWithAlphaComponent:0.55];
     CALayer *flash = [CALayer layer];
-    flash.frame = CGRectMake(NSMinX(self.visibleRect) + 4, first * _lineHeight, NSWidth(self.visibleRect) - 8, count * _lineHeight);
+    CGFloat flashTop = [self yForLine:first];
+    CGFloat flashHeight = [self yForLine:first + count] - flashTop;
+    flash.frame = CGRectMake(NSMinX(self.visibleRect) + 4, flashTop, NSWidth(self.visibleRect) - 8, flashHeight);
     flash.backgroundColor = glow.CGColor;
     flash.cornerRadius = 7;
     flash.zPosition = 5;
@@ -578,6 +712,7 @@ static constexpr CGFloat kMiniChar = 1.25;
     _document = document;
     _highlighter = highlighter;
     _configuration = configuration;
+    _folds.clear();
     _markedText = nil;
     _lineChanges.clear();
     _lineTints.clear();
@@ -636,6 +771,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 - (void)reloadAppearance {
     GWServices *services = GWServices.shared;
     _tabSize = static_cast<size_t>(std::max(1, services.settings.tabSize));
+    _wrapEnabled = services.settings.wordWrap;
     _font = [services editorFontBold:NO italic:NO];
     _charWidth = [@"0" sizeWithAttributes:@{NSFontAttributeName: _font}].width;
     _lineHeight = std::ceil(_font.pointSize * 1.65);
@@ -676,12 +812,14 @@ static constexpr CGFloat kMiniChar = 1.25;
     paragraph.defaultTabInterval = _charWidth * _tabSize;
     paragraph.tabStops = @[];
     _paragraph = paragraph;
+    _wrapColumns = 0;
     [self invalidateLayout];
     _gutter.needsDisplay = YES;
 }
 
 - (void)invalidateLayout {
     _layouts.clear();
+    [self rebuildRowMap];
     _longestLine = 0;
     if (_document) {
         const auto &buffer = _document->buffer();
@@ -731,7 +869,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 - (CGFloat)gutterWidth {
     size_t count = _document ? _document->buffer().lineCount() : 1;
     int digits = std::max(3, static_cast<int>(std::log10(static_cast<double>(count))) + 1);
-    return std::ceil(digits * _charWidth + 26);
+    return std::ceil(digits * _charWidth + 40);  // room for the fold arrow beside the numbers
 }
 
 - (CGFloat)textLeft { return kTextInset; }
@@ -742,10 +880,26 @@ static constexpr CGFloat kMiniChar = 1.25;
     // The window lays the gutter out beside the scroll view; tell it when the width changes.
     if (std::abs(NSWidth(_gutter.frame) - self.gutterWidth) > 0.5) _gutter.superview.needsLayout = YES;
     NSSize clip = scrollView.contentView.bounds.size;
+    if (_wrapEnabled) {
+        uint32_t columns = [self computeWrapColumns];
+        if (columns != _wrapColumns) {
+            // The window was resized: lines wrap differently now.
+            _wrapColumns = columns;
+            _layouts.clear();
+            [self rebuildRowMap];
+            self.needsDisplay = YES;
+            _gutter.needsDisplay = YES;
+            _minimap.needsDisplay = YES;
+        }
+    }
     size_t lines = _document ? _document->buffer().lineCount() : 1;
+    uint64_t rows = _rowMap.empty() ? lines : _rowMap.totalRows();
     // Allow scrolling the last line up to the middle of the view, like most code editors.
-    CGFloat height = std::max(clip.height, lines * _lineHeight + clip.height * 0.5);
+    CGFloat height = std::max(clip.height, rows * _lineHeight + clip.height * 0.5);
     CGFloat width = std::max(clip.width, self.textLeft + _longestLine * _charWidth + 80);
+    if (_wrapEnabled) {
+        width = clip.width;  // wrapped text never scrolls sideways
+    }
     if (!NSEqualSizes(self.frame.size, NSMakeSize(width, height))) [self setFrameSize:NSMakeSize(width, height)];
 }
 
@@ -939,8 +1093,33 @@ static constexpr CGFloat kMiniChar = 1.25;
         }
     }
     layout.line = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)attributed);
+    if (_wrapEnabled) {
+        [self addWrapRowsToLayout:layout text:text attributed:attributed];
+    }
     auto inserted = _layouts.insert_or_assign(index, std::move(layout));
     return &inserted.first->second;
+}
+
+/// Splits a long line into rows that fit the editor's width, each with its own CoreText line.
+- (void)addWrapRowsToLayout:(LineLayout &)layout text:(const std::string &)text attributed:(NSAttributedString *)attributed {
+    gw::WrapResult wrapped = gw::wrapLine(text, _wrapColumns, static_cast<uint32_t>(_tabSize));
+    if (wrapped.rowStarts.size() < 2) {
+        return;
+    }
+    for (uint32_t startByte : wrapped.rowStarts) {
+        layout.rowStartUnits.push_back(layout.unitForByte(startByte));
+    }
+    layout.rowStartUnits.push_back(static_cast<uint32_t>(attributed.length));
+
+    size_t rowCount = wrapped.rowStarts.size();
+    for (size_t row = 0; row < rowCount; ++row) {
+        NSUInteger start = layout.rowStartUnits[row];
+        NSUInteger end = layout.rowStartUnits[row + 1];
+        NSAttributedString *piece = [attributed attributedSubstringFromRange:NSMakeRange(start, end - start)];
+        CTLineRef rowLine = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)piece);
+        layout.rowLines.push_back(rowLine);
+    }
+    layout.continuationIndent = wrapped.continuationIndent * _charWidth;
 }
 
 - (void)applyStyle:(const gw::TextStyle &)style toString:(NSMutableAttributedString *)string range:(NSRange)range {
@@ -964,26 +1143,265 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 - (CGFloat)xForPosition:(gw::Position)position {
     LineLayout *layout = [self layoutForLine:position.line];
-    return self.textLeft + CTLineGetOffsetForStringIndex(layout->line, layout->unitForByte(position.column), nullptr);
+    return self.textLeft + layout->offsetForUnit(layout->unitForByte(position.column));
+}
+
+/// Top of the screen row a position is drawn on.
+- (CGFloat)yForPosition:(gw::Position)position {
+    LineLayout *layout = [self layoutForLine:position.line];
+    size_t row = layout->rowForUnit(layout->unitForByte(position.column));
+    return [self yForLine:position.line] + row * _lineHeight;
 }
 
 - (gw::Position)positionForPoint:(NSPoint)point {
     const auto &buffer = _document->buffer();
     if (point.y < 0) return {0, 0};
-    size_t line = static_cast<size_t>(point.y / _lineHeight);
+    size_t subrow = 0;
+    size_t line = [self lineAtY:point.y subrow:&subrow];
     if (line >= buffer.lineCount()) return buffer.end();
     LineLayout *layout = [self layoutForLine:line];
-    CFIndex unit = CTLineGetStringIndexForPosition(layout->line, CGPointMake(point.x - self.textLeft, 0));
-    if (unit == kCFNotFound) unit = 0;
+    subrow = std::min(subrow, layout->rowCount() - 1);
+    CGFloat x = point.x - self.textLeft - layout->indentForRow(subrow);
+    CFIndex local = CTLineGetStringIndexForPosition(layout->lineForRow(subrow), CGPointMake(x, 0));
+    if (local == kCFNotFound) local = 0;
+    uint32_t unit = layout->rowStart(subrow) + static_cast<uint32_t>(local);
+    bool notLastRow = subrow + 1 < layout->rowCount();
+    if (notLastRow) {
+        // Clicking past the end of a wrapped row puts the caret at its end, not on the next row.
+        unit = std::min(unit, layout->rowEnd(subrow) - 1);
+    }
     return buffer.clamp({line, layout->byteForUnit(unit)});
 }
 
 - (NSRect)caretRect {
     gw::Position caret = _document->selection.caret;
-    return NSMakeRect(std::round([self xForPosition:caret]) - 1, caret.line * _lineHeight + 3, 2, _lineHeight - 6);
+    return NSMakeRect(std::round([self xForPosition:caret]) - 1, [self yForPosition:caret] + 3, 2, _lineHeight - 6);
+}
+
+// MARK: Rows (soft wrap and folding)
+
+- (BOOL)mapActive { return !_rowMap.empty(); }
+
+- (CGFloat)yForLine:(size_t)line {
+    if (_rowMap.empty()) {
+        return line * _lineHeight;
+    }
+    return _rowMap.firstRow(line) * _lineHeight;
+}
+
+- (uint32_t)rowsForLine:(size_t)line {
+    if (_rowMap.empty() || line >= _rowMap.lineCount()) {
+        return 1;
+    }
+    return _rowMap.rows(line);
+}
+
+- (BOOL)isLineHidden:(size_t)line {
+    if (_rowMap.empty() || line >= _rowMap.lineCount()) {
+        return NO;
+    }
+    return _rowMap.rows(line) == 0;
+}
+
+/// The line drawn at height `y`, and which of its rows that is. A `y` below the last row gives
+/// a line number past the end.
+- (size_t)lineAtY:(CGFloat)y subrow:(size_t *)subrow {
+    if (y < 0) {
+        y = 0;
+    }
+    uint64_t row = static_cast<uint64_t>(y / _lineHeight);
+    if (_rowMap.empty()) {
+        if (subrow != nullptr) {
+            *subrow = 0;
+        }
+        return static_cast<size_t>(row);
+    }
+    if (row >= _rowMap.totalRows()) {
+        if (subrow != nullptr) {
+            *subrow = 0;
+        }
+        return _rowMap.lineCount();
+    }
+    size_t line = _rowMap.lineForRow(row);
+    if (subrow != nullptr) {
+        *subrow = static_cast<size_t>(row - _rowMap.firstRow(line));
+    }
+    return line;
+}
+
+/// Like lineAtY, but with the fraction of the way through the line (the minimap needs it).
+- (double)fractionalLineAtY:(CGFloat)y {
+    if (y < 0) {
+        y = 0;
+    }
+    if (_rowMap.empty()) {
+        return y / _lineHeight;
+    }
+    double rowPosition = y / _lineHeight;
+    uint64_t row = static_cast<uint64_t>(rowPosition);
+    if (row >= _rowMap.totalRows()) {
+        return static_cast<double>(_rowMap.lineCount());
+    }
+    size_t line = _rowMap.lineForRow(row);
+    double within = rowPosition - static_cast<double>(_rowMap.firstRow(line));
+    double rows = std::max(1u, _rowMap.rows(line));
+    return static_cast<double>(line) + within / rows;
+}
+
+/// Width available for text, in character cells, when wrapping.
+- (uint32_t)computeWrapColumns {
+    NSScrollView *scrollView = self.enclosingScrollView;
+    CGFloat available = scrollView ? NSWidth(scrollView.contentView.bounds) : 800;
+    CGFloat usable = available - self.textLeft - 24;
+    if (_charWidth <= 0) {
+        return 80;
+    }
+    return static_cast<uint32_t>(std::max(8.0, std::floor(usable / _charWidth)));
+}
+
+/// Recomputes how many rows each line takes. Cheap when neither wrapping nor folding is on:
+/// the map is dropped and line N is at row N.
+- (void)rebuildRowMap {
+    if (!_document || (!_wrapEnabled && _folds.empty())) {
+        _rowMap.clear();
+        return;
+    }
+    const auto &buffer = _document->buffer();
+    size_t count = buffer.lineCount();
+    std::vector<uint32_t> rows(count, 1);
+    if (_wrapEnabled) {
+        if (_wrapColumns == 0) {
+            _wrapColumns = [self computeWrapColumns];
+        }
+        for (size_t line = 0; line < count; ++line) {
+            rows[line] = gw::countWrapRows(buffer.line(line), _wrapColumns, static_cast<uint32_t>(_tabSize));
+        }
+    }
+    for (const gw::Fold &fold : _folds.all()) {
+        for (size_t line = fold.first + 1; line <= fold.last && line < count; ++line) {
+            rows[line] = 0;
+        }
+    }
+    _rowMap.assign(std::move(rows));
+}
+
+/// Something about the layout changed (wrap on/off, folds): update everything that depends on it.
+- (void)rowLayoutChanged {
+    _layouts.clear();
+    [self rebuildRowMap];
+    [self updateFrameSize];
+    self.needsDisplay = YES;
+    _gutter.needsDisplay = YES;
+    _minimap.needsDisplay = YES;
+    [self updateCaretAnimated:NO];
+}
+
+/// Rows of the lines an edit touched changed length; keep the map in step.
+- (void)document:(gw::Document *)document changed:(const gw::Change &)change {
+    if (document != _document) return;
+    _depthValid = std::min(_depthValid, change.firstLine);
+    _matchVersion = UINT64_MAX;
+
+    size_t foldCountBefore = _folds.all().size();
+    if (foldCountBefore > 0) {
+        _folds.adjustForEdit(change.firstLine, change.lastLine, change.lineDelta);
+    }
+    if (!_wrapEnabled && _folds.empty() && _rowMap.empty()) {
+        return;
+    }
+    bool linesMoved = change.lineDelta != 0;
+    bool foldsChanged = _folds.all().size() != foldCountBefore;
+    const auto &editedBuffer = document->buffer();
+    size_t expectedOldCount = static_cast<size_t>(static_cast<long>(editedBuffer.lineCount()) - change.lineDelta);
+    bool mapMatchesEdit = _rowMap.lineCount() == expectedOldCount;
+    if (foldsChanged || !_folds.empty() || !mapMatchesEdit) {
+        [self rebuildRowMap];
+        return;
+    }
+    if (linesMoved) {
+        // Lines were added or removed: recount only the lines the edit touched.
+        size_t touchedNow = change.lastLine - change.firstLine + 1;
+        size_t touchedBefore = static_cast<size_t>(static_cast<long>(touchedNow) - change.lineDelta);
+        std::vector<uint32_t> newRows;
+        for (size_t line = change.firstLine; line <= change.lastLine && line < editedBuffer.lineCount(); ++line) {
+            uint32_t rows = 1;
+            if (_wrapEnabled) {
+                rows = gw::countWrapRows(editedBuffer.line(line), _wrapColumns, static_cast<uint32_t>(_tabSize));
+            }
+            newRows.push_back(rows);
+        }
+        _rowMap.replaceLines(change.firstLine, touchedBefore, newRows);
+        return;
+    }
+    if (_wrapEnabled) {
+        const auto &buffer = document->buffer();
+        size_t last = std::min(change.lastLine, buffer.lineCount() - 1);
+        for (size_t line = change.firstLine; line <= last; ++line) {
+            if (_rowMap.rows(line) == 0) {
+                continue;  // hidden inside a fold
+            }
+            _rowMap.setRows(line, gw::countWrapRows(buffer.line(line), _wrapColumns, static_cast<uint32_t>(_tabSize)));
+        }
+    }
 }
 
 // MARK: Drawing
+
+/// Calls `block` once for each screen row a stretch of a line covers, with the left and right
+/// edge of the covered part and the row's top. A range that ends where the line continues
+/// (a selection running on into the next line) gets a little extra at its end.
+- (void)enumerateSegmentsInLine:(size_t)line
+                      fromUnit:(uint32_t)startUnit
+                        toUnit:(uint32_t)endUnit
+              continuesPastEnd:(BOOL)continues
+                         block:(void (^)(CGFloat left, CGFloat right, CGFloat top))block {
+    LineLayout *layout = [self layoutForLine:line];
+    CGFloat lineTop = [self yForLine:line];
+    size_t rows = layout->rowCount();
+    size_t lastRow = rows - 1;
+    BOOL emptyRange = startUnit >= endUnit;
+
+    if (emptyRange) {
+        size_t row = layout->rowForUnit(startUnit);
+        CGFloat x = self.textLeft + layout->offsetInRow(row, startUnit);
+        if (continues && row == lastRow) {
+            block(x, x + _charWidth * 0.6, lineTop + row * _lineHeight);
+        } else {
+            block(x, x, lineTop + row * _lineHeight);
+        }
+        return;
+    }
+    for (size_t row = 0; row < rows; ++row) {
+        uint32_t rowStart = layout->rowStart(row);
+        uint32_t rowEnd = layout->rowEnd(row);
+        uint32_t from = std::max(startUnit, rowStart);
+        uint32_t to = std::min(endUnit, rowEnd);
+        if (from >= to) {
+            continue;
+        }
+        CGFloat left = self.textLeft + layout->offsetInRow(row, from);
+        CGFloat right = self.textLeft + layout->offsetInRow(row, to);
+        BOOL endsHere = row == lastRow && to == endUnit;
+        if (endsHere && continues) {
+            right += _charWidth * 0.6;
+        }
+        block(left, right, lineTop + row * _lineHeight);
+    }
+}
+
+/// The same, with the range given in bytes of the line.
+- (void)enumerateSegmentsInLine:(size_t)line
+                      fromByte:(size_t)startByte
+                        toByte:(size_t)endByte
+              continuesPastEnd:(BOOL)continues
+                         block:(void (^)(CGFloat left, CGFloat right, CGFloat top))block {
+    LineLayout *layout = [self layoutForLine:line];
+    [self enumerateSegmentsInLine:line
+                         fromUnit:layout->unitForByte(startByte)
+                           toUnit:layout->unitForByte(endByte)
+                 continuesPastEnd:continues
+                            block:block];
+}
 
 - (void)drawRect:(NSRect)dirtyRect {
     [_backgroundColor setFill];
@@ -993,17 +1411,18 @@ static constexpr CGFloat kMiniChar = 1.25;
 
     const auto &buffer = _document->buffer();
     size_t count = buffer.lineCount();
-    size_t first = static_cast<size_t>(std::max(0.0, std::floor(NSMinY(dirtyRect) / _lineHeight)));
-    size_t last = std::min(count - 1, static_cast<size_t>(std::max(0.0, std::floor(NSMaxY(dirtyRect) / _lineHeight))));
+    size_t first = [self lineAtY:NSMinY(dirtyRect) subrow:nullptr];
+    size_t last = std::min(count - 1, [self lineAtY:NSMaxY(dirtyRect) subrow:nullptr]);
     if (first >= count) return;
     NSRect visible = self.visibleRect;
     gw::Range selection = _document->selection.range();
-    size_t caretLine = _document->selection.caret.line;
+    gw::Position caretPosition = _document->selection.caret;
+    size_t caretLine = caretPosition.line;
 
-    // Current line: a soft rounded band.
+    // Current line: a soft rounded band on the row the caret is on.
     if (selection.empty() && caretLine >= first && caretLine <= last) {
         [_lineHighlight setFill];
-        NSRect band = NSMakeRect(NSMinX(visible) + 4, caretLine * _lineHeight + 1, NSWidth(visible) - 8, _lineHeight - 2);
+        NSRect band = NSMakeRect(NSMinX(visible) + 4, [self yForPosition:caretPosition] + 1, NSWidth(visible) - 8, _lineHeight - 2);
         [[NSBezierPath bezierPathWithRoundedRect:band xRadius:7 yRadius:7] fill];
     }
 
@@ -1023,6 +1442,7 @@ static constexpr CGFloat kMiniChar = 1.25;
     [_guideColor setFill];
     CGFloat step = _tabSize * _charWidth;
     for (size_t line = first; line <= last && settings.indentGuides; ++line) {
+        if ([self isLineHidden:line]) continue;
         std::optional<size_t> columns = indentColumns(buffer.line(line), _tabSize);
         if (!columns) {
             // Blank lines continue the guides of the code around them.
@@ -1035,8 +1455,10 @@ static constexpr CGFloat kMiniChar = 1.25;
             }
             columns = std::min(above.value_or(0), below.value_or(0));
         }
+        CGFloat guideTop = [self yForLine:line];
+        CGFloat guideHeight = [self rowsForLine:line] * _lineHeight;
         for (size_t level = 0; level < *columns / _tabSize; ++level) {
-            NSRectFillUsingOperation(NSMakeRect(std::round(self.textLeft + level * step), line * _lineHeight, 1, _lineHeight),
+            NSRectFillUsingOperation(NSMakeRect(std::round(self.textLeft + level * step), guideTop, 1, guideHeight),
                                      NSCompositingOperationSourceOver);
         }
     }
@@ -1049,32 +1471,43 @@ static constexpr CGFloat kMiniChar = 1.25;
     CGContextRef context = NSGraphicsContext.currentContext.CGContext;
     CGContextSetTextMatrix(context, CGAffineTransformMakeScale(1, -1));  // flipped view
     for (size_t line = first; line <= last; ++line) {
-        CGFloat y = line * _lineHeight;
+        if ([self isLineHidden:line]) continue;
+        CGFloat y = [self yForLine:line];
         // Selection behind the text, with softly rounded ends.
         if (!selection.empty() && line >= selection.start.line && line <= selection.end.line) {
-            CGFloat from = line == selection.start.line ? [self xForPosition:selection.start] : self.textLeft;
-            CGFloat to = line == selection.end.line ? [self xForPosition:selection.end]
-                                                    : [self xForPosition:{line, buffer.line(line).size()}] + _charWidth * 0.6;
+            size_t startByte = line == selection.start.line ? selection.start.column : 0;
+            size_t endByte = line == selection.end.line ? selection.end.column : buffer.line(line).size();
+            BOOL continues = line < selection.end.line;
             [_selectionColor setFill];
-            NSRect band = NSMakeRect(from, y + 1, std::max(0.0, to - from), _lineHeight - 2);
-            [[NSBezierPath bezierPathWithRoundedRect:band xRadius:4 yRadius:4] fill];
+            [self enumerateSegmentsInLine:line fromByte:startByte toByte:endByte continuesPastEnd:continues
+                                    block:^(CGFloat left, CGFloat right, CGFloat top) {
+                NSRect band = NSMakeRect(left, top + 1, std::max(0.0, right - left), self->_lineHeight - 2);
+                [[NSBezierPath bezierPathWithRoundedRect:band xRadius:4 yRadius:4] fill];
+            }];
         }
         LineLayout *layout = [self layoutForLine:line];
-        CGContextSetTextPosition(context, self.textLeft, y + _baseline);
-        CTLineDraw(layout->line, context);
+        size_t rows = layout->rowCount();
+        for (size_t row = 0; row < rows; ++row) {
+            CGContextSetTextPosition(context, self.textLeft + layout->indentForRow(row), y + row * _lineHeight + _baseline);
+            CTLineDraw(layout->lineForRow(row), context);
+        }
+        if (_folds.isFoldHeader(line)) {
+            [self drawFoldPillForLine:line];
+        }
     }
 
     // Matching brackets get a thin rounded outline.
     if (auto match = [self bracketMatch]) {
         [_matchColor setStroke];
         for (gw::Position at : {match->first, match->second}) {
-            if (at.line < first || at.line > last) continue;
-            CGFloat x = [self xForPosition:at];
-            CGFloat width = [self xForPosition:buffer.nextCharacter(at)] - x;
-            NSBezierPath *box = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(x - 0.5, at.line * _lineHeight + 3, width + 1, _lineHeight - 6)
-                                                               xRadius:3 yRadius:3];
-            box.lineWidth = 1;
-            [box stroke];
+            if (at.line < first || at.line > last || [self isLineHidden:at.line]) continue;
+            [self enumerateSegmentsInLine:at.line fromByte:at.column toByte:at.column + 1 continuesPastEnd:NO
+                                    block:^(CGFloat left, CGFloat right, CGFloat top) {
+                NSBezierPath *box = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(left - 0.5, top + 3, right - left + 1, self->_lineHeight - 6)
+                                                                   xRadius:3 yRadius:3];
+                box.lineWidth = 1;
+                [box stroke];
+            }];
         }
     }
 
@@ -1088,6 +1521,142 @@ static constexpr CGFloat kMiniChar = 1.25;
     }
 }
 
+// MARK: Folding
+
+/// Where the "…" marker after a folded line goes.
+- (NSRect)foldPillRectForLine:(size_t)line {
+    LineLayout *layout = [self layoutForLine:line];
+    size_t lastRow = layout->rowCount() - 1;
+    uint32_t endUnit = static_cast<uint32_t>(layout->unitToByte.size() - 1);
+    CGFloat x = self.textLeft + layout->offsetInRow(lastRow, endUnit) + 8;
+    CGFloat y = [self yForLine:line] + lastRow * _lineHeight;
+    return NSMakeRect(x, y + 5, _charWidth * 3.2, _lineHeight - 10);
+}
+
+- (void)drawFoldPillForLine:(size_t)line {
+    NSRect pill = [self foldPillRectForLine:line];
+    [[_foreground colorWithAlphaComponent:0.14] setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:pill xRadius:5 yRadius:5] fill];
+    NSDictionary *attributes = @{NSFontAttributeName: _font, NSForegroundColorAttributeName: [_foreground colorWithAlphaComponent:0.7]};
+    NSString *dots = @"\u2026";
+    NSSize size = [dots sizeWithAttributes:attributes];
+    NSPoint origin = NSMakePoint(NSMidX(pill) - size.width / 2, NSMidY(pill) - size.height / 2);
+    [dots drawAtPoint:origin withAttributes:attributes];
+}
+
+- (BOOL)isLineFolded:(size_t)line { return _folds.isFoldHeader(line); }
+
+- (BOOL)isLineFoldable:(size_t)line {
+    if (!_document || line >= _document->buffer().lineCount()) {
+        return NO;
+    }
+    return gw::isFoldable(_document->buffer(), line, _tabSize);
+}
+
+/// Folds the block that starts on `line`, or opens it if it is folded.
+- (void)toggleFoldAtLine:(size_t)line {
+    if (!_document) return;
+    if (_folds.isFoldHeader(line)) {
+        _folds.unfold(line);
+        [self rowLayoutChanged];
+        return;
+    }
+    if (![self isLineFoldable:line]) return;
+    size_t end = gw::foldEnd(_document->buffer(), line, _tabSize);
+    _folds.fold(line, end);
+    [self moveCaretOutOfHiddenLines];
+    [self rowLayoutChanged];
+}
+
+/// After folding, a caret inside the hidden lines moves to the end of the line that stays visible.
+- (void)moveCaretOutOfHiddenLines {
+    gw::Selection selection = _document->selection;
+    for (const gw::Fold &fold : _folds.all()) {
+        bool caretHidden = selection.caret.line > fold.first && selection.caret.line <= fold.last;
+        bool anchorHidden = selection.anchor.line > fold.first && selection.anchor.line <= fold.last;
+        if (caretHidden || anchorHidden) {
+            gw::Position header = {fold.first, _document->buffer().line(fold.first).size()};
+            _document->selection = {header, header};
+            return;
+        }
+    }
+}
+
+/// The nearest line at or above `line` that starts a foldable block containing it.
+- (std::optional<size_t>)foldableLineContaining:(size_t)line {
+    const auto &buffer = _document->buffer();
+    if (gw::isFoldable(buffer, line, _tabSize)) {
+        return line;
+    }
+    size_t limit = line > 5000 ? line - 5000 : 0;
+    for (size_t candidate = line; candidate-- > limit;) {
+        if (gw::isFoldable(buffer, candidate, _tabSize) && gw::foldEnd(buffer, candidate, _tabSize) >= line) {
+            return candidate;
+        }
+    }
+    return std::nullopt;
+}
+
+- (IBAction)foldCode:(id)sender {
+    if (!_document) return;
+    std::optional<size_t> line = [self foldableLineContaining:_document->selection.caret.line];
+    if (!line) {
+        NSBeep();
+        return;
+    }
+    if (_folds.isFoldHeader(*line)) {
+        // Already folded: fold the block around it instead.
+        std::optional<size_t> outer;
+        const auto &buffer = _document->buffer();
+        for (size_t candidate = *line; candidate-- > 0 && *line - candidate < 5000;) {
+            if (gw::isFoldable(buffer, candidate, _tabSize) && gw::foldEnd(buffer, candidate, _tabSize) >= *line) {
+                outer = candidate;
+                break;
+            }
+        }
+        if (!outer) return;
+        line = outer;
+    }
+    [self toggleFoldAtLine:*line];
+}
+
+- (IBAction)unfoldCode:(id)sender {
+    if (!_document) return;
+    if (_folds.unfoldContaining(_document->selection.caret.line)) {
+        [self rowLayoutChanged];
+    }
+}
+
+- (IBAction)foldAllCode:(id)sender {
+    if (!_document) return;
+    const auto &buffer = _document->buffer();
+    _folds.clear();
+    size_t line = 0;
+    while (line < buffer.lineCount()) {
+        if (gw::isFoldable(buffer, line, _tabSize)) {
+            size_t end = gw::foldEnd(buffer, line, _tabSize);
+            _folds.fold(line, end);
+            line = end + 1;
+        } else {
+            ++line;
+        }
+    }
+    [self moveCaretOutOfHiddenLines];
+    [self rowLayoutChanged];
+}
+
+- (IBAction)unfoldAllCode:(id)sender {
+    if (_folds.empty()) return;
+    _folds.clear();
+    [self rowLayoutChanged];
+}
+
+- (IBAction)toggleWordWrap:(id)sender {
+    [GWServices.shared updateSettings:^(gw::EditorSettings &settings) {
+        settings.wordWrap = !settings.wordWrap;
+    }];
+}
+
 /// Whole-line colours, for added and removed lines in a diff.
 - (void)drawLineTintsFromLine:(size_t)first toLine:(size_t)last {
     if (_lineTints.empty()) {
@@ -1095,11 +1664,11 @@ static constexpr CGFloat kMiniChar = 1.25;
     }
     NSRect visible = self.visibleRect;
     for (size_t line = first; line <= last && line < _lineTints.size(); ++line) {
-        if (_lineTints[line] == 0) {
+        if (_lineTints[line] == 0 || [self isLineHidden:line]) {
             continue;
         }
         [GWColor(_lineTints[line]) setFill];
-        NSRectFillUsingOperation(NSMakeRect(NSMinX(visible), line * _lineHeight, NSWidth(visible), _lineHeight),
+        NSRectFillUsingOperation(NSMakeRect(NSMinX(visible), [self yForLine:line], NSWidth(visible), [self rowsForLine:line] * _lineHeight),
                                  NSCompositingOperationSourceOver);
     }
 }
@@ -1115,21 +1684,22 @@ static constexpr CGFloat kMiniChar = 1.25;
     NSColor *matchColor = [NSColor.systemYellowColor colorWithAlphaComponent:0.28];
     NSColor *currentColor = [NSColor.systemOrangeColor colorWithAlphaComponent:0.55];
     for (auto match = begin; match != _findMatches.end() && match->start.line <= last; ++match) {
-        if (match->start.line != match->end.line) {
+        if (match->start.line != match->end.line || [self isLineHidden:match->start.line]) {
             continue;
         }
-        CGFloat x = [self xForPosition:match->start];
-        CGFloat width = [self xForPosition:match->end] - x;
-        NSRect box = NSMakeRect(x - 1, match->start.line * _lineHeight + 2, std::max<CGFloat>(width, 3) + 2, _lineHeight - 4);
         BOOL isCurrent = static_cast<long>(match - _findMatches.begin()) == _currentFindMatch;
-        [isCurrent ? currentColor : matchColor setFill];
-        [[NSBezierPath bezierPathWithRoundedRect:box xRadius:3 yRadius:3] fill];
-        if (isCurrent) {
-            [[NSColor.systemOrangeColor colorWithAlphaComponent:0.9] setStroke];
-            NSBezierPath *outline = [NSBezierPath bezierPathWithRoundedRect:box xRadius:3 yRadius:3];
-            outline.lineWidth = 1;
-            [outline stroke];
-        }
+        [self enumerateSegmentsInLine:match->start.line fromByte:match->start.column toByte:match->end.column continuesPastEnd:NO
+                                block:^(CGFloat left, CGFloat right, CGFloat top) {
+            NSRect box = NSMakeRect(left - 1, top + 2, std::max<CGFloat>(right - left, 3) + 2, self->_lineHeight - 4);
+            [isCurrent ? currentColor : matchColor setFill];
+            [[NSBezierPath bezierPathWithRoundedRect:box xRadius:3 yRadius:3] fill];
+            if (isCurrent) {
+                [[NSColor.systemOrangeColor colorWithAlphaComponent:0.9] setStroke];
+                NSBezierPath *outline = [NSBezierPath bezierPathWithRoundedRect:box xRadius:3 yRadius:3];
+                outline.lineWidth = 1;
+                [outline stroke];
+            }
+        }];
     }
 }
 
@@ -1138,10 +1708,10 @@ static constexpr CGFloat kMiniChar = 1.25;
     NSRect visible = self.visibleRect;
     [_dividerColor setFill];
     for (const gw::Section &section : _sections) {
-        if (!section.divider || section.line < first || section.line > last) {
+        if (!section.divider || section.line < first || section.line > last || [self isLineHidden:section.line]) {
             continue;
         }
-        CGFloat y = std::round(section.line * _lineHeight) + 0.5;
+        CGFloat y = std::round([self yForLine:section.line]) + 0.5;
         NSRect line = NSMakeRect(NSMinX(visible) + 6, y - 0.5, NSWidth(visible) - 12, 1);
         NSRectFillUsingOperation(line, NSCompositingOperationSourceOver);
     }
@@ -1150,13 +1720,16 @@ static constexpr CGFloat kMiniChar = 1.25;
 /// Backgrounds from the user's colour rules ("highlight this name", scope backgrounds).
 - (void)drawHighlightsFromLine:(size_t)first toLine:(size_t)last {
     for (size_t line = first; line <= last; ++line) {
+        if ([self isLineHidden:line]) continue;
         LineLayout *layout = [self layoutForLine:line];
         for (const LineLayout::Highlight &highlight : layout->highlights) {
-            CGFloat start = self.textLeft + CTLineGetOffsetForStringIndex(layout->line, highlight.startUnit, nullptr);
-            CGFloat end = self.textLeft + CTLineGetOffsetForStringIndex(layout->line, highlight.endUnit, nullptr);
-            NSRect box = NSMakeRect(start - 1, line * _lineHeight + 2, end - start + 2, _lineHeight - 4);
-            [GWColor(highlight.color) setFill];
-            [[NSBezierPath bezierPathWithRoundedRect:box xRadius:3 yRadius:3] fill];
+            NSColor *color = GWColor(highlight.color);
+            [self enumerateSegmentsInLine:line fromUnit:highlight.startUnit toUnit:highlight.endUnit continuesPastEnd:NO
+                                    block:^(CGFloat left, CGFloat right, CGFloat top) {
+                NSRect box = NSMakeRect(left - 1, top + 2, right - left + 2, self->_lineHeight - 4);
+                [color setFill];
+                [[NSBezierPath bezierPathWithRoundedRect:box xRadius:3 yRadius:3] fill];
+            }];
         }
     }
 }
@@ -1173,6 +1746,7 @@ static constexpr CGFloat kMiniChar = 1.25;
     const auto &buffer = _document->buffer();
     [_occurrenceColor setFill];
     for (size_t line = first; line <= last; ++line) {
+        if ([self isLineHidden:line]) continue;
         const std::string &text = buffer.line(line);
         size_t found = text.find(word);
         while (found != std::string::npos) {
@@ -1180,10 +1754,11 @@ static constexpr CGFloat kMiniChar = 1.25;
             bool startsWord = found == 0 || !gw::isWordByte(static_cast<unsigned char>(text[found - 1]));
             bool endsWord = end >= text.size() || !gw::isWordByte(static_cast<unsigned char>(text[end]));
             if (startsWord && endsWord) {
-                CGFloat x = [self xForPosition:{line, found}];
-                CGFloat width = [self xForPosition:{line, end}] - x;
-                NSRect box = NSMakeRect(x - 1, line * _lineHeight + 2, width + 2, _lineHeight - 4);
-                [[NSBezierPath bezierPathWithRoundedRect:box xRadius:3 yRadius:3] fill];
+                [self enumerateSegmentsInLine:line fromByte:found toByte:end continuesPastEnd:NO
+                                        block:^(CGFloat left, CGFloat right, CGFloat top) {
+                    NSRect box = NSMakeRect(left - 1, top + 2, right - left + 2, self->_lineHeight - 4);
+                    [[NSBezierPath bezierPathWithRoundedRect:box xRadius:3 yRadius:3] fill];
+                }];
             }
             found = text.find(word, found + 1);
         }
@@ -1434,13 +2009,19 @@ static constexpr CGFloat kMiniChar = 1.25;
 - (void)scrollToLineCentered:(size_t)line {
     NSClipView *clip = self.enclosingScrollView.contentView;
     if (!clip) return;
-    CGFloat y = line * _lineHeight - NSHeight(clip.bounds) / 2;
+    CGFloat y = [self yForLine:line] - NSHeight(clip.bounds) / 2;
     y = std::max(0.0, std::min(y, NSHeight(self.frame) - NSHeight(clip.bounds)));
     [clip scrollToPoint:NSMakePoint(NSMinX(clip.bounds), y)];
     [self.enclosingScrollView reflectScrolledClipView:clip];
 }
 
 - (void)selectionDidChange {
+    if (_document && !_folds.empty()) {
+        // A caret can't sit on a hidden line: opening the fold that hides it shows it.
+        if (_folds.unfoldHiding(_document->selection.caret.line)) {
+            [self rowLayoutChanged];
+        }
+    }
     [self scrollCaretToVisible];
     [self updateCaretAnimated:YES];
     self.needsDisplay = YES;  // current-line band and bracket match
@@ -1556,16 +2137,20 @@ static constexpr CGFloat kMiniChar = 1.25;
 - (void)moveWordLeftAndModifySelection:(id)sender { [self moveHorizontally:-1 byWord:YES extend:YES]; }
 - (void)moveWordRightAndModifySelection:(id)sender { [self moveHorizontally:1 byWord:YES extend:YES]; }
 
-// Vertical movement keeps the column the caret "wants" across short lines.
-- (void)moveVertically:(long)lines extend:(BOOL)extend {
+// Vertical movement keeps the column the caret "wants" across short lines. It moves by screen
+// rows, so a wrapped line takes several presses and folded lines are stepped over.
+- (void)moveVertically:(long)rows extend:(BOOL)extend {
     const auto &buffer = _document->buffer();
     gw::Position caret = _document->selection.caret;
     double x = _document->preferredX.value_or([self xForPosition:caret]);
-    long target = static_cast<long>(caret.line) + lines;
+    double caretRowTop = [self yForPosition:caret];
+    long caretRow = static_cast<long>(std::floor(caretRowTop / _lineHeight + 0.5));
+    long totalRows = _rowMap.empty() ? static_cast<long>(buffer.lineCount()) : static_cast<long>(_rowMap.totalRows());
+    long target = caretRow + rows;
     gw::Position position;
     if (target < 0) {
         position = {0, 0};
-    } else if (target >= static_cast<long>(buffer.lineCount())) {
+    } else if (target >= totalRows) {
         position = buffer.end();
     } else {
         position = [self positionForPoint:NSMakePoint(x, target * _lineHeight + _lineHeight / 2)];

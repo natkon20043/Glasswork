@@ -28,6 +28,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Called for every change to any document, so caches tied to the shown one stay current.
 - (void)document:(gw::Document *)document changedFromLine:(size_t)line;
+/// The same, with the whole change (lines added or removed, last line touched), which soft wrap
+/// and folding need to keep their row counts right.
+- (void)document:(gw::Document *)document changed:(const gw::Change &)change;
 
 @property (nonatomic, copy, nullable) void (^onSelectionChange)(void);
 @property (nonatomic, copy, nullable) void (^onEdit)(void);
@@ -97,6 +100,13 @@ NS_ASSUME_NONNULL_BEGIN
 - (IBAction)toggleLineComment:(nullable id)sender;
 - (IBAction)indentLines:(nullable id)sender;
 - (IBAction)outdentLines:(nullable id)sender;
+
+// Soft wrap and folding.
+- (IBAction)toggleWordWrap:(nullable id)sender;
+- (IBAction)foldCode:(nullable id)sender;
+- (IBAction)unfoldCode:(nullable id)sender;
+- (IBAction)foldAllCode:(nullable id)sender;
+- (IBAction)unfoldAllCode:(nullable id)sender;
 
 @end
 

@@ -925,7 +925,7 @@ bool looksBinary(const char *path) {
     __weak GWEditorView *editor = _editorView;
     tab->document->onChange = [highlighter, editor, raw](const gw::Change &change) {
         highlighter->didChange(change);
-        [editor document:raw changedFromLine:change.firstLine];
+        [editor document:raw changed:change];
     };
     [self configureLanguageForTab:*tab];
     NSInteger position = index < 0 || index > static_cast<NSInteger>(_tabs.size()) ? static_cast<NSInteger>(_tabs.size()) : index;

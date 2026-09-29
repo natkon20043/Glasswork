@@ -175,6 +175,12 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
         [self item:@"Insert Line Above" action:@selector(insertLineAbove:) key:@"\r" modifiers:command | shift],
         [self item:@"Select Next Occurrence" action:@selector(selectNextOccurrence:) key:@"d"],
         NSMenuItem.separatorItem,
+        [self item:@"Fold" action:@selector(foldCode:) key:@"[" modifiers:command | option],
+        [self item:@"Unfold" action:@selector(unfoldCode:) key:@"]" modifiers:command | option],
+        [self item:@"Fold All" action:@selector(foldAllCode:) key:@"[" modifiers:command | option | shift],
+        [self item:@"Unfold All" action:@selector(unfoldAllCode:) key:@"]" modifiers:command | option | shift],
+        [self item:@"Word Wrap" action:@selector(toggleWordWrap:) key:@"z" modifiers:option],
+        NSMenuItem.separatorItem,
         [self item:@"Inspect Colours…" action:@selector(inspectColors:) key:@"c" modifiers:command | option],
     ] parent:main];
 
