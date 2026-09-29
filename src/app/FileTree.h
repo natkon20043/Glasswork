@@ -32,6 +32,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// The folder that is selected, else the one containing the selected file, else the root.
 - (nullable NSURL *)targetFolder;
 - (void)collapseAll;
+/// The right-click menu for a row (-1 for empty space). Exposed so it can be checked without a mouse.
+- (nullable NSMenu *)contextMenuForRow:(NSInteger)row;
 
 @end
 

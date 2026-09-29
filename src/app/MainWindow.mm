@@ -2298,6 +2298,27 @@ static double timed(void (^work)(void)) {
     return YES;
 }
 
+/// Developer check: shows the file tree's right-click menu for the second row.
+- (IBAction)debugShowTreeMenu:(id)sender {
+    NSView *tree = _fileTree.view.documentView;
+    NSMenu *menu = [_fileTree contextMenuForRow:1];
+    NSPoint where = NSMakePoint(60, 40);
+    NSEvent *event = [NSEvent mouseEventWithType:NSEventTypeRightMouseDown
+                                        location:[tree convertPoint:where toView:nil]
+                                   modifierFlags:0
+                                       timestamp:0
+                                    windowNumber:self.window.windowNumber
+                                         context:nil
+                                     eventNumber:0
+                                      clickCount:1
+                                        pressure:1];
+    [NSMenu popUpContextMenu:menu withEvent:event forView:tree];
+}
+
+- (IBAction)debugNewFileSheet:(id)sender {
+    [_fileTree createFileInFolder:_fileTree.rootURL];
+}
+
 - (IBAction)debugTerminalDemo:(id)sender {
     [self runInTerminal:@"clear; printf '\\e[1;31mbold red\\e[0m \\e[4munderline\\e[0m \\e[3mitalic\\e[0m \\e[38;2;255;160;0mtruecolor\\e[0m \\e[7minverse\\e[0m\\n'; ls -la /System | head -8; echo '日本語 ✓ ─│┌┐└┘╭╮'; git -C ~/Code/Glasswork status -sb | head -3"];
 }

@@ -395,6 +395,10 @@
 // ---------------------------------------------------------------------------
 // MARK: Context menu
 
+- (NSMenu *)contextMenuForRow:(NSInteger)row {
+    return [self menuForRow:row];
+}
+
 - (NSMenu *)menuForRow:(NSInteger)row {
     GWFileNode *node = row >= 0 ? [_outline itemAtRow:row] : nil;
     _menuNode = node;
