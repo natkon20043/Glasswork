@@ -5,6 +5,7 @@
 #include "Document.hpp"
 #include "LspServer.hpp"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,8 @@ struct GWDiagnostic {
     int severity = 1;  // 1 error, 2 warning, 3 information, 4 hint
     std::string message;
     std::string source;
+    /// The server's own form of the problem, sent back with code-action requests.
+    std::shared_ptr<gw::lsp::Json> raw;
 };
 
 /// Runs the language servers for the open files (clangd, sourcekit-lsp, pyright and so on),

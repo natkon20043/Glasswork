@@ -40,6 +40,23 @@ struct Diagnostic {
     std::string message;
     std::string source;
     std::string code;
+    /// Exactly what the server sent, to give back in code-action requests.
+    Json original;
+
+    /// The LSP object for this problem (what a server sent, in the form it expects back).
+    Json toJson() const {
+        if (!original.is_null()) {
+            return original;
+        }
+        Json result = {{"range", range}, {"severity", severity}, {"message", message}};
+        if (!source.empty()) {
+            result["source"] = source;
+        }
+        if (!code.empty()) {
+            result["code"] = code;
+        }
+        return result;
+    }
 };
 
 std::vector<Diagnostic> parseDiagnostics(const Json& array);

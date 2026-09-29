@@ -84,6 +84,7 @@ std::vector<Diagnostic> parseDiagnostics(const Json& array) {
             continue;
         }
         Diagnostic diagnostic;
+        diagnostic.original = item;
         diagnostic.range = item["range"];
         diagnostic.severity = item.value("severity", 1);
         diagnostic.message = item.value("message", "");

@@ -84,6 +84,8 @@ What you get:
 - **Problems** as you type: wavy underlines, a dot in the line numbers, the message at the end of the line (`editor.inlineDiagnostics`), and error and warning counts in the status bar. ⇧⌘M lists the problems in the file.
 - **Hover** (rest the pointer on a name): the declaration and documentation, plus any problems on it.
 - **Completion** as you type, fuzzy-filtered, with ↑↓, ↩ or ⇥ to accept and ⎋ to close. ⌃Space opens it on demand.
+- **Signature help** while typing a call: the function's signature with the current argument in bold.
+- **Quick Fix** (⌘.) applies the fixes a server offers for the problems at the caret.
 - **Go to Definition** (⌃⌘D), **Find References** (⌃⌘R), **Rename Symbol** (F2, across all files) and **Format Document** (⇧⌥F), all in the Go menu.
 
 Open the project folder and provide a `compile_commands.json` for accurate C-family includes. CMake users can set `CMAKE_EXPORT_COMPILE_COMMANDS`; clangd searches normal places such as the project's `build` folder.
@@ -108,7 +110,7 @@ Environment variables for checking the interface without clicking:
 
 ## Next milestones
 
-1. Signature help, code actions (quick fixes) and semantic-token colours.
+1. Refactoring code actions that need the server to run commands, and semantic-token colours.
 2. Incremental document sync and multi-cursor editing.
 3. Debug Adapter Protocol.
 

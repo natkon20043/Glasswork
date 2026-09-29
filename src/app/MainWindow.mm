@@ -2381,6 +2381,14 @@ static double timed(void (^work)(void)) {
     }];
 }
 
+/// Developer check: types "square(" at the caret (shows the signature help).
+- (IBAction)debugTypeCall:(id)sender {
+    [self.window makeFirstResponder:_editorView];
+    for (NSString *character in @[@"s", @"q", @"u", @"a", @"r", @"e", @"("]) {
+        [_editorView insertText:character replacementRange:NSMakeRange(NSNotFound, 0)];
+    }
+}
+
 - (IBAction)debugTerminalDemo:(id)sender {
     [self runInTerminal:@"clear; printf '\\e[1;31mbold red\\e[0m \\e[4munderline\\e[0m \\e[3mitalic\\e[0m \\e[38;2;255;160;0mtruecolor\\e[0m \\e[7minverse\\e[0m\\n'; ls -la /System | head -8; echo '日本語 ✓ ─│┌┐└┘╭╮'; git -C ~/Code/Glasswork status -sb | head -3"];
 }
@@ -2999,6 +3007,12 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
         return;
     }
     unichar last = typed.length > 0 ? [typed characterAtIndex:typed.length - 1] : 0;
+    if (last == '(' || last == ',') {
+        [self requestSignatureHelp];
+    } else if (last == ')' || last == ';') {
+        ++_hoverToken;
+        [GWHoverPopover hide];
+    }
     BOOL wordCharacter = (last >= 'a' && last <= 'z') || (last >= 'A' && last <= 'Z') || (last >= '0' && last <= '9') || last == '_';
     NSString *triggers = [_language completionTriggerCharactersForDocument:tab->document.get()];
     BOOL triggerCharacter = typed.length == 1 && [triggers containsString:typed];
@@ -3008,6 +3022,7 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
         return;
     }
     [_suggestions hide];
+    ++_suggestionToken;  // answers to earlier requests are stale now
     if (triggerCharacter || (wordCharacter && [self typedPrefix].length >= 1)) {
         NSUInteger token = ++_suggestionToken;
         __weak GWMainWindowController *weakSelf = self;
@@ -3036,6 +3051,7 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
     bool movedBeforeWord = start.line == _suggestionWordStart.line && caret.column < _suggestionWordStart.column;
     if (movedOffLine || movedBeforeWord || !tab->document->selection.empty()) {
         [_suggestions hide];
+        ++_suggestionToken;
     }
 }
 
@@ -3435,6 +3451,159 @@ static std::string plainTextFromSnippet(const std::string &snippet) {
         [items addObject:item];
     }
     [self showPaletteWithItems:items placeholder:@"Problems in this file…"];
+}
+
+// ---- Quick fixes and signature help
+
+/// ⌘.: fixes the language server offers for the problems at the caret.
+- (IBAction)showQuickFixes:(id)sender {
+    gw::Document *document = [self documentForLanguageCommand];
+    if (document == nullptr) {
+        return;
+    }
+    if (![_language serverSupports:@"codeActionProvider" forDocument:document]) {
+        [self languageMessage:@"The language server for this file doesn't offer quick fixes."];
+        return;
+    }
+    using Json = gw::lsp::Json;
+    gw::Selection selection = document->selection;
+    gw::Range range = selection.range();
+    const gw::TextBuffer &buffer = document->buffer();
+
+    // The problems on the caret's line (or inside the selection) go along with the request.
+    Json diagnostics = Json::array();
+    for (const GWDiagnostic &diagnostic : [_language diagnosticsForDocument:document]) {
+        bool touches = diagnostic.range.start.line <= range.end.line && diagnostic.range.end.line >= range.start.line;
+        if (touches && diagnostic.raw != nullptr) {
+            diagnostics.push_back(*diagnostic.raw);
+        }
+    }
+    Json params = {
+        {"textDocument", {{"uri", gw::lsp::fileURI(document->path()->string())}}},
+        {"range", {{"start", gw::lsp::position(buffer, range.start)}, {"end", gw::lsp::position(buffer, range.end)}}},
+        {"context", {{"diagnostics", diagnostics}}},
+    };
+    __weak GWMainWindowController *weakSelf = self;
+    [_language request:@"textDocument/codeAction" params:params document:document requireSameVersion:YES
+            completion:^(const gw::lsp::Json &result, NSString *error) {
+        GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        if (error != nil) {
+            [strongSelf languageMessage:error];
+            return;
+        }
+        NSMutableArray<GWPaletteItem *> *items = [NSMutableArray array];
+        if (result.is_array()) {
+            for (const gw::lsp::Json &action : result) {
+                if (!action.is_object()) {
+                    continue;
+                }
+                // The edit is either in the action itself, or (clangd's way) the first argument of
+                // the command it wants run. Other commands need the server to run them: not supported.
+                Json edit;
+                if (action.contains("edit") && action["edit"].is_object()) {
+                    edit = action["edit"];
+                } else {
+                    const Json *arguments = nullptr;
+                    if (action.contains("arguments")) {
+                        arguments = &action["arguments"];
+                    } else if (action.contains("command") && action["command"].is_object() && action["command"].contains("arguments")) {
+                        arguments = &action["command"]["arguments"];
+                    }
+                    if (arguments != nullptr && arguments->is_array() && !arguments->empty() && (*arguments)[0].is_object() &&
+                        ((*arguments)[0].contains("documentChanges") || (*arguments)[0].contains("changes"))) {
+                        edit = (*arguments)[0];
+                    }
+                }
+                if (edit.is_null()) {
+                    continue;
+                }
+                GWPaletteItem *item = [GWPaletteItem new];
+                item.title = @(action.value("title", "Fix").c_str());
+                item.symbol = action.value("isPreferred", false) ? @"lightbulb.fill" : @"lightbulb";
+                item.symbolColor = NSColor.systemYellowColor;
+                item.run = ^{
+                    [weakSelf applyWorkspaceEdit:edit];
+                };
+                [items addObject:item];
+            }
+        }
+        if (items.count == 0) {
+            [strongSelf languageMessage:@"There are no quick fixes here."];
+            return;
+        }
+        if (items.count == 1) {
+            items.firstObject.run();
+            return;
+        }
+        [strongSelf showPaletteWithItems:items placeholder:@"Quick fixes…"];
+    }];
+}
+
+/// While typing a call: shows the function's signature with the current argument in bold.
+- (void)requestSignatureHelp {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr || !tab->document->path()) {
+        return;
+    }
+    gw::Document *document = tab->document.get();
+    if (![_language serverSupports:@"signatureHelpProvider" forDocument:document]) {
+        return;
+    }
+    gw::Position caret = document->selection.caret;
+    NSUInteger token = ++_hoverToken;
+    __weak GWMainWindowController *weakSelf = self;
+    [_language request:@"textDocument/signatureHelp"
+                params:[_language positionParamsForDocument:document position:caret]
+              document:document
+    requireSameVersion:YES
+            completion:^(const gw::lsp::Json &result, NSString *error) {
+        GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil || error != nil || token != strongSelf->_hoverToken) {
+            return;
+        }
+        if (!result.is_object() || !result.contains("signatures") || result["signatures"].empty()) {
+            return;
+        }
+        using Json = gw::lsp::Json;
+        size_t active = result.value("activeSignature", 0);
+        const Json &signatures = result["signatures"];
+        const Json &signature = signatures[std::min(active, signatures.size() - 1)];
+        std::string label = signature.value("label", "");
+        int parameterIndex = signature.contains("activeParameter") && signature["activeParameter"].is_number()
+                                 ? signature["activeParameter"].get<int>()
+                                 : result.value("activeParameter", 0);
+
+        std::string markdown = "```\n" + label + "\n```";
+        if (signature.contains("parameters") && signature["parameters"].is_array() && parameterIndex >= 0 &&
+            static_cast<size_t>(parameterIndex) < signature["parameters"].size()) {
+            const Json &parameter = signature["parameters"][static_cast<size_t>(parameterIndex)];
+            std::string name;
+            if (parameter.contains("label") && parameter["label"].is_string()) {
+                name = parameter["label"].get<std::string>();
+            } else if (parameter.contains("label") && parameter["label"].is_array() && parameter["label"].size() == 2) {
+                size_t start = parameter["label"][0].get<size_t>();
+                size_t end = parameter["label"][1].get<size_t>();
+                if (start <= end && end <= label.size()) {
+                    name = label.substr(start, end - start);
+                }
+            }
+            if (!name.empty()) {
+                markdown += "\n\n**" + name + "**";
+                if (parameter.contains("documentation")) {
+                    const Json &documentation = parameter["documentation"];
+                    std::string text = documentation.is_string() ? documentation.get<std::string>() : documentation.value("value", "");
+                    if (!text.empty()) {
+                        markdown += " — " + text;
+                    }
+                }
+            }
+        }
+        NSRect rect = [strongSelf->_editorView viewRectForRange:gw::Range{caret, caret}];
+        [GWHoverPopover showMarkdown:@(markdown.c_str()) problems:@[] relativeToRect:rect ofView:strongSelf->_editorView];
+    }];
 }
 
 // ---- Rename and format

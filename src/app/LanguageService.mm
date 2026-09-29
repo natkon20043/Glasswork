@@ -295,6 +295,7 @@ struct ServerEntry {
                 item.severity = diagnostic.severity;
                 item.message = diagnostic.message;
                 item.source = diagnostic.source;
+                item.raw = std::make_shared<gw::lsp::Json>(diagnostic.toJson());
                 converted.push_back(std::move(item));
             } catch (const std::exception &) {
                 // A malformed range from the server: skip that one problem.
