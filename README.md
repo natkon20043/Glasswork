@@ -105,3 +105,7 @@ Environment variables for checking the interface without clicking:
 5. Debug Adapter Protocol.
 
 VS Code extension compatibility currently means themes, grammars and declarative language configuration. Running its general JavaScript extension ecosystem requires an extension host/API compatibility project; it is not provided by LSP alone.
+
+## License
+
+MIT. See [LICENSE](LICENSE). Oniguruma and nlohmann/json are fetched at build time under their own licenses.
