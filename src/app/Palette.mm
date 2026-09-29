@@ -182,6 +182,16 @@ static const NSUInteger kVisibleRows = 10;
     [_panel orderOut:nil];
 }
 
+- (void)refresh {
+    if (self.isShowing) {
+        [self reload];
+    }
+}
+
+- (BOOL)isShowing { return _panel != nil && _panel.isVisible; }
+
+- (NSString *)query { return _search.stringValue ?: @""; }
+
 - (void)windowDidResignKey:(NSNotification *)notification {
     [self close];  // clicking anywhere else dismisses it
 }

@@ -28,6 +28,14 @@ NS_ASSUME_NONNULL_BEGIN
            placeholder:(NSString *)placeholder
               provider:(NSArray<GWPaletteItem *> * (^)(NSString *query))provider;
 
+/// Runs the provider again with the text now in the search field. For lists that fill in
+/// later (results that arrive from a language server).
+- (void)refresh;
+/// True while the palette is on screen.
+@property (nonatomic, readonly) BOOL isShowing;
+/// The text in the search field.
+@property (nonatomic, readonly, copy) NSString *query;
+
 @end
 
 NS_ASSUME_NONNULL_END

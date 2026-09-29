@@ -3606,6 +3606,262 @@ static std::string plainTextFromSnippet(const std::string &snippet) {
     }];
 }
 
+// ---- Symbols (⌘R in this file, ⌘T across the project)
+
+/// SF Symbol and colour for an LSP SymbolKind.
+static void iconForSymbolKind(int kind, NSString **symbol, NSColor **color) {
+    switch (kind) {
+        case 5: case 11: case 26:  // class, interface, type parameter
+            *symbol = @"c.square.fill";
+            *color = NSColor.systemOrangeColor;
+            break;
+        case 23:  // struct
+            *symbol = @"s.square.fill";
+            *color = NSColor.systemOrangeColor;
+            break;
+        case 6: case 9: case 12:  // method, constructor, function
+            *symbol = @"f.square.fill";
+            *color = NSColor.systemPurpleColor;
+            break;
+        case 7: case 8:  // property, field
+            *symbol = @"p.square.fill";
+            *color = NSColor.systemTealColor;
+            break;
+        case 13: case 14: case 15: case 16: case 17: case 18: case 19: case 20: case 21:  // variables and values
+            *symbol = @"v.square.fill";
+            *color = NSColor.systemBlueColor;
+            break;
+        case 2: case 3: case 4:  // module, namespace, package
+            *symbol = @"m.square.fill";
+            *color = NSColor.systemIndigoColor;
+            break;
+        case 10: case 22:  // enum, enum member
+            *symbol = @"e.square.fill";
+            *color = NSColor.systemYellowColor;
+            break;
+        default:
+            *symbol = @"circle.fill";
+            *color = NSColor.tertiaryLabelColor;
+            break;
+    }
+}
+
+/// One symbol as a row of the picker.
+struct SymbolRow {
+    std::string name;
+    std::string container;
+    int kind = 0;
+    gw::lsp::Json location;  // {uri, range} to open
+};
+
+/// Flattens a documentSymbol answer (nested DocumentSymbol trees or flat SymbolInformation).
+static void collectSymbols(const gw::lsp::Json &symbols, const std::string &container, const std::string &uri,
+                           std::vector<SymbolRow> &rows) {
+    using Json = gw::lsp::Json;
+    if (!symbols.is_array()) {
+        return;
+    }
+    for (const Json &symbol : symbols) {
+        if (!symbol.is_object()) {
+            continue;
+        }
+        SymbolRow row;
+        row.name = symbol.value("name", "");
+        row.kind = symbol.value("kind", 0);
+        if (row.name.empty()) {
+            continue;
+        }
+        if (symbol.contains("selectionRange")) {
+            // A DocumentSymbol: positions are in this file.
+            row.container = container;
+            row.location = {{"uri", uri}, {"range", symbol["selectionRange"]}};
+            rows.push_back(row);
+            if (symbol.contains("children")) {
+                std::string childContainer = container.empty() ? row.name : container + "::" + row.name;
+                collectSymbols(symbol["children"], childContainer, uri, rows);
+            }
+        } else if (symbol.contains("location")) {
+            // A SymbolInformation.
+            row.container = symbol.value("containerName", "");
+            row.location = symbol["location"];
+            rows.push_back(row);
+        }
+    }
+}
+
+/// Picker rows for symbols matching what was typed, best matches first.
+- (NSArray<GWPaletteItem *> *)paletteItemsForSymbols:(std::shared_ptr<std::vector<SymbolRow>>)rows
+                                               query:(NSString *)query
+                                         showsFiles:(BOOL)showsFiles {
+    std::string wanted = query.UTF8String ?: "";
+    struct Ranked {
+        int score;
+        size_t index;
+    };
+    std::vector<Ranked> ranked;
+    for (size_t index = 0; index < rows->size(); ++index) {
+        if (wanted.empty()) {
+            ranked.push_back({0, index});
+            continue;
+        }
+        std::optional<int> score = gw::fuzzyScore(wanted, (*rows)[index].name);
+        if (score) {
+            ranked.push_back({*score, index});
+        }
+    }
+    if (!wanted.empty()) {
+        std::stable_sort(ranked.begin(), ranked.end(), [](const Ranked &a, const Ranked &b) { return a.score > b.score; });
+    }
+    NSMutableArray<GWPaletteItem *> *items = [NSMutableArray array];
+    __weak GWMainWindowController *weakSelf = self;
+    for (const Ranked &entry : ranked) {
+        const SymbolRow &row = (*rows)[entry.index];
+        GWPaletteItem *item = [GWPaletteItem new];
+        item.title = @(row.name.c_str());
+        NSString *symbol = nil;
+        NSColor *color = nil;
+        iconForSymbolKind(row.kind, &symbol, &color);
+        item.symbol = symbol;
+        item.symbolColor = color;
+
+        NSMutableString *subtitle = [NSMutableString string];
+        if (!row.container.empty()) {
+            [subtitle appendString:@(row.container.c_str())];
+        }
+        if (showsFiles && row.location.contains("uri")) {
+            std::string path = gw::lsp::pathFromURI(row.location.value("uri", ""));
+            if (!path.empty()) {
+                if (subtitle.length > 0) {
+                    [subtitle appendString:@" · "];
+                }
+                // Files inside the project show their project path; others just their name.
+                NSString *shown = [self projectRelativePath:@(path.c_str())];
+                if ([shown hasPrefix:@"/"]) {
+                    shown = shown.lastPathComponent;
+                }
+                [subtitle appendString:shown];
+            }
+        }
+        if (row.location.contains("range")) {
+            size_t line = row.location["range"]["start"].value("line", 0) + 1;
+            if (subtitle.length > 0) {
+                [subtitle appendString:@" · "];
+            }
+            [subtitle appendFormat:@"line %zu", line];
+        }
+        item.subtitle = subtitle;
+
+        if (!wanted.empty()) {
+            std::optional<gw::FuzzyMatch> match = gw::fuzzyMatch(wanted, row.name);
+            NSMutableIndexSet *indexes = [NSMutableIndexSet indexSet];
+            if (match) {
+                for (uint32_t position : match->positions) {
+                    NSString *before = [[NSString alloc] initWithBytes:row.name.data() length:position encoding:NSUTF8StringEncoding];
+                    [indexes addIndex:before.length];
+                }
+            }
+            item.matchedIndexes = indexes;
+        }
+        gw::lsp::Json location = row.location;
+        item.run = ^{
+            [weakSelf openLanguageLocation:location];
+        };
+        [items addObject:item];
+        if (items.count >= 200) {
+            break;
+        }
+    }
+    return items;
+}
+
+/// ⌘R: jump to a function, class or other named thing in this file.
+- (IBAction)goToSymbolInFile:(id)sender {
+    gw::Document *document = [self documentForLanguageCommand];
+    if (document == nullptr) {
+        return;
+    }
+    if (![_language serverSupports:@"documentSymbolProvider" forDocument:document]) {
+        [self languageMessage:@"The language server for this file can't list its symbols."];
+        return;
+    }
+    gw::lsp::Json params = {{"textDocument", {{"uri", gw::lsp::fileURI(document->path()->string())}}}};
+    std::string uri = gw::lsp::fileURI(document->path()->string());
+    __weak GWMainWindowController *weakSelf = self;
+    [_language request:@"textDocument/documentSymbol" params:params document:document requireSameVersion:NO
+            completion:^(const gw::lsp::Json &result, NSString *error) {
+        GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        if (error != nil) {
+            [strongSelf languageMessage:error];
+            return;
+        }
+        auto rows = std::make_shared<std::vector<SymbolRow>>();
+        collectSymbols(result, "", uri, *rows);
+        if (rows->empty()) {
+            [strongSelf languageMessage:@"No symbols found in this file."];
+            return;
+        }
+        [GWPalette.shared showOverWindow:strongSelf.window placeholder:@"Go to symbol in file…"
+                                provider:^NSArray<GWPaletteItem *> *(NSString *query) {
+            return [weakSelf paletteItemsForSymbols:rows query:query showsFiles:NO] ?: @[];
+        }];
+    }];
+}
+
+/// ⌘T: search every symbol in the project by name.
+- (IBAction)goToSymbolInWorkspace:(id)sender {
+    gw::Document *document = [self documentForLanguageCommand];
+    if (document == nullptr) {
+        return;
+    }
+    if (![_language serverSupports:@"workspaceSymbolProvider" forDocument:document]) {
+        [self languageMessage:@"The language server for this file can't search the project's symbols."];
+        return;
+    }
+    __weak GWMainWindowController *weakSelf = self;
+    auto latest = std::make_shared<std::shared_ptr<std::vector<SymbolRow>>>(std::make_shared<std::vector<SymbolRow>>());
+    auto requestedQuery = std::make_shared<std::string>("\x01");  // never equals a real query
+    auto token = std::make_shared<NSUInteger>(0);
+
+    [GWPalette.shared showOverWindow:self.window placeholder:@"Go to symbol in project…"
+                            provider:^NSArray<GWPaletteItem *> *(NSString *query) {
+        GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return @[];
+        }
+        std::string wanted = query.UTF8String ?: "";
+        if (wanted != *requestedQuery) {
+            *requestedQuery = wanted;
+            NSUInteger myToken = ++(*token);
+            // Ask after a short pause, so typing doesn't send a request per letter.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                GWMainWindowController *innerSelf = weakSelf;
+                if (innerSelf == nil || myToken != *token || !GWPalette.shared.isShowing) {
+                    return;
+                }
+                Tab *tab = [innerSelf currentTab];
+                if (tab == nullptr) {
+                    return;
+                }
+                gw::lsp::Json params = {{"query", wanted}};
+                [innerSelf->_language request:@"workspace/symbol" params:params document:tab->document.get() requireSameVersion:NO
+                                   completion:^(const gw::lsp::Json &result, NSString *error) {
+                    if (error != nil || myToken != *token) {
+                        return;
+                    }
+                    auto rows = std::make_shared<std::vector<SymbolRow>>();
+                    collectSymbols(result, "", "", *rows);
+                    *latest = rows;
+                    [GWPalette.shared refresh];
+                }];
+            });
+        }
+        return [strongSelf paletteItemsForSymbols:*latest query:query showsFiles:YES] ?: @[];
+    }];
+}
+
 // ---- Rename and format
 
 /// Applies TextEdits (from a server) to a document, as one undo step. Ranges are read from the

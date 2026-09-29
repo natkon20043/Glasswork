@@ -231,6 +231,8 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
         [self item:@"Find References…" action:@selector(findReferences:) key:@"r" modifiers:command | NSEventModifierFlagControl],
         [self item:@"Check File for Problems…" action:@selector(checkProblems:) key:@"m" modifiers:command | shift],
         NSMenuItem.separatorItem,
+        [self item:@"Go to Symbol in File…" action:@selector(goToSymbolInFile:) key:@"r"],
+        [self item:@"Go to Symbol in Project…" action:@selector(goToSymbolInWorkspace:) key:@"t" modifiers:command],
         [self item:@"Quick Fix…" action:@selector(showQuickFixes:) key:@"." modifiers:command],
         [self item:@"Rename Symbol…" action:@selector(renameSymbol:) key:[NSString stringWithFormat:@"%C", (unichar)NSF2FunctionKey] modifiers:0],
         [self item:@"Format Document" action:@selector(formatDocument:) key:@"f" modifiers:option | shift],
