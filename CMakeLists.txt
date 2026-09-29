@@ -136,6 +136,7 @@ add_executable(Glasswork MACOSX_BUNDLE
     src/app/LanguageService.mm
     src/app/CompletionPopup.mm
     src/app/Debugger.mm
+    src/app/ShadowedGlass.mm
     src/app/DebugPanel.mm
     src/app/FileIcons.mm
     src/app/ColorInspector.mm

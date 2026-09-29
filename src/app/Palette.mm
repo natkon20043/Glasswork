@@ -1,5 +1,7 @@
 #import "Palette.h"
 
+#import "ShadowedGlass.h"
+
 @implementation GWPaletteItem
 
 - (instancetype)init {
@@ -70,13 +72,14 @@ static const NSUInteger kVisibleRows = 10;
 
 - (void)buildPanel {
     CGFloat height = 56 + kRowHeight * kVisibleRows + 10;
-    _panel = [[GWPalettePanel alloc] initWithContentRect:NSMakeRect(0, 0, kPaletteWidth, height)
+    CGFloat pad = GWShadowedGlass.padding;
+    _panel = [[GWPalettePanel alloc] initWithContentRect:NSMakeRect(0, 0, kPaletteWidth + 2 * pad, height + 2 * pad)
                                                styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
                                                  backing:NSBackingStoreBuffered
                                                    defer:NO];
     _panel.opaque = NO;
     _panel.backgroundColor = NSColor.clearColor;
-    _panel.hasShadow = YES;
+    _panel.hasShadow = NO;  // the shadow is drawn by GWShadowedGlass, without an outline at the corners
     _panel.level = NSFloatingWindowLevel;
     _panel.delegate = self;
 
@@ -144,10 +147,9 @@ static const NSUInteger kVisibleRows = 10;
         [scroll.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-8],
     ]];
 
-    NSGlassEffectView *glass = [NSGlassEffectView new];
-    glass.cornerRadius = 24;
-    glass.contentView = content;
-    _panel.contentView = glass;
+    GWShadowedGlass *container = [[GWShadowedGlass alloc] initWithCornerRadius:24];
+    container.glass.contentView = content;
+    _panel.contentView = container;
 }
 
 // MARK: Showing and hiding
@@ -166,15 +168,12 @@ static const NSUInteger kVisibleRows = 10;
 
     // Centred horizontally, near the top of the window, like VS Code and Zed.
     NSRect frame = window.frame;
-    NSPoint topLeft = NSMakePoint(NSMidX(frame) - kPaletteWidth / 2, NSMaxY(frame) - 70);
+    CGFloat pad = GWShadowedGlass.padding;
+    NSPoint topLeft = NSMakePoint(NSMidX(frame) - kPaletteWidth / 2 - pad, NSMaxY(frame) - 70 + pad);
     [_panel setFrameTopLeftPoint:topLeft];
     [window addChildWindow:_panel ordered:NSWindowAbove];
     [_panel makeKeyAndOrderFront:nil];
     [_panel makeFirstResponder:_search];
-    // The shadow follows the glass's rounded shape only once it has drawn; recompute it then.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self->_panel invalidateShadow];
-    });
 }
 
 - (void)close {

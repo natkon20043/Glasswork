@@ -1,6 +1,7 @@
 #import "CompletionPopup.h"
 
 #import "MarkdownView.h"
+#import "ShadowedGlass.h"
 
 #import <objc/runtime.h>
 
@@ -116,13 +117,12 @@ void iconForKind(NSInteger kind, NSString **symbol, NSColor **color) {
                                                       defer:YES];
     _panel.opaque = NO;
     _panel.backgroundColor = NSColor.clearColor;
-    _panel.hasShadow = YES;
+    _panel.hasShadow = NO;  // drawn by GWShadowedGlass, without an outline at the corners
     _panel.level = NSFloatingWindowLevel;
     _panel.hidesOnDeactivate = YES;
     _panel.releasedWhenClosed = NO;
 
-    NSGlassEffectView *glass = [NSGlassEffectView new];
-    glass.cornerRadius = 12;
+    GWShadowedGlass *container = [[GWShadowedGlass alloc] initWithCornerRadius:12];
 
     _table = [NSTableView new];
     NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:@"item"];
@@ -148,8 +148,8 @@ void iconForKind(NSInteger kind, NSString **symbol, NSColor **color) {
     _scroll.automaticallyAdjustsContentInsets = NO;
     _scroll.contentInsets = NSEdgeInsetsMake(4, 0, 4, 0);
 
-    glass.contentView = _scroll;
-    _panel.contentView = glass;
+    container.glass.contentView = _scroll;
+    _panel.contentView = container;
 }
 
 - (void)setItems:(NSArray<GWSuggestion *> *)items {
@@ -190,7 +190,9 @@ void iconForKind(NSInteger kind, NSString **symbol, NSColor **color) {
         frame.origin.y = NSMaxY(_anchorRect) + 2;  // no room below: go above the caret
     }
     frame.origin.x = std::min(frame.origin.x, NSMaxX(visible) - kPopupWidth - 8);
-    [_panel setFrame:frame display:YES];
+    // The panel is larger than the glass by the shadow margin on every side.
+    CGFloat pad = GWShadowedGlass.padding;
+    [_panel setFrame:NSInsetRect(frame, -pad, -pad) display:YES];
 }
 
 - (void)filterWithPrefix:(NSString *)prefix {
