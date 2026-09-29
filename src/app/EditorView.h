@@ -107,6 +107,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// A scaled-down overview of the whole file; click or drag it to scroll.
 @property (nonatomic, readonly) NSView *minimapView;
+/// The lines that open the function or class you are scrolled into, pinned above the code. Place it
+/// over the top of the editor (gutter and text), `stickyHeight` tall; hidden when the height is 0.
+@property (nonatomic, readonly) NSView *stickyView;
+@property (nonatomic, readonly) CGFloat stickyHeight;
+/// Called when the pinned lines appear, disappear or change in number.
+@property (nonatomic, copy, nullable) void (^onStickyChange)(void);
 /// Line numbers, to be placed immediately left of the editor's scroll view, `gutterWidth` wide.
 @property (nonatomic, readonly) NSView *gutterView;
 @property (nonatomic, readonly) CGFloat gutterWidth;

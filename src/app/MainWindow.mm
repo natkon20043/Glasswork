@@ -241,6 +241,9 @@ bool looksBinary(const char *path) {
     self.scrollView.frame = NSMakeRect(gutter, top, width - minimapWidth - gutter, height - top);
     self.minimap.frame = NSMakeRect(width - kMinimapWidth, top + 4, kMinimapWidth - 6, height - top - 8);
     self.previewScroll.frame = NSMakeRect(0, top, width, height - top);
+    CGFloat stickyHeight = self.editor.stickyHeight;
+    self.editor.stickyView.frame = NSMakeRect(0, top, width - minimapWidth, stickyHeight);
+    self.editor.stickyView.hidden = stickyHeight <= 0 || self.previewMode;
     BOOL preview = self.previewMode;
     self.previewScroll.hidden = !preview;
     self.scrollView.hidden = preview;
@@ -610,6 +613,11 @@ bool looksBinary(const char *path) {
     [_card addSubview:_card.minimap];
     _card.editor = _editorView;
     [_card addSubview:_editorView.gutterView];
+    [_card addSubview:_editorView.stickyView];
+    _editorView.onStickyChange = ^{
+        GWMainWindowController *strongSelf = weakSelf;
+        strongSelf->_card.needsLayout = YES;
+    };
     _findBar = [[GWFindBar alloc] initWithFrame:NSMakeRect(0, 0, 400, 44)];
     _findBar.editor = _editorView;
     _findBar.onResize = ^{

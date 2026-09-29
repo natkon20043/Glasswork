@@ -212,6 +212,8 @@ std::optional<size_t> indentColumns(const std::string &text, size_t tabSize) {
 - (BOOL)isLineFoldable:(size_t)line;
 - (void)toggleFoldAtLine:(size_t)line;
 - (int)diagnosticSeverityForLine:(size_t)line;
+- (void)drawStickyInBounds:(NSRect)bounds;
+- (void)clickedStickyRow:(size_t)row;
 @property (nonatomic) BOOL gutterHover;
 - (const std::vector<gw::LineChange> &)lineChanges;
 - (const std::vector<gw::Section> &)sectionList;
@@ -551,6 +553,31 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 @end
 
+// MARK: - Sticky scroll
+
+/// The pinned header lines. It only shows what the editor tells it to.
+@interface GWStickyView : NSView
+@property (nonatomic, weak) GWEditorView *editor;
+@end
+
+@implementation GWStickyView
+
+- (BOOL)isFlipped { return YES; }
+- (BOOL)isOpaque { return NO; }
+
+- (void)drawRect:(NSRect)dirtyRect {
+    [self.editor drawStickyInBounds:self.bounds];
+}
+
+- (void)mouseDown:(NSEvent *)event {
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    GWEditorView *editor = self.editor;
+    CGFloat height = editor.lineHeight;
+    [editor clickedStickyRow:static_cast<size_t>(std::max(0.0, point.y / height))];
+}
+
+@end
+
 // MARK: - Editor
 
 @implementation GWEditorView {
@@ -580,6 +607,12 @@ static constexpr CGFloat kMiniChar = 1.25;
     BOOL _multiMoved;
     size_t _cursorIndexInLoop;
     size_t _cursorCountInLoop;
+
+    // Pinned headers (sticky scroll).
+    GWStickyView *_stickyView;
+    std::vector<size_t> _stickyLines;
+    size_t _stickyTopLine;
+    uint64_t _stickyVersion;
 
     // Semantic highlighting from the language server, and the style each token kind gets.
     gw::SemanticTokenSet _semantic;
@@ -633,6 +666,9 @@ static constexpr CGFloat kMiniChar = 1.25;
         _minimap.editor = self;
         _gutter = [[GWGutterView alloc] initWithFrame:NSZeroRect];
         _gutter.editor = self;
+        _stickyView = [[GWStickyView alloc] initWithFrame:NSZeroRect];
+        _stickyView.editor = self;
+        _stickyView.hidden = YES;
 
         // The caret is its own glowing layer, so it can glide between positions and blink
         // without redrawing any text.
@@ -899,6 +935,8 @@ static constexpr CGFloat kMiniChar = 1.25;
     self.needsDisplay = YES;
     _gutter.needsDisplay = YES;
     _minimap.needsDisplay = YES;
+    _stickyVersion = UINT64_MAX;  // force a fresh look
+    [self updateStickyScroll];
 }
 
 - (void)viewDidMoveToSuperview {
@@ -931,6 +969,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 - (void)clipViewChanged:(NSNotification *)notification { [self updateFrameSize]; }
 
 - (void)clipViewScrolled:(NSNotification *)notification {
+    [self updateStickyScroll];
     [self.window invalidateCursorRectsForView:self];
     _gutter.needsDisplay = YES;
     _minimap.needsDisplay = YES;
@@ -1360,6 +1399,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 - (void)rowLayoutChanged {
     _layouts.clear();
     [self rebuildRowMap];
+    _stickyVersion = UINT64_MAX;
     [self updateFrameSize];
     self.needsDisplay = YES;
     _gutter.needsDisplay = YES;
@@ -1797,6 +1837,140 @@ static constexpr CGFloat kMiniChar = 1.25;
         }
         [self applyStyle:*style toString:text range:NSMakeRange(token->startUnit, length)];
     }
+}
+
+// MARK: Sticky scroll
+
+/// "public:", "private:" and "protected:" sit inside the class rather than heading a block.
+static bool isAccessLabel(const std::string &line) {
+    size_t start = line.find_first_not_of(" \t");
+    if (start == std::string::npos) {
+        return false;
+    }
+    std::string_view text(line.data() + start, line.size() - start);
+    for (std::string_view label : {"public:", "private:", "protected:", "public slots:", "signals:"}) {
+        if (text.substr(0, label.size()) == label) {
+            return true;
+        }
+    }
+    return false;
+}
+
+- (NSView *)stickyView { return _stickyView; }
+- (CGFloat)stickyHeight { return _stickyLines.size() * _lineHeight; }
+
+/// The lines that open the blocks around `line`, outermost first: the nearest earlier line indented
+/// less, then the one before it indented less than that, and so on (at most three).
+- (std::vector<size_t>)headersEnclosingLine:(size_t)line {
+    std::vector<size_t> headers;
+    const auto &buffer = _document->buffer();
+    if (line >= buffer.lineCount()) {
+        return headers;
+    }
+    // A blank line takes the indentation of the next code below it.
+    std::optional<size_t> indent = indentColumns(buffer.line(line), _tabSize);
+    for (size_t look = line + 1; !indent && look < buffer.lineCount() && look < line + 60; ++look) {
+        indent = indentColumns(buffer.line(look), _tabSize);
+    }
+    if (!indent) {
+        return headers;
+    }
+    size_t currentIndent = *indent;
+    size_t cursor = line;
+    while (headers.size() < 3 && currentIndent > 0) {
+        bool found = false;
+        size_t limit = cursor > 400 ? cursor - 400 : 0;
+        for (size_t candidate = cursor; candidate-- > limit;) {
+            std::optional<size_t> candidateIndent = indentColumns(buffer.line(candidate), _tabSize);
+            if (candidateIndent && *candidateIndent < currentIndent && !isAccessLabel(buffer.line(candidate))) {
+                headers.insert(headers.begin(), candidate);
+                currentIndent = *candidateIndent;
+                cursor = candidate;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            break;
+        }
+    }
+    return headers;
+}
+
+/// Works out which header lines belong at the top for the current scroll position.
+- (void)updateStickyScroll {
+    std::vector<size_t> lines;
+    if (_document && GWServices.shared.settings.stickyScroll) {
+        NSRect visible = self.visibleRect;
+        if (NSMinY(visible) > _lineHeight) {
+            size_t topLine = [self lineAtY:NSMinY(visible) subrow:nullptr];
+            if (topLine == _stickyTopLine && _document->version() == _stickyVersion) {
+                return;  // nothing that matters has moved
+            }
+            _stickyTopLine = topLine;
+            _stickyVersion = _document->version();
+            std::vector<size_t> first = [self headersEnclosingLine:topLine];
+            // The code just below the pinned lines is what should decide what is pinned.
+            size_t below = [self lineAtY:NSMinY(visible) + first.size() * _lineHeight subrow:nullptr];
+            lines = below == topLine ? first : [self headersEnclosingLine:below];
+            // Headers that are themselves on screen below the band aren't pinned again.
+            while (!lines.empty() && lines.back() >= below) {
+                lines.pop_back();
+            }
+        }
+    }
+    if (lines == _stickyLines) {
+        return;
+    }
+    bool heightChanged = lines.size() != _stickyLines.size();
+    _stickyLines = std::move(lines);
+    _stickyView.needsDisplay = YES;
+    if (heightChanged && self.onStickyChange) {
+        self.onStickyChange();
+    }
+}
+
+- (void)drawStickyInBounds:(NSRect)bounds {
+    if (_stickyLines.empty() || !_document) {
+        return;
+    }
+    CGFloat gutter = self.gutterWidth;
+    CGFloat scrollX = NSMinX(self.visibleRect);
+    NSColor *solid = [_backgroundColor colorWithAlphaComponent:1];
+    // The editor background is see-through; the pinned lines sit on something solid so the code
+    // scrolling underneath doesn't show through them.
+    NSColor *base = [NSColor.windowBackgroundColor blendedColorWithFraction:0.35 ofColor:solid] ?: solid;
+    CGContextRef context = NSGraphicsContext.currentContext.CGContext;
+    CGContextSetTextMatrix(context, CGAffineTransformMakeScale(1, -1));
+
+    NSMutableParagraphStyle *right = [NSMutableParagraphStyle new];
+    right.alignment = NSTextAlignmentRight;
+    NSDictionary *numberAttributes = @{NSFontAttributeName: _lineNumberFont, NSForegroundColorAttributeName: _lineNumberColor,
+                                       NSParagraphStyleAttributeName: right};
+    CGFloat numberHeight = _lineNumberFont.ascender - _lineNumberFont.descender;
+
+    [base setFill];
+    NSRectFillUsingOperation(NSMakeRect(0, 0, NSWidth(bounds), _stickyLines.size() * _lineHeight), NSCompositingOperationSourceOver);
+    for (size_t row = 0; row < _stickyLines.size(); ++row) {
+        size_t line = _stickyLines[row];
+        CGFloat y = row * _lineHeight;
+        NSRect label = NSMakeRect(0, y + (_lineHeight - numberHeight) / 2 - 1, gutter - 26, numberHeight + 2);
+        [[NSString stringWithFormat:@"%zu", line + 1] drawInRect:label withAttributes:numberAttributes];
+        LineLayout *layout = [self layoutForLine:line];
+        CGContextSetTextPosition(context, gutter + self.textLeft - scrollX, y + _baseline);
+        CTLineDraw(layout->lineForRow(0), context);
+    }
+    // A hairline and a soft shadow under the last pinned line.
+    CGFloat bottom = _stickyLines.size() * _lineHeight;
+    [_dividerColor setFill];
+    NSRectFillUsingOperation(NSMakeRect(0, bottom - 1, NSWidth(bounds), 1), NSCompositingOperationSourceOver);
+}
+
+- (void)clickedStickyRow:(size_t)row {
+    if (row >= _stickyLines.size() || !_document) {
+        return;
+    }
+    [self jumpToPosition:{_stickyLines[row], 0}];
 }
 
 // MARK: Hover
@@ -2358,6 +2532,8 @@ static constexpr CGFloat kMiniChar = 1.25;
 - (void)scrollCaretToVisible {
     if (!_document) return;
     NSRect target = NSInsetRect(self.caretRect, -_charWidth * 4, -_lineHeight * 2);
+    target.origin.y -= self.stickyHeight;
+    target.size.height += self.stickyHeight;
     [self scrollRectToVisible:target];
 }
 
@@ -2402,6 +2578,7 @@ static constexpr CGFloat kMiniChar = 1.25;
     self.needsDisplay = YES;
     _minimap.needsDisplay = YES;
     [self scheduleSectionsRefresh];
+    [self updateStickyScroll];
     NSString *typed = _pendingTyped;
     _pendingTyped = nil;
     [self selectionDidChange];

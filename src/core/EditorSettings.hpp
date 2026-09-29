@@ -22,6 +22,8 @@ struct EditorSettings {
     bool indentGuides = true;
     bool bracketPairColors = true;
     bool sectionDividers = true;
+    /// Keep the lines that open the current function or class pinned at the top while scrolling.
+    bool stickyScroll = true;
     /// Colour types, functions and macros by what a language server knows they are.
     bool semanticHighlighting = true;
     /// Show each problem's message at the end of its line.
