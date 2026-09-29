@@ -1,0 +1,103 @@
+#pragma once
+
+#import <AppKit/AppKit.h>
+
+#include "Document.hpp"
+#include "Extensions.hpp"
+#include "Highlighter.hpp"
+#include "LineDiff.hpp"
+#include "Sections.hpp"
+
+#include "Theme.hpp"
+
+#include <optional>
+#include <string>
+#include <vector>
+
+NS_ASSUME_NONNULL_BEGIN
+
+/// The code editor: draws a document with CoreText on a translucent backdrop and handles
+/// typing, selection and editing commands. It lives inside an NSScrollView, which it gives
+/// a line-number ruler; it also provides a minimap for the window to place beside it.
+@interface GWEditorView : NSView <NSTextInputClient>
+
+/// The document shown (not owned). Setting it resets layout caches.
+- (void)setDocument:(gw::Document *_Nullable)document
+        highlighter:(gw::Highlighter *_Nullable)highlighter
+      configuration:(const gw::LanguageConfiguration &)configuration;
+
+/// Called for every change to any document, so caches tied to the shown one stay current.
+- (void)document:(gw::Document *)document changedFromLine:(size_t)line;
+
+@property (nonatomic, copy, nullable) void (^onSelectionChange)(void);
+@property (nonatomic, copy, nullable) void (^onEdit)(void);
+/// Called when MARK / TODO / FIXME comments change (for the breadcrumb's jump menu).
+@property (nonatomic, copy, nullable) void (^onSectionsChange)(void);
+/// Called when the user asks to inspect or recolour code (right-click menu).
+@property (nonatomic, copy, nullable) void (^onInspectColors)(void);
+
+/// The document being shown (not owned), or null.
+- (gw::Document *_Nullable)currentDocument;
+
+/// MARK / TODO / FIXME comments in the document, top to bottom.
+- (std::vector<gw::Section>)sections;
+/// Moves the caret to the start of `line` and centres it on screen.
+- (void)jumpToLine:(size_t)line;
+- (void)jumpToPosition:(gw::Position)position;
+/// Runs several edits to the document as one undo step (used by Replace All).
+- (void)editDocument:(void (^)(gw::Document &document))edits;
+/// Applies a language-server completion as one undoable edit.
+- (void)replaceRange:(gw::Range)range withText:(const std::string &)text;
+/// TextMate scopes at the caret, innermost first (e.g. "variable.parameter.cpp", …, "source.cpp").
+- (std::vector<std::string>)scopesAtCaret;
+/// The identifier at the caret, or an empty string if the caret isn't on a name.
+- (std::string)wordAtCaret;
+/// How the text under the caret currently looks (theme + colour rules + rainbow), or
+/// nullopt if the file isn't highlighted.
+- (std::optional<gw::TextStyle>)styleAtCaret;
+/// How the theme and colour rules style `scope` where it appears at the caret (without the
+/// rainbow or per-name colours), or nullopt if the caret isn't inside that scope.
+- (std::optional<gw::TextStyle>)styleForScopeAtCaret:(const std::string &)scope;
+
+// MARK: Version control marks
+
+/// Lines that differ from the last commit, drawn as coloured bars next to the line numbers.
+- (void)setLineChanges:(std::vector<gw::LineChange>)changes;
+/// Called when a change bar is clicked, with the line and the bar's rectangle in the view.
+@property (nonatomic, copy, nullable) void (^onChangeMarkerClick)(size_t line, NSRect rect);
+/// Tints whole lines (one colour per line, 0 for none). Used to colour added and removed
+/// lines in diff tabs.
+- (void)setLineTints:(std::vector<gw::Color>)tints;
+
+// MARK: Find
+
+/// Highlights every match of a search (behind the text) and marks one as the current match.
+- (void)setFindMatches:(std::vector<gw::Range>)matches current:(long)current;
+/// Selects a range and scrolls it into view (centred if it is off screen).
+- (void)selectRange:(gw::Range)range;
+/// The selected text, or the word at the caret if nothing is selected.
+- (std::string)selectedText;
+/// Briefly glows the given lines, fading out. Shows where Claude just made changes.
+- (void)flashLines:(size_t)first count:(size_t)count;
+
+/// A scaled-down overview of the whole file; click or drag it to scroll.
+@property (nonatomic, readonly) NSView *minimapView;
+/// Line numbers, to be placed immediately left of the editor's scroll view, `gutterWidth` wide.
+@property (nonatomic, readonly) NSView *gutterView;
+@property (nonatomic, readonly) CGFloat gutterWidth;
+
+/// Re-reads fonts and colours from GWServices.
+- (void)reloadAppearance;
+/// Call after the document changed from outside the view (e.g. grammar swapped).
+- (void)invalidateLayout;
+- (void)scrollCaretToVisible;
+- (void)scrollToLineCentered:(size_t)line;
+
+// Editing commands (also reachable from the menu bar through the responder chain).
+- (IBAction)toggleLineComment:(nullable id)sender;
+- (IBAction)indentLines:(nullable id)sender;
+- (IBAction)outdentLines:(nullable id)sender;
+
+@end
+
+NS_ASSUME_NONNULL_END
