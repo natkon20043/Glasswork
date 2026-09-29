@@ -343,6 +343,7 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
         NSMenuItem.separatorItem,
         [self item:@"Explain Selection" action:@selector(explainSelectionWithClaude:) key:@"e" modifiers:command | option],
         [self item:@"Find Problems" action:@selector(findProblemsWithClaude:) key:@""],
+        [self item:@"Fix Compiler Problems" action:@selector(fixProblemsWithClaude:) key:@""],
         [self item:@"Write Tests" action:@selector(writeTestsWithClaude:) key:@""],
         [self item:@"Improve This Code" action:@selector(improveWithClaude:) key:@""],
     ] parent:main];

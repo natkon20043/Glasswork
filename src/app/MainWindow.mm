@@ -2364,6 +2364,40 @@ static bool isImageExtension(NSString *extension) {
     [self askClaude:@"Look for bugs, edge cases and risky spots in this code. Be specific and brief."];
 }
 
+/// Sends the compiler's or language server's problems for the file in front to Claude to fix.
+/// `onlyLine` (from 0) limits it to the problems on one line; pass -1 for the whole file.
+- (void)askClaudeToFixProblemsOnLine:(NSInteger)onlyLine {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr || !tab->document->path()) {
+        NSBeep();
+        return;
+    }
+    NSString *relative = [self projectRelativePath:@(tab->document->path()->c_str())];
+    NSMutableString *list = [NSMutableString string];
+    NSUInteger count = 0;
+    for (const GWDiagnostic &diagnostic : [_language diagnosticsForDocument:tab->document.get()]) {
+        if (diagnostic.severity > 2 || (onlyLine >= 0 && diagnostic.range.start.line != static_cast<size_t>(onlyLine))) {
+            continue;
+        }
+        [list appendFormat:@"- line %zu (%s): %s\n", diagnostic.range.start.line + 1, diagnostic.severity == 1 ? "error" : "warning",
+                           diagnostic.message.c_str()];
+        if (++count >= 30) {
+            break;
+        }
+    }
+    if (count == 0) {
+        [self languageMessage:onlyLine >= 0 ? @"There are no problems on this line." : @"The language server reports no problems in this file."];
+        return;
+    }
+    NSString *prompt = [NSString stringWithFormat:@"Fix these problems in %@:\n%@\nMake the smallest changes that fix them, then tell me what you changed.", relative, list];
+    [self showChat];
+    [_chat sendPrompt:prompt includeSelection:NO];
+}
+
+- (IBAction)fixProblemsWithClaude:(id)sender {
+    [self askClaudeToFixProblemsOnLine:-1];
+}
+
 - (IBAction)writeTestsWithClaude:(id)sender {
     [self askClaude:@"Write tests for this code. Follow how tests are done in this project, and put them where they belong."];
 }
@@ -4269,6 +4303,27 @@ static std::string plainTextFromSnippet(const std::string &snippet) {
                 [items addObject:item];
             }
         }
+        // Claude can always be asked when there is a problem on the line.
+        BOOL problemOnLine = NO;
+        gw::Position caretNow = document->selection.caret;
+        for (const GWDiagnostic &diagnostic : [strongSelf->_language diagnosticsForDocument:document]) {
+            if (diagnostic.range.start.line == caretNow.line && diagnostic.severity <= 2) {
+                problemOnLine = YES;
+                break;
+            }
+        }
+        if (problemOnLine) {
+            GWPaletteItem *ask = [GWPaletteItem new];
+            ask.title = @"Ask Claude to fix this";
+            ask.subtitle = @"Sends the problem to the chat";
+            ask.symbol = @"sparkles";
+            ask.symbolColor = NSColor.controlAccentColor;
+            NSInteger line = static_cast<NSInteger>(caretNow.line);
+            ask.run = ^{
+                [weakSelf askClaudeToFixProblemsOnLine:line];
+            };
+            [items addObject:ask];
+        }
         if (items.count == 0) {
             [strongSelf languageMessage:@"There are no quick fixes here."];
             return;
@@ -4981,6 +5036,7 @@ static std::vector<std::pair<gw::Range, std::string>> editsFromLsp(const gw::lsp
     }
     [self saveSession];
     [_language shutdown];
+    [_debugger stop];
     return YES;
 }
 
