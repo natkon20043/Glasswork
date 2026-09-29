@@ -15,6 +15,8 @@
 #import "LanguageService.h"
 #import "MarkdownView.h"
 #import "CompletionPopup.h"
+#import "DebugPanel.h"
+#import "Debugger.h"
 #import "SidebarSwitcher.h"
 #import "SourceControlPanel.h"
 #import "StartupTiming.h"
@@ -25,6 +27,9 @@
 
 #include "Document.hpp"
 #include "EditorConfig.hpp"
+#include <map>
+#include <set>
+
 #include "Fuzzy.hpp"
 #include "Tasks.hpp"
 #include "Highlighter.hpp"
@@ -443,6 +448,13 @@ bool looksBinary(const char *path) {
     std::shared_ptr<const FileIndex> _fileIndex;
     NSUInteger _indexGeneration;          // ignores results from an older folder's scan
     // Language servers: problems, hover, completion, rename, format.
+    // Debugging
+    GWDebugger *_debugger;
+    GWDebugPanel *_debugPanel;
+    std::map<std::string, std::set<size_t>> _breakpointStore;  // every file's breakpoint lines, by path
+    NSString *_executionPath;
+    NSInteger _executionLine;
+
     GWMarkdownView *_previewMarkdown;
     NSImageView *_previewImage;
     GWLanguageService *_language;
@@ -660,8 +672,8 @@ bool looksBinary(const char *path) {
     // The top clears the window buttons.
     NSView *sidebarContent = [NSView new];
 
-    _switcher = [[GWSidebarSwitcher alloc] initWithSymbols:@[@"folder", @"arrow.triangle.branch", @"magnifyingglass"]
-                                                  tooltips:@[@"Files  ⇧⌘E", @"Source Control  ⌃⇧G", @"Search  ⇧⌘F"]];
+    _switcher = [[GWSidebarSwitcher alloc] initWithSymbols:@[@"folder", @"arrow.triangle.branch", @"magnifyingglass", @"ladybug"]
+                                                  tooltips:@[@"Files  ⇧⌘E", @"Source Control  ⌃⇧G", @"Search  ⇧⌘F", @"Run and Debug  ⇧⌘D"]];
     _switcher.onSelect = ^(NSInteger index) {
         [weakSelf setSidebarMode:index];
     };
@@ -983,6 +995,12 @@ bool looksBinary(const char *path) {
     };
     [self configureLanguageForTab:*tab];
     [self loadEditorConfigForTab:*tab];
+    if (tab->document->path()) {
+        auto stored = _breakpointStore.find(tab->document->path()->string());
+        if (stored != _breakpointStore.end()) {
+            tab->document->breakpointLines = stored->second;
+        }
+    }
     gw::Document *newDocument = tab->document.get();
     NSInteger position = index < 0 || index > static_cast<NSInteger>(_tabs.size()) ? static_cast<NSInteger>(_tabs.size()) : index;
     _tabs.insert(_tabs.begin() + position, std::move(tab));
@@ -1001,6 +1019,7 @@ bool looksBinary(const char *path) {
         [_editorView setLineTints:tab->lineTints];
         [_editorView setDiagnostics:[_language diagnosticsForDocument:tab->document.get()]];
         [_editorView setSemanticTokens:[_language semanticTokensForDocument:tab->document.get()]];
+        [self updateExecutionMarker];
         [self refreshChangesForTab:tab];
         [_findBar documentChanged];
         if (_root.chatVisible) {
@@ -1035,6 +1054,9 @@ bool looksBinary(const char *path) {
     if (index < 0 || index >= static_cast<NSInteger>(_tabs.size())) return;
     Tab &tab = *_tabs[static_cast<size_t>(index)];
     if (tab.document->isDirty() && ![self confirmCloseDocument:*tab.document]) return;
+    if (tab.document->path() && !tab.isVirtual) {
+        _breakpointStore[tab.document->path()->string()] = tab.document->breakpointLines;
+    }
     if (index == _selected) [_editorView setDocument:nullptr highlighter:nullptr configuration:{}];
     [_language untrackDocument:tab.document.get()];
     _tabs.erase(_tabs.begin() + index);
@@ -1972,6 +1994,308 @@ static bool isImageExtension(NSString *extension) {
     }
 }
 
+// MARK: - Debugging
+
+- (void)buildDebugger {
+    if (_debugger != nil) {
+        return;
+    }
+    __weak GWMainWindowController *weakSelf = self;
+    _executionLine = -1;
+    _debugger = [GWDebugger new];
+    _debugPanel = [[GWDebugPanel alloc] initWithDebugger:_debugger];
+    _debugPanel.onStart = ^{ [weakSelf startDebugging:nil]; };
+    _debugger.onChange = ^{
+        GWMainWindowController *strongSelf = weakSelf;
+        [strongSelf->_debugPanel reload];
+        if (strongSelf->_debugger.state != GWDebugStateStopped) {
+            strongSelf->_executionLine = -1;
+            [strongSelf updateExecutionMarker];
+        }
+    };
+    _debugger.onLocation = ^(GWDebugFrame *frame) {
+        [weakSelf showDebugFrame:frame];
+    };
+    _debugger.onOutput = ^(NSString *text, NSString *category) {
+        GWMainWindowController *strongSelf = weakSelf;
+        [strongSelf->_debugPanel appendConsole:text category:category];
+    };
+    _debugger.onError = ^(NSString *message) {
+        GWMainWindowController *strongSelf = weakSelf;
+        [strongSelf->_debugPanel appendConsole:[message stringByAppendingString:@"\n"] category:@"stderr"];
+        [strongSelf showErrorTitle:@"Debugger" message:message];
+    };
+    _debugger.onEnded = ^(NSInteger code) {
+        GWMainWindowController *strongSelf = weakSelf;
+        strongSelf->_executionLine = -1;
+        [strongSelf updateExecutionMarker];
+        [strongSelf->_debugPanel appendConsole:@"Debugging ended.\n" category:@"console"];
+    };
+}
+
+/// Puts the yellow arrow on the current line if the file in front is the one the debugger is in.
+- (void)updateExecutionMarker {
+    Tab *tab = [self currentTab];
+    BOOL inThisFile = tab != nullptr && tab->document->path() && _executionPath != nil && _executionLine >= 0 &&
+                      [_executionPath isEqualToString:@(tab->document->path()->c_str())];
+    [_editorView setExecutionLine:inThisFile ? _executionLine : -1];
+}
+
+/// Shows where the program is stopped.
+- (void)showDebugFrame:(GWDebugFrame *)frame {
+    if (frame.path.length == 0 || frame.line <= 0) {
+        return;
+    }
+    _executionPath = frame.path;
+    _executionLine = frame.line - 1;
+    if (!_root.sidebarVisible) {
+        [self toggleSidebar:nil];
+    }
+    [self setSidebarMode:3];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:frame.path]) {
+        return;
+    }
+    [self openPath:frame.path atLine:frame.line];
+    [self updateExecutionMarker];
+}
+
+// ---- Breakpoints
+
+- (void)loadBreakpointsForFolder:(NSString *)folder {
+    _breakpointStore.clear();
+    NSArray<NSDictionary *> *saved = [NSUserDefaults.standardUserDefaults arrayForKey:[@"breakpoints:" stringByAppendingString:folder]];
+    for (NSDictionary *entry in saved) {
+        NSString *path = entry[@"path"];
+        if (path.length > 0) {
+            _breakpointStore[path.UTF8String].insert(static_cast<size_t>([entry[@"line"] unsignedIntegerValue]));
+        }
+    }
+}
+
+- (void)saveBreakpoints {
+    NSString *folder = _fileTree.rootURL.path;
+    if (folder.length == 0) {
+        return;
+    }
+    NSMutableArray<NSDictionary *> *entries = [NSMutableArray array];
+    for (const auto &[path, lines] : _breakpointStore) {
+        for (size_t line : lines) {
+            [entries addObject:@{@"path": @(path.c_str()), @"line": @(line)}];
+        }
+    }
+    [NSUserDefaults.standardUserDefaults setObject:entries forKey:[@"breakpoints:" stringByAppendingString:folder]];
+}
+
+/// Breakpoints of the file in front changed: remember them and tell the debugger.
+- (void)breakpointsChanged {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr || !tab->document->path()) {
+        return;
+    }
+    std::string path = tab->document->path()->string();
+    _breakpointStore[path] = tab->document->breakpointLines;
+    if (_breakpointStore[path].empty()) {
+        _breakpointStore.erase(path);
+    }
+    [self saveBreakpoints];
+    [self syncBreakpointsOfPath:@(path.c_str()) lines:tab->document->breakpointLines];
+}
+
+- (void)syncBreakpointsOfPath:(NSString *)path lines:(const std::set<size_t> &)lines {
+    NSMutableSet<NSNumber *> *set = [NSMutableSet set];
+    for (size_t line : lines) {
+        [set addObject:@(line)];
+    }
+    [_debugger setBreakpointLines:set forPath:path];
+}
+
+/// All breakpoints, with the lines as they are now in open files.
+- (NSDictionary<NSString *, NSSet<NSNumber *> *> *)currentBreakpoints {
+    for (auto &tab : _tabs) {
+        if (tab->document->path() && !tab->isVirtual) {
+            _breakpointStore[tab->document->path()->string()] = tab->document->breakpointLines;
+        }
+    }
+    NSMutableDictionary<NSString *, NSSet<NSNumber *> *> *result = [NSMutableDictionary dictionary];
+    for (const auto &[path, lines] : _breakpointStore) {
+        if (lines.empty()) {
+            continue;
+        }
+        NSMutableSet<NSNumber *> *set = [NSMutableSet set];
+        for (size_t line : lines) {
+            [set addObject:@(line)];
+        }
+        result[@(path.c_str())] = set;
+    }
+    return result;
+}
+
+- (IBAction)toggleBreakpoint:(id)sender {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr || !tab->document->path()) {
+        NSBeep();
+        return;
+    }
+    [_editorView toggleBreakpointAtLine:tab->document->selection.caret.line];
+}
+
+- (IBAction)removeAllBreakpoints:(id)sender {
+    for (auto &tab : _tabs) {
+        tab->document->breakpointLines.clear();
+    }
+    for (const auto &[path, lines] : _breakpointStore) {
+        [_debugger setBreakpointLines:[NSSet set] forPath:@(path.c_str())];
+    }
+    _breakpointStore.clear();
+    [self saveBreakpoints];
+    _editorView.gutterView.needsDisplay = YES;
+}
+
+// ---- Starting and stepping
+
+- (IBAction)showDebugPanel:(id)sender {
+    [self revealSidebarMode:3];
+}
+
+/// F5: start, or carry on if the program is stopped.
+- (IBAction)startDebugging:(id)sender {
+    [self buildSecondaryPanels];
+    if (_debugger.state == GWDebugStateStopped) {
+        [_debugger resume];
+        return;
+    }
+    if (_debugger.state != GWDebugStateIdle) {
+        return;
+    }
+    // A program chosen before wins; otherwise the file in front is built and run.
+    NSString *folder = _fileTree.rootURL.path;
+    NSString *remembered = folder.length > 0 ? [NSUserDefaults.standardUserDefaults stringForKey:[@"debugProgram:" stringByAppendingString:folder]] : nil;
+    if (remembered.length > 0 && [NSFileManager.defaultManager isExecutableFileAtPath:remembered]) {
+        [_debugPanel clearConsole];
+        [self launchDebugProgram:remembered arguments:[self rememberedDebugArguments]];
+        return;
+    }
+    Tab *tab = [self currentTab];
+    if (tab != nullptr && tab->document->path() && [self canCompileForDebugging:*tab]) {
+        [self debugCurrentFile:sender];
+        return;
+    }
+    [self debugExecutable:sender];
+}
+
+- (NSArray<NSString *> *)rememberedDebugArguments {
+    NSString *folder = _fileTree.rootURL.path;
+    NSString *text = folder.length > 0 ? [NSUserDefaults.standardUserDefaults stringForKey:[@"debugArguments:" stringByAppendingString:folder]] : nil;
+    if (text.length == 0) {
+        return @[];
+    }
+    NSMutableArray<NSString *> *words = [NSMutableArray array];
+    for (NSString *word in [text componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceCharacterSet]) {
+        if (word.length > 0) {
+            [words addObject:word];
+        }
+    }
+    return words;
+}
+
+- (BOOL)canCompileForDebugging:(Tab &)tab {
+    const std::string &language = tab.document->languageId;
+    std::string extension = tab.document->path()->extension().string();
+    return (language == "c" && extension == ".c") ||
+           (language == "cpp" && (extension == ".cpp" || extension == ".cc" || extension == ".cxx" || extension == ".mm"));
+}
+
+/// Builds the file in front with symbols into a temporary program, then debugs that.
+- (IBAction)debugCurrentFile:(id)sender {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr || !tab->document->path() || ![self canCompileForDebugging:*tab]) {
+        [self showErrorTitle:@"Can't debug this file" message:@"Glasswork can build a single C or C++ file for debugging. For other projects, build them first and use Debug Executable…"];
+        return;
+    }
+    [self buildSecondaryPanels];
+    [self saveAllDirtyFilesQuietly];
+    [self revealSidebarMode:3];
+    [_debugPanel clearConsole];
+
+    std::string source = tab->document->path()->string();
+    bool isC = tab->document->languageId == "c";
+    NSString *output = [NSTemporaryDirectory() stringByAppendingPathComponent:@"glasswork-debug-program"];
+    std::vector<std::string> command = {"/usr/bin/xcrun", isC ? "clang" : "clang++"};
+    if (!isC) {
+        command.push_back("-std=c++20");
+    }
+    command.insert(command.end(), {"-g", "-O0", "-Wall", source, "-o", output.UTF8String});
+    [_debugPanel appendConsole:[NSString stringWithFormat:@"Building %s…\n", tab->document->path()->filename().c_str()] category:@"console"];
+    __weak GWMainWindowController *weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        gw::ProcessResult result = gw::runProcess(command);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            GWMainWindowController *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            std::string messages = result.output + result.errorOutput;
+            if (!messages.empty()) {
+                [strongSelf->_debugPanel appendConsole:@(messages.c_str()) category:result.succeeded() ? @"console" : @"stderr"];
+            }
+            if (!result.succeeded()) {
+                [strongSelf showErrorTitle:@"The build failed" message:@"The compiler's messages are in the debug console."];
+                return;
+            }
+            [strongSelf launchDebugProgram:output arguments:@[]];
+        });
+    });
+}
+
+/// Choose a program that is already built (with symbols), and its arguments.
+- (IBAction)debugExecutable:(id)sender {
+    [self buildSecondaryPanels];
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.message = @"Choose the program to debug (built with debug symbols)";
+    panel.canChooseFiles = YES;
+    panel.canChooseDirectories = NO;
+    NSString *folder = _fileTree.rootURL.path;
+    if (folder.length > 0) {
+        NSString *build = [folder stringByAppendingPathComponent:@"build"];
+        BOOL isDirectory = NO;
+        panel.directoryURL = [NSURL fileURLWithPath:([NSFileManager.defaultManager fileExistsAtPath:build isDirectory:&isDirectory] && isDirectory) ? build : folder];
+    }
+    if ([panel runModal] != NSModalResponseOK) {
+        return;
+    }
+    NSString *program = panel.URL.path;
+
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"Arguments";
+    alert.informativeText = [NSString stringWithFormat:@"Command-line arguments for %@ (leave empty for none).", program.lastPathComponent];
+    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 320, 24)];
+    field.stringValue = folder.length > 0 ? ([NSUserDefaults.standardUserDefaults stringForKey:[@"debugArguments:" stringByAppendingString:folder]] ?: @"") : @"";
+    alert.accessoryView = field;
+    [alert addButtonWithTitle:@"Debug"];
+    [alert addButtonWithTitle:@"Cancel"];
+    alert.window.initialFirstResponder = field;
+    if ([alert runModal] != NSAlertFirstButtonReturn) {
+        return;
+    }
+    if (folder.length > 0) {
+        [NSUserDefaults.standardUserDefaults setObject:program forKey:[@"debugProgram:" stringByAppendingString:folder]];
+        [NSUserDefaults.standardUserDefaults setObject:field.stringValue forKey:[@"debugArguments:" stringByAppendingString:folder]];
+    }
+    [_debugPanel clearConsole];
+    [self launchDebugProgram:program arguments:[self rememberedDebugArguments]];
+}
+
+- (void)launchDebugProgram:(NSString *)program arguments:(NSArray<NSString *> *)arguments {
+    [self revealSidebarMode:3];
+    NSString *folder = _fileTree.rootURL.path ?: NSHomeDirectory();
+    [_debugger startProgram:program arguments:arguments workingDirectory:folder breakpoints:[self currentBreakpoints]];
+}
+
+- (IBAction)stopDebugging:(id)sender { [_debugger stop]; }
+- (IBAction)debugStepOver:(id)sender { [_debugger stepOver]; }
+- (IBAction)debugStepInto:(id)sender { [_debugger stepInto]; }
+- (IBAction)debugStepOut:(id)sender { [_debugger stepOut]; }
+
 // MARK: - Claude
 
 - (void)updateClaudeChip {
@@ -2283,9 +2607,14 @@ static bool isImageExtension(NSString *extension) {
     GWStartupMark(@"  built: search panel");
     [self addSidebarPanel:_search.view];
 
+    // Run and debug.
+    [self buildDebugger];
+    [self addSidebarPanel:_debugPanel.view];
+
     // Now that they exist, they can be shown, and told about the open folder.
     _sourceControl.view.hidden = _sidebarMode != 1;
     _search.view.hidden = _sidebarMode != 2;
+    _debugPanel.view.hidden = _sidebarMode != 3;
     _search.rootFolder = _fileTree.rootURL.path;
 
     // The chat with Claude, on the right.
@@ -2321,6 +2650,7 @@ static bool isImageExtension(NSString *extension) {
     _filesPanel.hidden = mode != 0;
     _sourceControl.view.hidden = mode != 1;
     _search.view.hidden = mode != 2;
+    _debugPanel.view.hidden = mode != 3;
     if (mode == 1) {
         [_git refresh];
     }
@@ -3260,6 +3590,9 @@ static double timed(void (^work)(void)) {
         [weakSelf acceptSuggestion:suggestion];
     };
 
+    _editorView.onBreakpointsChange = ^{
+        [weakSelf breakpointsChanged];
+    };
     _editorView.onHoverRequest = ^(gw::Position position, gw::Range word) {
         [weakSelf hoverAtPosition:position word:word];
     };
@@ -4469,6 +4802,7 @@ static std::vector<std::pair<gw::Range, std::string>> editsFromLsp(const gw::lsp
         _search.rootFolder = url.path;
         _language.rootFolder = url.path;
         _terminal.projectFolder = url.path;
+        [self loadBreakpointsForFolder:url.path];
         _sidebarTitle.stringValue = url.lastPathComponent;
         _openFolderButton.hidden = YES;
         self.window.title = url.lastPathComponent;

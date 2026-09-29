@@ -305,11 +305,30 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
         [self item:@"Rename Symbol…" action:@selector(renameSymbol:) key:[NSString stringWithFormat:@"%C", (unichar)NSF2FunctionKey] modifiers:0],
         [self item:@"Format Document" action:@selector(formatDocument:) key:@"f" modifiers:option | shift],
     ] parent:main];
-    [self submenu:@"Terminal" items:@[
+    NSString *f5 = [NSString stringWithFormat:@"%C", (unichar)NSF5FunctionKey];
+    NSString *f9 = [NSString stringWithFormat:@"%C", (unichar)NSF9FunctionKey];
+    NSString *f10 = [NSString stringWithFormat:@"%C", (unichar)NSF10FunctionKey];
+    NSString *f11 = [NSString stringWithFormat:@"%C", (unichar)NSF11FunctionKey];
+    [self submenu:@"Run" items:@[
         [self item:@"Build" action:@selector(buildProject:) key:@"b" modifiers:command | shift],
         [self item:@"Run Task…" action:@selector(runTask:) key:@"b" modifiers:command | option],
         [self item:@"Run Current File" action:@selector(runCurrentFile:) key:@"r" modifiers:command | option],
         NSMenuItem.separatorItem,
+        [self item:@"Start Debugging / Continue" action:@selector(startDebugging:) key:f5 modifiers:0],
+        [self item:@"Debug Current File" action:@selector(debugCurrentFile:) key:f5 modifiers:option],
+        [self item:@"Debug Executable…" action:@selector(debugExecutable:) key:@""],
+        [self item:@"Stop Debugging" action:@selector(stopDebugging:) key:f5 modifiers:shift],
+        NSMenuItem.separatorItem,
+        [self item:@"Step Over" action:@selector(debugStepOver:) key:f10 modifiers:0],
+        [self item:@"Step Into" action:@selector(debugStepInto:) key:f11 modifiers:0],
+        [self item:@"Step Out" action:@selector(debugStepOut:) key:f11 modifiers:shift],
+        NSMenuItem.separatorItem,
+        [self item:@"Toggle Breakpoint" action:@selector(toggleBreakpoint:) key:f9 modifiers:0],
+        [self item:@"Remove All Breakpoints" action:@selector(removeAllBreakpoints:) key:@""],
+        [self item:@"Show Run and Debug" action:@selector(showDebugPanel:) key:@"d" modifiers:command | shift],
+    ] parent:main];
+
+    [self submenu:@"Terminal" items:@[
         [self item:@"Toggle Terminal" action:@selector(toggleTerminal:) key:@"`" modifiers:NSEventModifierFlagControl],
         [self item:@"New Terminal" action:@selector(newTerminal:) key:@"`" modifiers:NSEventModifierFlagControl | shift],
         [self item:@"Close Terminal" action:@selector(closeTerminal:) key:@""],

@@ -227,6 +227,20 @@ Position Document::apply(Position at, const std::string& removed, const std::str
         extra.anchor = positionAfterEdit(extra.anchor, at, removedEnd, end);
         extra.caret = positionAfterEdit(extra.caret, at, removedEnd, end);
     }
+    if (!breakpointLines.empty() && (lineDelta != 0 || removedEnd.line != at.line)) {
+        size_t removedLines = removedEnd.line - at.line;
+        std::set<size_t> moved;
+        for (size_t line : breakpointLines) {
+            if (line <= at.line) {
+                moved.insert(line);  // above the edit, or on the line it starts on
+            } else if (line <= at.line + removedLines) {
+                continue;            // its line was removed (merged into the one above)
+            } else {
+                moved.insert(static_cast<size_t>(static_cast<long>(line) + lineDelta));
+            }
+        }
+        breakpointLines = std::move(moved);
+    }
     notify(at.line, lineDelta, end.line);
     return end;
 }

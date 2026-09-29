@@ -435,6 +435,24 @@ TEST(fuzzyScoreAgreesWithFuzzyMatch) {
     }
 }
 
+// MARK: Breakpoint lines
+
+TEST(breakpointLinesMoveWithEdits) {
+    gw::Document document;
+    document.replace({{0, 0}, {0, 0}}, "a\nb\nc\nd\ne");
+    document.breakpointLines = {1, 3};
+    // A line inserted above moves both down.
+    document.replace({{0, 1}, {0, 1}}, "\nnew");
+    CHECK(document.breakpointLines == (std::set<size_t>{2, 4}));
+    // Removing a line between them moves the later one up and keeps the earlier.
+    document.replace({{2, 1}, {3, 1}}, "");   // "b\nc" -> "b" (line 3 merged into line 2)
+    CHECK(document.breakpointLines.count(2) == 1);
+    CHECK(document.breakpointLines.count(3) == 1);
+    // Deleting the line a breakpoint is on drops it.
+    document.replace({{2, 1}, {3, 1}}, "");
+    CHECK(document.breakpointLines.count(3) == 0);
+}
+
 // MARK: Multiple cursors
 
 TEST(extraSelectionsFollowEdits) {

@@ -94,6 +94,15 @@ NS_ASSUME_NONNULL_BEGIN
 /// The rectangle of a position on screen (for placing popups).
 - (NSRect)screenRectForPosition:(gw::Position)position;
 
+// MARK: Debugging
+
+/// Adds or removes a breakpoint on a line (the lines live in the document, so they follow edits).
+- (void)toggleBreakpointAtLine:(size_t)line;
+/// Called after breakpoints were added or removed by clicking the line numbers.
+@property (nonatomic, copy, nullable) void (^onBreakpointsChange)(void);
+/// Marks the line the debugger is stopped on (-1 for none) with an arrow and a soft band.
+- (void)setExecutionLine:(NSInteger)line;
+
 // MARK: Find
 
 /// Highlights every match of a search (behind the text) and marks one as the current match.

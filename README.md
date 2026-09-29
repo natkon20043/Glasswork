@@ -47,6 +47,10 @@ The first configuration downloads nlohmann/json and Oniguruma. A from-scratch bu
 - ⇧⌘L sends the selected code as context; Explain, Find Problems, Write Tests and Improve are in the Claude menu.
 - Earlier conversations are listed from Claude Code's own saved sessions and can be resumed.
 
+**Debugger**
+- Click the line numbers (or press F9) to set breakpoints; they move with your edits and are remembered per folder. F5 builds the file in front (C or C++) with debug symbols and runs it under LLDB; for a project, Run › Debug Executable… picks the program once and F5 reuses it.
+- The Run and Debug tab (⇧⌘D) shows the call stack, the variables of the selected frame (expandable), and a console with the program's output where you can evaluate expressions. Step Over F10, Step Into F11, Step Out ⇧F11, Continue F5, Stop ⇧F5. The line the program is stopped on is marked in the editor. It uses `lldb-dap` from Xcode through the Debug Adapter Protocol.
+
 **Tasks**
 - Build (⇧⌘B), Run Task… (⌥⌘B) and Run Current File (⌥⌘R) find what your project can do — CMake, Swift packages, Cargo, Go modules, Xcode projects, npm/pnpm/yarn scripts, Makefile targets — and run it in a terminal set aside for tasks, after saving your files. Scripts (Python, JavaScript, Swift, shell, Ruby, Go…) and single C, C++ and Rust files run directly. File names in the output are clickable.
 
@@ -114,13 +118,13 @@ Environment variables for checking the interface without clicking:
 - `GLASSWORK_BENCH=1` runs the interaction benchmark on the file opened at launch, then quits.
 - `GLASSWORK_TIMING=1` prints a startup timeline.
 - `GLASSWORK_LSP_TRACE=1` prints every message to and from the language servers.
-- `GLASSWORK_LSP_CLANGD=1 ./build/glasswork_lsp_server_tests` also runs the checks against the real clangd.
+- `GLASSWORK_LSP_CLANGD=1 ./build/glasswork_lsp_server_tests` also runs the checks against the real clangd; `GLASSWORK_DAP_LIVE=1 ./build/glasswork_dap_tests` runs a real debugging session with lldb-dap.
 
 ## Next milestones
 
 1. Refactoring code actions that need the server to run commands, and semantic-token colours.
 2. Incremental document sync, column selection and split editors.
-3. Debug Adapter Protocol.
+3. Debugging other languages through their own adapters, conditional breakpoints and watch expressions.
 
 VS Code extension compatibility currently means themes, grammars and declarative language configuration. Running its general JavaScript extension ecosystem requires an extension host/API compatibility project; it is not provided by LSP alone.
 

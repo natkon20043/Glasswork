@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -85,6 +86,9 @@ public:
     /// edit, so a command run at one cursor keeps the others in the right place. Undo and redo
     /// clear them.
     std::vector<Selection> extraSelections;
+    /// Lines (from 0) with a debugger breakpoint. They move with the text when lines are added or
+    /// removed above them, and go when their own line is removed.
+    std::set<size_t> breakpointLines;
     /// Column the caret wants when moving up/down, in the view's units (points). Kept here so
     /// it survives across views; set to nullopt after any horizontal movement or edit.
     std::optional<double> preferredX;

@@ -212,6 +212,8 @@ std::optional<size_t> indentColumns(const std::string &text, size_t tabSize) {
 - (BOOL)isLineFoldable:(size_t)line;
 - (void)toggleFoldAtLine:(size_t)line;
 - (int)diagnosticSeverityForLine:(size_t)line;
+- (BOOL)hasBreakpointAtLine:(size_t)line;
+- (BOOL)isExecutionLine:(size_t)line;
 - (void)drawStickyInBounds:(NSRect)bounds;
 - (void)clickedStickyRow:(size_t)row;
 @property (nonatomic) BOOL gutterHover;
@@ -275,8 +277,25 @@ std::optional<size_t> indentColumns(const std::string &text, size_t tabSize) {
             [[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(4, top + 5, 3, lineHeight - 10) xRadius:1.5 yRadius:1.5] fill];
         }
         [[NSString stringWithFormat:@"%zu", line + 1] drawInRect:label withAttributes:line == caretLine ? active : normal];
+        BOOL hasBreakpoint = [editor hasBreakpointAtLine:line];
+        BOOL isExecution = [editor isExecutionLine:line];
+        if (hasBreakpoint) {
+            [NSColor.systemRedColor setFill];
+            [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(3, top + (lineHeight - 10) / 2, 10, 10)] fill];
+        }
+        if (isExecution) {
+            // A yellow arrow, drawn over the breakpoint dot if there is one.
+            [NSColor.systemYellowColor setFill];
+            NSBezierPath *arrow = [NSBezierPath bezierPath];
+            CGFloat middle = top + lineHeight / 2;
+            [arrow moveToPoint:NSMakePoint(2, middle - 6)];
+            [arrow lineToPoint:NSMakePoint(13, middle)];
+            [arrow lineToPoint:NSMakePoint(2, middle + 6)];
+            [arrow closePath];
+            [arrow fill];
+        }
         int severity = [editor diagnosticSeverityForLine:line];
-        if (severity > 0 && severity <= 2) {
+        if (!hasBreakpoint && !isExecution && severity > 0 && severity <= 2) {
             [(severity == 1 ? NSColor.systemRedColor : NSColor.systemOrangeColor) setFill];
             NSRect dot = NSMakeRect(10, top + (lineHeight - 6) / 2, 6, 6);
             [[NSBezierPath bezierPathWithOvalInRect:dot] fill];
@@ -367,6 +386,14 @@ std::optional<size_t> indentColumns(const std::string &text, size_t tabSize) {
     // A click on a change bar opens its details instead of selecting the line.
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
     GWEditorView *editor = self.editor;
+    // A click at the far left of the line numbers puts a breakpoint there (or takes it away).
+    if (point.x < 15 && editor.document != nullptr) {
+        size_t clickedLine = [editor lineAtY:point.y + NSMinY(editor.visibleRect) subrow:nullptr];
+        if (clickedLine < editor.document->buffer().lineCount()) {
+            [editor toggleBreakpointAtLine:clickedLine];
+            return;
+        }
+    }
     // A click on the fold arrow folds or opens the block.
     BOOL onFoldArrow = point.x >= NSWidth(self.bounds) - 28 && point.x < NSWidth(self.bounds) - 12;
     if (onFoldArrow && editor.document != nullptr) {
@@ -608,6 +635,8 @@ static constexpr CGFloat kMiniChar = 1.25;
     size_t _cursorIndexInLoop;
     size_t _cursorCountInLoop;
 
+    NSInteger _executionLine;  // where the debugger is stopped, or -1
+
     // Pinned headers (sticky scroll).
     GWStickyView *_stickyView;
     std::vector<size_t> _stickyLines;
@@ -661,6 +690,7 @@ static constexpr CGFloat kMiniChar = 1.25;
     if ((self = [super initWithFrame:frameRect])) {
         self.wantsLayer = YES;
         _useTabsOverride = -1;
+        _executionLine = -1;
         _matchVersion = UINT64_MAX;
         _minimap = [[GWMinimapView alloc] initWithFrame:NSZeroRect];
         _minimap.editor = self;
@@ -1555,6 +1585,13 @@ static constexpr CGFloat kMiniChar = 1.25;
         [[NSBezierPath bezierPathWithRoundedRect:band xRadius:7 yRadius:7] fill];
     }
 
+    if (_executionLine >= 0 && static_cast<size_t>(_executionLine) >= first && static_cast<size_t>(_executionLine) <= last &&
+        ![self isLineHidden:static_cast<size_t>(_executionLine)]) {
+        [[NSColor.systemYellowColor colorWithAlphaComponent:0.16] setFill];
+        NSRect band = NSMakeRect(NSMinX(visible) + 4, [self yForLine:static_cast<size_t>(_executionLine)] + 1, NSWidth(visible) - 8,
+                                 [self rowsForLine:static_cast<size_t>(_executionLine)] * _lineHeight - 2);
+        [[NSBezierPath bezierPathWithRoundedRect:band xRadius:7 yRadius:7] fill];
+    }
     [self drawLineTintsFromLine:first toLine:last];
     [self drawFindMatchesFromLine:first toLine:last];
 
@@ -1837,6 +1874,40 @@ static constexpr CGFloat kMiniChar = 1.25;
         }
         [self applyStyle:*style toString:text range:NSMakeRange(token->startUnit, length)];
     }
+}
+
+// MARK: Breakpoints
+
+- (BOOL)hasBreakpointAtLine:(size_t)line {
+    return _document != nullptr && _document->breakpointLines.count(line) > 0;
+}
+
+- (BOOL)isExecutionLine:(size_t)line {
+    return _executionLine >= 0 && static_cast<size_t>(_executionLine) == line;
+}
+
+- (void)toggleBreakpointAtLine:(size_t)line {
+    if (!_document || line >= _document->buffer().lineCount()) {
+        return;
+    }
+    if (_document->breakpointLines.count(line) > 0) {
+        _document->breakpointLines.erase(line);
+    } else {
+        _document->breakpointLines.insert(line);
+    }
+    _gutter.needsDisplay = YES;
+    if (self.onBreakpointsChange) {
+        self.onBreakpointsChange();
+    }
+}
+
+- (void)setExecutionLine:(NSInteger)line {
+    if (line == _executionLine) {
+        return;
+    }
+    _executionLine = line;
+    self.needsDisplay = YES;
+    _gutter.needsDisplay = YES;
 }
 
 // MARK: Sticky scroll
