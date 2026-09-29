@@ -23,6 +23,7 @@
 #import <QuartzCore/QuartzCore.h>
 
 #include "Document.hpp"
+#include "EditorConfig.hpp"
 #include "Fuzzy.hpp"
 #include "Highlighter.hpp"
 #include "LanguageServer.hpp"
@@ -58,6 +59,9 @@ struct Tab {
     std::string headCommit;
     std::vector<gw::DiffHunk> hunks;
     std::vector<gw::LineChange> changes;
+
+    /// What the project's .editorconfig files say about this file.
+    gw::EditorConfigResult editorConfig;
 };
 
 /// Colours for the lines of a unified diff: green for added, red for removed.
@@ -928,6 +932,7 @@ bool looksBinary(const char *path) {
         [editor document:raw changed:change];
     };
     [self configureLanguageForTab:*tab];
+    [self loadEditorConfigForTab:*tab];
     gw::Document *newDocument = tab->document.get();
     NSInteger position = index < 0 || index > static_cast<NSInteger>(_tabs.size()) ? static_cast<NSInteger>(_tabs.size()) : index;
     _tabs.insert(_tabs.begin() + position, std::move(tab));
@@ -941,6 +946,7 @@ bool looksBinary(const char *path) {
     Tab *tab = [self currentTab];
     if (tab) {
         [_editorView setDocument:tab->document.get() highlighter:tab->highlighter.get() configuration:tab->configuration];
+        [self applyEditorConfigOfTab:*tab];
         [_editorView setLineChanges:tab->changes];
         [_editorView setLineTints:tab->lineTints];
         [_editorView setDiagnostics:[_language diagnosticsForDocument:tab->document.get()]];
@@ -1009,6 +1015,84 @@ bool looksBinary(const char *path) {
     [self scheduleAutoSave];
 }
 
+// MARK: .editorconfig and saving
+
+- (void)loadEditorConfigForTab:(Tab &)tab {
+    tab.editorConfig = gw::EditorConfigResult();
+    if (tab.document->path() && !tab.isVirtual) {
+        tab.editorConfig = gw::editorConfigFor(*tab.document->path());
+    }
+    if (&tab == [self currentTab]) {
+        [self applyEditorConfigOfTab:tab];
+    }
+}
+
+/// Gives the editor this file's indentation rules from its .editorconfig.
+- (void)applyEditorConfigOfTab:(Tab &)tab {
+    int usesTabs = -1;
+    if (tab.editorConfig.useTabs) {
+        usesTabs = *tab.editorConfig.useTabs ? 1 : 0;
+    }
+    size_t tabSize = 0;
+    if (std::optional<int> columns = tab.editorConfig.columnsPerIndent()) {
+        tabSize = static_cast<size_t>(*columns);
+    }
+    [_editorView setIndentationOverrideUsesTabs:usesTabs tabSize:tabSize];
+}
+
+/// Before saving: strips trailing spaces and adds the final newline where the settings or the
+/// file's .editorconfig ask for it. Done as one undoable edit.
+- (void)prepareTabForSaving:(Tab &)tab {
+    const gw::EditorSettings &settings = GWServices.shared.settings;
+    bool trim = tab.editorConfig.trimTrailingWhitespace.value_or(settings.trimTrailingWhitespace);
+    bool finalNewline = tab.editorConfig.insertFinalNewline.value_or(settings.insertFinalNewline);
+    if ((!trim && !finalNewline) || tab.document->readOnly) {
+        return;
+    }
+    gw::Document &document = *tab.document;
+    const gw::TextBuffer &buffer = document.buffer();
+    std::vector<std::pair<gw::Range, std::string>> edits;
+    if (trim) {
+        for (size_t line = 0; line < buffer.lineCount(); ++line) {
+            const std::string &text = buffer.line(line);
+            size_t end = text.size();
+            while (end > 0 && (text[end - 1] == ' ' || text[end - 1] == '\t')) {
+                --end;
+            }
+            if (end < text.size()) {
+                edits.push_back({gw::Range{{line, end}, {line, text.size()}}, std::string()});
+            }
+        }
+    }
+    if (finalNewline) {
+        size_t lastLine = buffer.lineCount() - 1;
+        if (!buffer.line(lastLine).empty()) {
+            gw::Position end{lastLine, buffer.line(lastLine).size()};
+            edits.push_back({gw::Range{end, end}, std::string("\n")});
+        }
+    }
+    if (edits.empty()) {
+        return;
+    }
+    // Last edit first, so the earlier positions stay valid.
+    std::stable_sort(edits.begin(), edits.end(), [](const auto &a, const auto &b) { return b.first.start < a.first.start; });
+    gw::Selection savedSelection = document.selection;
+    if (&tab == [self currentTab]) {
+        [_editorView editDocument:^(gw::Document &target) {
+            for (const auto &[range, text] : edits) {
+                target.replace(range, text);
+            }
+        }];
+    } else {
+        document.beginUndoGroup();
+        for (const auto &[range, text] : edits) {
+            document.replace(range, text);
+        }
+        document.endUndoGroup();
+    }
+    document.selection = {document.buffer().clamp(savedSelection.anchor), document.buffer().clamp(savedSelection.caret)};
+}
+
 // MARK: Auto save
 
 /// With "files.autoSave" on, saves a second after the last edit.
@@ -1033,6 +1117,7 @@ bool looksBinary(const char *path) {
         if (tab->document->fileChangedOnDisk()) {
             continue;
         }
+        [self prepareTabForSaving:*tab];
         std::string error;
         if (tab->document->save(&error)) {
             savedAny = YES;
@@ -2003,6 +2088,7 @@ bool looksBinary(const char *path) {
         tab->headLoaded = false;
         [_language documentDidMove:tab->document.get() fromPath:tabPath];
         [self configureLanguageForTab:*tab];
+        [self loadEditorConfigForTab:*tab];
     }
     Tab *current = [self currentTab];
     if (current != nullptr) {
@@ -4131,6 +4217,7 @@ static std::vector<std::pair<gw::Range, std::string>> editsFromLsp(const gw::lsp
 - (BOOL)saveTab:(Tab &)tab {
     if (tab.isVirtual) return YES;
     if (!tab.document->path()) return [self saveTabAs:tab];
+    [self prepareTabForSaving:tab];
     std::string error;
     if (!tab.document->save(&error)) {
         NSAlert *alert = [NSAlert new];

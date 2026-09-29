@@ -2,12 +2,16 @@
 
 #include "TestHarness.hpp"
 
+#include "EditorConfig.hpp"
 #include "Folding.hpp"
 #include "RowMap.hpp"
 #include "TextBuffer.hpp"
 #include "Wrap.hpp"
 
+#include <filesystem>
+#include <fstream>
 #include <string>
+#include <unistd.h>
 
 namespace {
 
@@ -197,6 +201,65 @@ TEST(editsOpenTouchedFoldsAndMoveLaterOnes) {
     CHECK(!folds.isFoldHeader(11));
     CHECK(folds.isFoldHeader(21));
     CHECK_EQ(folds.all().size(), size_t(1));
+}
+
+// ---- .editorconfig
+
+TEST(editorConfigGlobs) {
+    CHECK(gw::editorConfigGlobMatches("*", "a.txt"));
+    CHECK(gw::editorConfigGlobMatches("*", "src/deep/a.txt"));  // a bare pattern matches at any depth
+    CHECK(gw::editorConfigGlobMatches("*.py", "src/x.py"));
+    CHECK(!gw::editorConfigGlobMatches("*.py", "src/x.pyc"));
+    CHECK(gw::editorConfigGlobMatches("*.{js,ts}", "app/main.ts"));
+    CHECK(!gw::editorConfigGlobMatches("*.{js,ts}", "app/main.py"));
+    CHECK(gw::editorConfigGlobMatches("Makefile", "sub/Makefile"));
+    CHECK(gw::editorConfigGlobMatches("lib/**.js", "lib/a/b/c.js"));
+    CHECK(!gw::editorConfigGlobMatches("lib/*.js", "lib/a/b.js"));  // a slash pattern is anchored, * stops at /
+    CHECK(gw::editorConfigGlobMatches("lib/*.js", "lib/b.js"));
+    CHECK(gw::editorConfigGlobMatches("file{1..3}.txt", "file2.txt"));
+    CHECK(!gw::editorConfigGlobMatches("file{1..3}.txt", "file4.txt"));
+    CHECK(gw::editorConfigGlobMatches("[abc].txt", "b.txt"));
+    CHECK(gw::editorConfigGlobMatches("[!abc].txt", "d.txt"));
+    CHECK(!gw::editorConfigGlobMatches("[!abc].txt", "a.txt"));
+}
+
+TEST(editorConfigReadsSectionsInOrder) {
+    const char* text =
+        "# top\nroot = true\n\n"
+        "[*]\nindent_style = space\nindent_size = 4\ntrim_trailing_whitespace = true\n\n"
+        "[*.md]\ntrim_trailing_whitespace = false\n\n"
+        "[Makefile]\nindent_style = tab\nindent_size = unset\n";
+    gw::EditorConfigResult cpp;
+    bool root = gw::applyEditorConfigText(text, "/p", "/p/src/a.cpp", cpp);
+    CHECK(root);
+    CHECK_EQ(*cpp.useTabs, false);
+    CHECK_EQ(*cpp.indentSize, 4);
+    CHECK_EQ(*cpp.trimTrailingWhitespace, true);
+
+    gw::EditorConfigResult markdown;
+    gw::applyEditorConfigText(text, "/p", "/p/README.md", markdown);
+    CHECK_EQ(*markdown.trimTrailingWhitespace, false);  // the later section wins
+    CHECK_EQ(*markdown.indentSize, 4);
+
+    gw::EditorConfigResult makefile;
+    gw::applyEditorConfigText(text, "/p", "/p/Makefile", makefile);
+    CHECK_EQ(*makefile.useTabs, true);
+    CHECK(!makefile.indentSize.has_value());  // unset
+}
+
+TEST(editorConfigFilesAreFoundAndCombined) {
+    std::filesystem::path base = std::filesystem::temp_directory_path() / ("gw-editorconfig-" + std::to_string(::getpid()));
+    std::filesystem::create_directories(base / "inner");
+    {
+        std::ofstream(base / ".editorconfig") << "root = true\n[*]\nindent_size = 2\ninsert_final_newline = true\n";
+        std::ofstream(base / "inner" / ".editorconfig") << "[*.txt]\nindent_size = 8\n";
+    }
+    gw::EditorConfigResult result = gw::editorConfigFor(base / "inner" / "a.txt");
+    CHECK_EQ(*result.indentSize, 8);                 // the closer file wins
+    CHECK_EQ(*result.insertFinalNewline, true);      // and the outer one still applies
+    gw::EditorConfigResult other = gw::editorConfigFor(base / "inner" / "a.cpp");
+    CHECK_EQ(*other.indentSize, 2);
+    std::filesystem::remove_all(base);
 }
 
 }  // namespace

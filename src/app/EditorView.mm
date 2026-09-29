@@ -545,6 +545,9 @@ static constexpr CGFloat kMiniChar = 1.25;
     std::unordered_map<size_t, LineLayout> _layouts;
     bool _highlightBlocked;  // this frame ran out of highlighting budget
     bool _useTabs;
+    bool _detectedUseTabs;        // what the file's own indentation suggests
+    int _useTabsOverride;         // from .editorconfig: -1 none, 0 spaces, 1 tabs
+    size_t _tabSizeOverride;      // from .editorconfig: 0 none
     size_t _longestLine;
 
     // Soft wrap and folding. The row map exists only while either is in use; with it empty,
@@ -597,6 +600,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 - (instancetype)initWithFrame:(NSRect)frameRect {
     if ((self = [super initWithFrame:frameRect])) {
         self.wantsLayer = YES;
+        _useTabsOverride = -1;
         _matchVersion = UINT64_MAX;
         _minimap = [[GWMinimapView alloc] initWithFrame:NSZeroRect];
         _minimap.editor = self;
@@ -727,6 +731,19 @@ static constexpr CGFloat kMiniChar = 1.25;
     [CATransaction commit];
 }
 
+// MARK: Indentation from .editorconfig
+
+- (void)setIndentationOverrideUsesTabs:(int)usesTabs tabSize:(size_t)tabSize {
+    BOOL changedSize = tabSize != _tabSizeOverride;
+    _useTabsOverride = usesTabs;
+    _tabSizeOverride = tabSize;
+    _useTabs = usesTabs >= 0 ? usesTabs == 1 : _detectedUseTabs;
+    if (changedSize) {
+        // The tab width affects how text is measured and drawn.
+        [self reloadAppearance];
+    }
+}
+
 // MARK: Setup
 
 - (void)setDocument:(gw::Document *)document
@@ -754,7 +771,8 @@ static constexpr CGFloat kMiniChar = 1.25;
             if (!text.empty() && text[0] == '\t') ++tabs;
             if (text.size() >= 2 && text[0] == ' ' && text[1] == ' ') ++spaces;
         }
-        _useTabs = tabs > spaces;
+        _detectedUseTabs = tabs > spaces;
+        _useTabs = _detectedUseTabs;
     }
     [self refreshSections];
     [self invalidateLayout];
@@ -793,7 +811,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 - (void)reloadAppearance {
     GWServices *services = GWServices.shared;
-    _tabSize = static_cast<size_t>(std::max(1, services.settings.tabSize));
+    _tabSize = _tabSizeOverride > 0 ? _tabSizeOverride : static_cast<size_t>(std::max(1, services.settings.tabSize));
     _wrapEnabled = services.settings.wordWrap;
     _font = [services editorFontBold:NO italic:NO];
     _charWidth = [@"0" sizeWithAttributes:@{NSFontAttributeName: _font}].width;

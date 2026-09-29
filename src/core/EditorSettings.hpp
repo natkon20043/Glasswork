@@ -29,6 +29,10 @@ struct EditorSettings {
 
     /// Save files a moment after the last edit, and when the window loses focus.
     bool autoSave = false;
+    /// Remove spaces and tabs at the ends of lines when saving (an .editorconfig can override).
+    bool trimTrailingWhitespace = false;
+    /// Make sure files end with a newline when saving (an .editorconfig can override).
+    bool insertFinalNewline = false;
     /// Terminal text size in points; 0 means one point smaller than the editor's.
     double terminalFontSize = 0;
     /// Program the terminal runs, e.g. "/bin/zsh" or "/opt/homebrew/bin/fish". Empty: $SHELL.

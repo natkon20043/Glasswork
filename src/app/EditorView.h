@@ -120,6 +120,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (IBAction)indentLines:(nullable id)sender;
 - (IBAction)outdentLines:(nullable id)sender;
 
+/// Overrides how this file is indented (from its .editorconfig): `usesTabs` is 1 for tabs, 0 for
+/// spaces, -1 to decide from the file; `tabSize` of 0 means the setting from settings.json.
+- (void)setIndentationOverrideUsesTabs:(int)usesTabs tabSize:(size_t)tabSize;
+
 // Soft wrap and folding.
 - (IBAction)toggleWordWrap:(nullable id)sender;
 - (IBAction)foldCode:(nullable id)sender;
