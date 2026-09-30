@@ -40,6 +40,7 @@ add_library(glasswork_core STATIC
     src/core/SemanticTokens.cpp
     src/core/Tasks.cpp
     src/core/Snippet.cpp
+    src/core/NavigationHistory.cpp
     src/core/Dap.cpp
     src/core/Highlighter.cpp
     src/core/Jsonc.cpp

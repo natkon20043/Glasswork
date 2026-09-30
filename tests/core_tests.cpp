@@ -3,6 +3,7 @@
 #include "Document.hpp"
 #include "EditorSettings.hpp"
 #include "Fuzzy.hpp"
+#include "NavigationHistory.hpp"
 #include "Sections.hpp"
 #include "Snippet.hpp"
 #include "Styling.hpp"
@@ -491,6 +492,62 @@ TEST(undoClearsExtraSelections) {
     document.extraSelections = {{{0, 1}, {0, 1}}};
     document.undo();
     CHECK(document.extraSelections.empty());
+}
+
+// MARK: Navigation history
+
+TEST(backAndForwardWalkThroughJumps) {
+    gw::NavigationHistory history;
+    history.record({"a.cpp", {10, 0}});          // jumped away from a.cpp line 10 ...
+    history.record({"b.cpp", {3, 0}});           // ... then from b.cpp line 3
+    CHECK(history.canGoBack());
+    CHECK(!history.canGoForward());
+
+    auto first = history.back({"c.cpp", {50, 0}});  // now at c.cpp
+    CHECK(first.has_value());
+    CHECK_EQ(first->path, std::string("b.cpp"));
+    CHECK_EQ(first->position.line, size_t(3));
+    auto second = history.back({"b.cpp", {3, 0}});
+    CHECK_EQ(second->path, std::string("a.cpp"));
+    CHECK(!history.back({"a.cpp", {10, 0}}).has_value());  // nowhere further back
+
+    auto again = history.forward({"a.cpp", {10, 0}});
+    CHECK_EQ(again->path, std::string("b.cpp"));
+    auto last = history.forward({"b.cpp", {3, 0}});
+    CHECK_EQ(last->path, std::string("c.cpp"));
+    CHECK(!history.forward({"c.cpp", {50, 0}}).has_value());
+}
+
+TEST(aNewJumpForgetsForward) {
+    gw::NavigationHistory history;
+    history.record({"a.cpp", {1, 0}});
+    history.back({"b.cpp", {2, 0}});
+    CHECK(history.canGoForward());
+    history.record({"b.cpp", {2, 0}});
+    CHECK(!history.canGoForward());
+}
+
+TEST(sameLineIsNotRecordedTwice) {
+    gw::NavigationHistory history;
+    history.record({"a.cpp", {7, 2}});
+    history.record({"a.cpp", {7, 9}});
+    auto target = history.back({"a.cpp", {40, 0}});
+    CHECK(target.has_value());
+    CHECK(!history.back({"a.cpp", {7, 9}}).has_value());  // only one entry was kept
+}
+
+TEST(historyKeepsOnlyTheLatestHundred) {
+    gw::NavigationHistory history;
+    for (size_t line = 0; line < 150; ++line) {
+        history.record({"a.cpp", {line, 0}});
+    }
+    size_t steps = 0;
+    gw::NavigationLocation here{"a.cpp", {999, 0}};
+    while (auto target = history.back(here)) {
+        here = *target;
+        ++steps;
+    }
+    CHECK_EQ(steps, gw::NavigationHistory::kLimit);
 }
 
 // MARK: Snippets

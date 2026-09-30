@@ -328,6 +328,9 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
     [self submenu:@"Go" items:@[
         [self item:@"Go to File…" action:@selector(quickOpen:) key:@"p"],
         [self item:@"Command Palette…" action:@selector(showCommandPalette:) key:@"p" modifiers:command | shift],
+        [self item:@"Back" action:@selector(goBack:) key:@"-" modifiers:NSEventModifierFlagControl],
+        [self item:@"Forward" action:@selector(goForward:) key:@"-" modifiers:NSEventModifierFlagControl | shift],
+        NSMenuItem.separatorItem,
         [self item:@"Go to Line…" action:@selector(goToLine:) key:@"g" modifiers:NSEventModifierFlagControl],
         [self item:@"Jump to Section…" action:@selector(jumpToSection:) key:@"6" modifiers:NSEventModifierFlagControl],
         [self item:@"Next Change" action:@selector(nextChange:)

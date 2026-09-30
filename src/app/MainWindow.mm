@@ -31,6 +31,7 @@
 #include <set>
 
 #include "Fuzzy.hpp"
+#include "NavigationHistory.hpp"
 #include "Tasks.hpp"
 #include "Highlighter.hpp"
 #include "LanguageServer.hpp"
@@ -442,6 +443,8 @@ bool looksBinary(const char *path) {
     NSStackView *_recentList;
     std::vector<std::unique_ptr<Tab>> _tabs;
     NSInteger _selected;
+    gw::NavigationHistory _navigation;   // Go Back / Go Forward
+    BOOL _navigating;                    // true while going back or forward, so that is not recorded
 
     // Every file in the open folder, relative to it, for quick open (⌘P) and search. A new
     // snapshot replaces the old one when the folder changes, so a running search keeps its own.
@@ -1490,6 +1493,7 @@ static bool isImageExtension(NSString *extension) {
 }
 
 - (void)jumpToSectionItem:(NSMenuItem *)item {
+    [self rememberLocationBeforeJump];
     [_editorView jumpToLine:static_cast<size_t>(item.tag)];
 }
 
@@ -1682,6 +1686,7 @@ static bool isImageExtension(NSString *extension) {
         NSURL *url = [root URLByAppendingPathComponent:@(path.c_str())];
         __weak GWMainWindowController *weakSelf = self;
         item.run = ^{
+            [weakSelf rememberLocationBeforeJump];
             [weakSelf openURL:url];
         };
         [items addObject:item];
@@ -2456,7 +2461,63 @@ static bool isImageExtension(NSString *extension) {
     return context;
 }
 
+// MARK: Go back / forward
+
+/// The caret's place now, or nothing when no file is open.
+- (std::optional<gw::NavigationLocation>)currentLocation {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr || !tab->document->path()) {
+        return std::nullopt;
+    }
+    return gw::NavigationLocation{tab->document->path()->string(), tab->document->selection.caret};
+}
+
+/// Call just before a jump (definition, go to line, a search result...) so Go Back can return.
+- (void)rememberLocationBeforeJump {
+    if (_navigating) {
+        return;
+    }
+    if (auto here = [self currentLocation]) {
+        _navigation.record(*here);
+    }
+}
+
+- (void)goToLocation:(const gw::NavigationLocation &)location {
+    _navigating = YES;
+    [self openURL:[NSURL fileURLWithPath:@(location.path.c_str())]];
+    Tab *tab = [self currentTab];
+    if (tab != nullptr) {
+        [_editorView jumpToPosition:tab->document->buffer().clamp(location.position)];
+    }
+    _navigating = NO;
+}
+
+- (IBAction)goBack:(id)sender {
+    auto here = [self currentLocation];
+    if (!here) {
+        return;
+    }
+    if (auto target = _navigation.back(*here)) {
+        [self goToLocation:*target];
+    } else {
+        NSBeep();
+    }
+}
+
+- (IBAction)goForward:(id)sender {
+    auto here = [self currentLocation];
+    if (!here) {
+        return;
+    }
+    if (auto target = _navigation.forward(*here)) {
+        [self goToLocation:*target];
+    } else {
+        NSBeep();
+    }
+}
+
 - (void)openPath:(NSString *)path atLine:(NSInteger)line {
+    [self rememberLocationBeforeJump];
     NSString *absolute = path;
     if (![path hasPrefix:@"/"]) {
         absolute = [(_fileTree.rootURL.path ?: @"") stringByAppendingPathComponent:path];
@@ -2549,6 +2610,7 @@ static bool isImageExtension(NSString *extension) {
     }
     size_t lineCount = tab->document->buffer().lineCount();
     __weak GWEditorView *editor = _editorView;
+    __weak GWMainWindowController *weakSelf = self;
     [GWPalette.shared showOverWindow:self.window
                          placeholder:[NSString stringWithFormat:@"Go to line  (1 – %zu)", lineCount]
                             provider:^NSArray<GWPaletteItem *> *(NSString *query) {
@@ -2562,6 +2624,7 @@ static bool isImageExtension(NSString *extension) {
         item.symbol = @"arrow.down.to.line";
         item.symbolColor = NSColor.controlAccentColor;
         item.run = ^{
+            [weakSelf rememberLocationBeforeJump];
             [editor jumpToLine:static_cast<size_t>(number - 1)];
         };
         return @[item];
@@ -4198,6 +4261,7 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
             return;
         }
         NSURL *url = [NSURL fileURLWithPath:@(path.c_str())];
+        [self rememberLocationBeforeJump];
         [self openURL:url];
         Tab *tab = [self currentTab];
         if (!tab || !tab->document->path() || tab->document->path()->string() != path) {

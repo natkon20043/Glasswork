@@ -11,6 +11,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)openURL:(NSURL *)url;
 /// Shows the open panel for a folder (or file) and opens what is chosen in this window.
 - (IBAction)openFolder:(nullable id)sender;
+- (IBAction)goBack:(nullable id)sender;
+- (IBAction)goForward:(nullable id)sender;
 /// Asks about unsaved changes. Returns NO if the user cancelled.
 - (BOOL)confirmCloseAll;
 /// Debugging aid: renders the editor straight from its drawing code into a PNG.
