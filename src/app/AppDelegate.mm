@@ -19,6 +19,7 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
     NSPoint _cascadePoint;
     NSMenu *_themeMenu;
     NSMenu *_installedMenu;
+    NSMenu *_recentMenu;
     NSMutableArray<NSURL *> *_pendingURLs;  // files opened before launch finished
 }
 
@@ -186,6 +187,47 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
     return menu;
 }
 
+/// File > Open Recent. The list is rebuilt each time the menu opens, from the folders and
+/// files macOS has noted as recent (MainWindow notes them when they are opened).
+- (NSMenuItem *)openRecentItem {
+    _recentMenu = [[NSMenu alloc] initWithTitle:@"Open Recent"];
+    _recentMenu.delegate = self;
+    NSMenuItem *holder = [[NSMenuItem alloc] initWithTitle:@"Open Recent" action:nil keyEquivalent:@""];
+    holder.submenu = _recentMenu;
+    return holder;
+}
+
+- (void)fillRecentMenu {
+    [_recentMenu removeAllItems];
+    NSArray<NSURL *> *recent = NSDocumentController.sharedDocumentController.recentDocumentURLs;
+    for (NSURL *url in recent) {
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:url.lastPathComponent action:@selector(openRecent:) keyEquivalent:@""];
+        item.target = self;
+        item.representedObject = url;
+        item.toolTip = url.path;
+        NSImage *icon = [NSWorkspace.sharedWorkspace iconForFile:url.path];
+        icon.size = NSMakeSize(16, 16);
+        item.image = icon;
+        [_recentMenu addItem:item];
+    }
+    if (recent.count == 0) {
+        NSMenuItem *empty = [[NSMenuItem alloc] initWithTitle:@"No Recent Items" action:nil keyEquivalent:@""];
+        empty.enabled = NO;
+        [_recentMenu addItem:empty];
+    }
+    [_recentMenu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *clear = [[NSMenuItem alloc] initWithTitle:@"Clear Menu" action:@selector(clearRecentDocuments:) keyEquivalent:@""];
+    clear.target = NSDocumentController.sharedDocumentController;
+    [_recentMenu addItem:clear];
+}
+
+- (void)openRecent:(NSMenuItem *)sender {
+    NSURL *url = sender.representedObject;
+    GWMainWindowController *target = [self frontWindowController];
+    [target openURL:url];
+    [target showWindow:nil];
+}
+
 - (NSMenu *)buildMainMenu {
     NSMenu *main = [NSMenu new];
     const NSEventModifierFlags command = NSEventModifierFlagCommand, shift = NSEventModifierFlagShift,
@@ -209,6 +251,7 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
         [self item:@"Open Folder in New Window…" action:@selector(openFolderInNewWindow:) key:@"o" modifiers:command | option | shift],
         [self item:@"Open…" action:@selector(openDocument:) key:@"o"],
         [self item:@"Open Folder…" action:@selector(openFolder:) key:@"o" modifiers:command | shift],
+        [self openRecentItem],
         NSMenuItem.separatorItem,
         [self item:@"Save" action:@selector(saveDocument:) key:@"s"],
         [self item:@"Save As…" action:@selector(saveDocumentAs:) key:@"s" modifiers:command | shift],
@@ -386,6 +429,10 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
 
 - (void)menuNeedsUpdate:(NSMenu *)menu {
     GWServices *services = GWServices.shared;
+    if (menu == _recentMenu) {
+        [self fillRecentMenu];
+        return;
+    }
     if (menu == _themeMenu) {
         [menu removeAllItems];
         NSArray<NSString *> *labels = services.themeLabels;
