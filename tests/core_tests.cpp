@@ -547,6 +547,9 @@ TEST(settingsParseCommentedJsonAndRoundTrip) {
     {
       "editor.fontSize": 15,
       "editor.opacity": 0.8,
+      "window.glassTint": 0.7,
+      "window.frostedBackdrop": true,
+      "window.glassStyle": "clear",
       "workbench.colorTheme": "Light+",
       "editor.rainbowVariables": false,
       "files.autoSave": true,
@@ -563,6 +566,9 @@ TEST(settingsParseCommentedJsonAndRoundTrip) {
     CHECK(error.empty());
     CHECK_EQ(settings.fontSize, 15.0);
     CHECK_EQ(settings.editorOpacity, 0.8);
+    CHECK_EQ(settings.glassTint, 0.7);
+    CHECK(settings.frostedBackdrop);
+    CHECK_EQ(settings.glassStyle, std::string("clear"));
     CHECK_EQ(settings.theme, std::string("Light+"));
     CHECK(settings.autoSave);
     CHECK(settings.wordWrap);
@@ -576,6 +582,9 @@ TEST(settingsParseCommentedJsonAndRoundTrip) {
     gw::EditorSettings again = gw::parseSettings(gw::serializeSettings(settings), &error);
     CHECK(error.empty());
     CHECK_EQ(again.fontSize, 15.0);
+    CHECK_EQ(again.glassTint, 0.7);
+    CHECK(again.frostedBackdrop);
+    CHECK_EQ(again.glassStyle, std::string("clear"));
     CHECK_EQ(again.theme, std::string("Light+"));
     CHECK(again.autoSave);
     CHECK(again.wordWrap);
@@ -588,6 +597,12 @@ TEST(settingsParseCommentedJsonAndRoundTrip) {
     gw::EditorSettings broken = gw::parseSettings("{ not json", &error);
     CHECK(!error.empty());
     CHECK_EQ(broken.fontSize, 13.0);  // defaults
+
+    gw::EditorSettings odd = gw::parseSettings(
+        R"({ "window.glassTint": 9, "window.glassStyle": "shiny", "editor.opacity": 0 })", &error);
+    CHECK_EQ(odd.glassTint, 1.0);                       // clamped
+    CHECK_EQ(odd.glassStyle, std::string("regular"));   // unknown style falls back
+    CHECK_EQ(odd.editorOpacity, 0.15);                  // never fully invisible
 }
 
 // MARK: Highlighting far into a file

@@ -14,7 +14,15 @@ struct EditorSettings {
     int tabSize = 4;
     /// Wrap long lines to the width of the editor instead of scrolling sideways.
     bool wordWrap = false;
-    double editorOpacity = 0.62;
+    double editorOpacity = 0.40;
+    /// How strongly the glass panels are tinted towards the theme: 0 is clear glass, 1 is the
+    /// strongest tint. Less tint shows (and bends) more of what is behind the window.
+    double glassTint = 0.25;
+    /// Blur whatever is behind the window. Off lets the desktop show through sharply, which is
+    /// what the glass refracts; on gives a calmer, frosted look.
+    bool frostedBackdrop = false;
+    /// "regular" or "clear" glass for the sidebar, tab bar and status bar.
+    std::string glassStyle = "regular";
     std::string theme = "Dark Modern";
 
     bool highlightOccurrences = true;

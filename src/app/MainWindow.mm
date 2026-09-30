@@ -922,13 +922,28 @@ bool looksBinary(const char *path) {
     // Tint the glass slightly towards the theme so panels and code feel like one surface.
     NSColor *editor = [services color:@"editor.background" fallback:NSColor.clearColor];
     NSColor *sidebar = [services color:@"sideBar.background" fallback:editor];
-    _root.sidebar.tintColor = [sidebar colorWithAlphaComponent:0.30];
-    _root.tabs.tintColor = [editor colorWithAlphaComponent:0.22];
-    _root.status.tintColor = [editor colorWithAlphaComponent:0.22];
-    _root.chat.tintColor = [sidebar colorWithAlphaComponent:0.30];
-    _root.bottom.tintColor = [editor colorWithAlphaComponent:0.30];
-    _root.editorCard.tintColor = [editor colorWithAlphaComponent:0.18];
-    _root.welcome.tintColor = [editor colorWithAlphaComponent:0.18];
+    // The tint of each panel is its strongest value scaled by the glassTint setting.
+    const CGFloat tint = services.settings.glassTint;
+    // Panels with lots of text (chat, terminal, editor) get more tint than the bars, so their
+    // text stays readable over a bright picture behind the window.
+    _root.sidebar.tintColor = [sidebar colorWithAlphaComponent:std::min(1.0, 0.80 * tint)];
+    _root.tabs.tintColor = [editor colorWithAlphaComponent:std::min(1.0, 0.80 * tint)];
+    _root.status.tintColor = [editor colorWithAlphaComponent:std::min(1.0, 1.60 * tint)];
+    _root.chat.tintColor = [sidebar colorWithAlphaComponent:std::min(1.0, 1.30 * tint)];
+    _root.bottom.tintColor = [editor colorWithAlphaComponent:std::min(1.0, 2.00 * tint)];
+    _root.editorCard.tintColor = [editor colorWithAlphaComponent:std::min(1.0, 0.90 * tint)];
+    _root.welcome.tintColor = [editor colorWithAlphaComponent:std::min(1.0, 0.60 * tint)];
+
+    // Clear glass for the bars and sidebar, if asked for; the text-heavy panels stay regular.
+    NSGlassEffectViewStyle chromeStyle =
+        services.settings.glassStyle == "clear" ? NSGlassEffectViewStyleClear : NSGlassEffectViewStyleRegular;
+    _root.sidebar.style = chromeStyle;
+    _root.tabs.style = chromeStyle;
+    _root.status.style = chromeStyle;
+
+    // The blurred layer behind the window hides the desktop; without it the glass has something
+    // sharp to bend.
+    _root.backdrop.hidden = !services.settings.frostedBackdrop;
 
     // Aurora colours from the theme's own accents, with vivid fallbacks.
     NSArray *aurora = @[

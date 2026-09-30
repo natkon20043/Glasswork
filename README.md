@@ -58,7 +58,8 @@ The first configuration downloads nlohmann/json and Oniguruma. A from-scratch bu
 - ⌃` toggles a real terminal (xterm-256color, true colour, mouse, alternate screen, scrollback, wide characters). Vim, htop, tmux and `claude` itself work in it.
 
 **Settings**
-- ⌘, opens `~/Library/Application Support/Glasswork/settings.json` (JSON with comments). Changes apply as you save. Keys include `editor.fontSize`, `editor.fontFamily`, `editor.tabSize`, `editor.opacity`, `workbench.colorTheme`, `files.autoSave`, `terminal.fontSize` and `terminal.shell`.
+- ⌘, opens `~/Library/Application Support/Glasswork/settings.json` (JSON with comments). Changes apply as you save. Keys include `editor.fontSize`, `editor.fontFamily`, `editor.tabSize`, `editor.opacity`, `window.glassTint`, `window.frostedBackdrop`, `window.glassStyle`, `workbench.colorTheme`, `files.autoSave`, `terminal.fontSize` and `terminal.shell`.
+- **Look:** the panels are real Liquid Glass, which bends and blurs whatever is behind the window. `window.glassTint` (0 clear .. 1 heavy) sets how much colour sits in the glass, `editor.opacity` how see-through the code background is, and `window.glassStyle` (`regular` or `clear`) picks the bar material. `window.frostedBackdrop` (default off) adds a blur behind the whole window; leaving it off keeps the refraction sharp and idle CPU near zero.
 
 ## Speed
 

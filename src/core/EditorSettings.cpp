@@ -132,6 +132,9 @@ EditorSettings parseSettings(const std::string& jsonc, std::string* error) {
     readValue(document, "editor.tabSize", settings.tabSize);
     readValue(document, "editor.wordWrap", settings.wordWrap);
     readValue(document, "editor.opacity", settings.editorOpacity);
+    readValue(document, "window.glassTint", settings.glassTint);
+    readValue(document, "window.frostedBackdrop", settings.frostedBackdrop);
+    readValue(document, "window.glassStyle", settings.glassStyle);
     readValue(document, "workbench.colorTheme", settings.theme);
     readValue(document, "editor.highlightOccurrences", settings.highlightOccurrences);
     readValue(document, "editor.minimap", settings.showMinimap);
@@ -172,7 +175,11 @@ EditorSettings parseSettings(const std::string& jsonc, std::string* error) {
     // Keep values in sensible ranges even if the file says otherwise.
     settings.fontSize = std::clamp(settings.fontSize, 8.0, 40.0);
     settings.tabSize = std::clamp(settings.tabSize, 1, 16);
-    settings.editorOpacity = std::clamp(settings.editorOpacity, 0.3, 1.0);
+    settings.editorOpacity = std::clamp(settings.editorOpacity, 0.15, 1.0);
+    settings.glassTint = std::clamp(settings.glassTint, 0.0, 1.0);
+    if (settings.glassStyle != "clear") {
+        settings.glassStyle = "regular";
+    }
     if (settings.terminalFontSize != 0) {
         settings.terminalFontSize = std::clamp(settings.terminalFontSize, 8.0, 40.0);
     }
@@ -215,7 +222,11 @@ std::string serializeSettings(const EditorSettings& settings) {
         << "\n"
         << "  // Look\n"
         << "  \"workbench.colorTheme\": " << json(settings.theme).dump() << ",  // View > Theme lists them\n"
-        << "  \"editor.opacity\": " << settings.editorOpacity << ",  // 0.3 (see-through) to 1 (solid)\n"
+        << "  \"editor.opacity\": " << settings.editorOpacity << ",  // 0.15 (see-through) to 1 (solid)\n"
+        << "  \"window.glassTint\": " << settings.glassTint << ",  // 0 = clear glass, 1 = strongest tint\n"
+        << "  \"window.frostedBackdrop\": " << boolean(settings.frostedBackdrop)
+        << ",  // false: the desktop shows through sharply and the glass bends it\n"
+        << "  \"window.glassStyle\": " << json(settings.glassStyle).dump() << ",  // \"regular\" or \"clear\" for the sidebar and bars\n"
         << "  \"editor.minimap\": " << boolean(settings.showMinimap) << ",\n"
         << "  \"editor.indentGuides\": " << boolean(settings.indentGuides) << ",\n"
         << "  \"editor.bracketPairColorization\": " << boolean(settings.bracketPairColors) << ",\n"
