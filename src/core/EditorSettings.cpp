@@ -149,6 +149,7 @@ EditorSettings parseSettings(const std::string& jsonc, std::string* error) {
     readValue(document, "files.autoSave", settings.autoSave);
     readValue(document, "files.trimTrailingWhitespace", settings.trimTrailingWhitespace);
     readValue(document, "files.insertFinalNewline", settings.insertFinalNewline);
+    readValue(document, "files.formatOnSave", settings.formatOnSave);
     readValue(document, "terminal.fontSize", settings.terminalFontSize);
     readValue(document, "terminal.shell", settings.terminalShell);
 
@@ -215,6 +216,8 @@ std::string serializeSettings(const EditorSettings& settings) {
         << "  \"files.trimTrailingWhitespace\": " << boolean(settings.trimTrailingWhitespace)
         << ",  // .editorconfig files can override this per file type\n"
         << "  \"files.insertFinalNewline\": " << boolean(settings.insertFinalNewline) << ",\n"
+        << "  \"files.formatOnSave\": " << boolean(settings.formatOnSave)
+        << ",  // run the language server's formatter when you press \u2318S\n"
         << "\n"
         << "  // Terminal\n"
         << "  \"terminal.fontSize\": " << settings.terminalFontSize << ",  // 0 = one point smaller than the editor\n"

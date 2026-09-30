@@ -770,6 +770,7 @@ TEST(settingsParseCommentedJsonAndRoundTrip) {
       "workbench.colorTheme": "Light+",
       "editor.rainbowVariables": false,
       "files.autoSave": true,
+      "files.formatOnSave": true,
       "editor.wordWrap": true,
       "terminal.fontSize": 14,
       "terminal.shell": "/bin/bash",
@@ -788,6 +789,7 @@ TEST(settingsParseCommentedJsonAndRoundTrip) {
     CHECK_EQ(settings.glassStyle, std::string("clear"));
     CHECK_EQ(settings.theme, std::string("Light+"));
     CHECK(settings.autoSave);
+    CHECK(settings.formatOnSave);
     CHECK(settings.wordWrap);
     CHECK_EQ(settings.terminalFontSize, 14.0);
     CHECK_EQ(settings.terminalShell, std::string("/bin/bash"));
@@ -804,6 +806,7 @@ TEST(settingsParseCommentedJsonAndRoundTrip) {
     CHECK_EQ(again.glassStyle, std::string("clear"));
     CHECK_EQ(again.theme, std::string("Light+"));
     CHECK(again.autoSave);
+    CHECK(again.formatOnSave);
     CHECK(again.wordWrap);
     CHECK_EQ(again.terminalFontSize, 14.0);
     CHECK_EQ(again.terminalShell, std::string("/bin/bash"));

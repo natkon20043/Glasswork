@@ -4946,6 +4946,12 @@ static std::vector<std::pair<gw::Range, std::string>> editsFromLsp(const gw::lsp
         [self languageMessage:@"The language server for this file can't format it."];
         return;
     }
+    [self formatDocument:document then:nil];
+}
+
+/// Asks the language server to format the document, applies the answer, then runs `after`
+/// (whatever the outcome, so a save is never lost to a slow or failing server).
+- (void)formatDocument:(gw::Document *)document then:(void (^)(void))after {
     gw::lsp::Json params = {
         {"textDocument", {{"uri", gw::lsp::fileURI(document->path()->string())}}},
         {"options", {{"tabSize", GWServices.shared.settings.tabSize}, {"insertSpaces", true}}},
@@ -4960,20 +4966,24 @@ static std::vector<std::pair<gw::Range, std::string>> editsFromLsp(const gw::lsp
             return;
         }
         if (error != nil) {
-            [strongSelf languageMessage:error];
-            return;
+            if (after == nil) {
+                [strongSelf languageMessage:error];
+            }
+        } else {
+            Tab *tab = [strongSelf currentTab];
+            bool stillHere = tab != nullptr && tab->document.get() == document;
+            if (stillHere && result.is_array() && !result.empty()) {
+                auto edits = editsFromLsp(result, document->buffer());
+                if (!edits.empty()) {
+                    gw::Position caret = document->selection.caret;
+                    [strongSelf applyEdits:edits toCurrentDocumentPlacingCaretAfterFirst:NO];
+                    [strongSelf->_editorView jumpToPosition:caret];
+                }
+            }
         }
-        Tab *tab = [strongSelf currentTab];
-        if (tab == nullptr || tab->document.get() != document || !result.is_array() || result.empty()) {
-            return;
+        if (after != nil) {
+            after();
         }
-        auto edits = editsFromLsp(result, document->buffer());
-        if (edits.empty()) {
-            return;
-        }
-        gw::Position caret = document->selection.caret;
-        [strongSelf applyEdits:edits toCurrentDocumentPlacingCaretAfterFirst:NO];
-        [strongSelf->_editorView jumpToPosition:caret];
     }];
 }
 
@@ -5102,7 +5112,37 @@ static std::vector<std::pair<gw::Range, std::string>> editsFromLsp(const gw::lsp
 }
 
 - (IBAction)saveDocument:(id)sender {
-    if (Tab *tab = [self currentTab]) [self saveTab:*tab];
+    Tab *tab = [self currentTab];
+    if (tab == nullptr) {
+        return;
+    }
+    gw::Document *document = tab->document.get();
+    bool canFormat = GWServices.shared.settings.formatOnSave && !tab->isVirtual && document->path().has_value() &&
+                     [_language serverSupports:@"documentFormattingProvider" forDocument:document];
+    if (!canFormat) {
+        [self saveTab:*tab];
+        return;
+    }
+    // Format first, then save whatever the text is by then. If the server is slow, or its
+    // answer is dropped because you kept typing, the save still happens after a moment.
+    __weak GWMainWindowController *weakSelf = self;
+    uint64_t identifier = tab->identifier;
+    __block BOOL saved = NO;
+    void (^saveOnce)(void) = ^{
+        GWMainWindowController *strongSelf = weakSelf;
+        if (saved || strongSelf == nil) {
+            return;
+        }
+        saved = YES;
+        for (auto &candidate : strongSelf->_tabs) {
+            if (candidate->identifier == identifier) {
+                [strongSelf saveTab:*candidate];
+                break;
+            }
+        }
+    };
+    [self formatDocument:document then:saveOnce];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), saveOnce);
 }
 
 - (IBAction)saveDocumentAs:(id)sender {

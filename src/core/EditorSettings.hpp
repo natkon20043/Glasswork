@@ -45,6 +45,8 @@ struct EditorSettings {
     bool trimTrailingWhitespace = false;
     /// Make sure files end with a newline when saving (an .editorconfig can override).
     bool insertFinalNewline = false;
+    /// Run the language server's formatter when saving with ⌘S (needs a server that can format).
+    bool formatOnSave = false;
     /// Terminal text size in points; 0 means one point smaller than the editor's.
     double terminalFontSize = 0;
     /// Program the terminal runs, e.g. "/bin/zsh" or "/opt/homebrew/bin/fish". Empty: $SHELL.
