@@ -590,6 +590,9 @@ bool looksBinary(const char *path) {
     NSView *breadcrumbBar = [NSView new];
     _breadcrumb = [self label:@"" size:12 weight:NSFontWeightMedium secondary:YES];
     _breadcrumb.lineBreakMode = NSLineBreakByTruncatingHead;
+    _breadcrumb.maximumNumberOfLines = 1;  // a long path is cut at the front, never wrapped onto a second line
+    _breadcrumb.cell.usesSingleLineMode = YES;
+    [_breadcrumb setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     _breadcrumb.translatesAutoresizingMaskIntoConstraints = NO;
     [breadcrumbBar addSubview:_breadcrumb];
     [NSLayoutConstraint activateConstraints:@[
@@ -1370,7 +1373,15 @@ static bool isImageExtension(NSString *extension) {
             [parts addObject:root.lastPathComponent];
             [parts addObjectsFromArray:[[path substringFromIndex:root.length + 1] pathComponents]];
         } else {
-            [parts addObjectsFromArray:[[path stringByAbbreviatingWithTildeInPath] pathComponents]];
+            NSArray<NSString *> *all = [[path stringByAbbreviatingWithTildeInPath] pathComponents];
+            // A file outside the project: the last few folders are enough.
+            const NSUInteger keep = 4;
+            if (all.count > keep + 1) {
+                [parts addObject:@"…"];
+                [parts addObjectsFromArray:[all subarrayWithRange:NSMakeRange(all.count - keep, keep)]];
+            } else {
+                [parts addObjectsFromArray:all];
+            }
         }
     } else if (tab->isVirtual) {
         [parts addObject:@(tab->document->displayName().c_str())];
