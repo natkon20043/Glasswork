@@ -138,7 +138,7 @@ struct LineLayout {
     }
 };
 
-void buildOffsetMaps(const std::string &text, bool utf8, LineLayout &layout) {
+void buildOffsetMaps(std::string_view text, bool utf8, LineLayout &layout) {
     layout.byteToUnit.assign(text.size() + 1, 0);
     layout.unitToByte.clear();
     uint32_t unit = 0;
@@ -178,7 +178,7 @@ char matchingByte(char c) {
 }
 
 /// Visual indent columns of a line's leading whitespace, or nullopt for a blank line.
-std::optional<size_t> indentColumns(const std::string &text, size_t tabSize) {
+std::optional<size_t> indentColumns(std::string_view text, size_t tabSize) {
     size_t columns = 0;
     for (char c : text) {
         if (c == ' ') {
@@ -472,7 +472,7 @@ static constexpr CGFloat kMiniChar = 1.25;
     NSColor *plain = [editor.lineNumberColor colorWithAlphaComponent:0.9];
 
     for (size_t line = first; line <= last; ++line) {
-        const std::string &text = buffer.line(line);
+        std::string_view text = buffer.line(line);
         if (text.empty()) continue;
         CGFloat y = line * kMiniLine - offset;
         // Only use tokens the editor has already computed; the minimap never forces work.
@@ -861,7 +861,7 @@ static constexpr CGFloat kMiniChar = 1.25;
         size_t tabs = 0, spaces = 0;
         const auto &buffer = document->buffer();
         for (size_t line = 0; line < std::min<size_t>(buffer.lineCount(), 2000); ++line) {
-            const std::string &text = buffer.line(line);
+            std::string_view text = buffer.line(line);
             if (!text.empty() && text[0] == '\t') ++tabs;
             if (text.size() >= 2 && text[0] == ' ' && text[1] == ' ') ++spaces;
         }
@@ -1062,7 +1062,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 /// Byte-wise mask of which characters are code (not strings or comments) on a line.
 - (std::vector<bool>)codeMaskForLine:(size_t)line tokens:(const std::vector<gw::tm::Token> *)tokens {
-    const std::string &text = _document->buffer().line(line);
+    std::string_view text = _document->buffer().line(line);
     std::vector<bool> mask(text.size(), true);
     if (tokens) {
         for (const auto &token : *tokens) {
@@ -1088,7 +1088,7 @@ static constexpr CGFloat kMiniChar = 1.25;
             if (_depthValid >= _highlighter->validLines()) return std::nullopt;
             tokens = _highlighter->tokens(buffer, _depthValid, 0);
         }
-        const std::string &text = buffer.line(_depthValid);
+        std::string_view text = buffer.line(_depthValid);
         std::vector<bool> code = [self codeMaskForLine:_depthValid tokens:tokens];
         int depth = _depthAt[_depthValid];
         for (size_t index = 0; index < text.size(); ++index) {
@@ -1120,7 +1120,7 @@ static constexpr CGFloat kMiniChar = 1.25;
     if (caret.column > 0) candidates.push_back({caret.line, caret.column - 1});
     candidates.push_back(caret);
     for (gw::Position at : candidates) {
-        const std::string &text = buffer.line(at.line);
+        std::string_view text = buffer.line(at.line);
         if (at.column >= text.size()) continue;
         char bracket = text[at.column];
         char partner = matchingByte(bracket);
@@ -1131,7 +1131,7 @@ static constexpr CGFloat kMiniChar = 1.25;
         long limit = 3000;  // don't scan huge files forever
         long column = static_cast<long>(at.column);
         while (line >= 0 && line < static_cast<long>(buffer.lineCount()) && limit-- > 0) {
-            const std::string &scan = buffer.line(static_cast<size_t>(line));
+            std::string_view scan = buffer.line(static_cast<size_t>(line));
             std::vector<bool> code = codeMask(static_cast<size_t>(line));
             if (forward) {
                 for (long index = column; index < static_cast<long>(scan.size()); ++index) {
@@ -1176,7 +1176,7 @@ static constexpr CGFloat kMiniChar = 1.25;
     auto found = _layouts.find(index);
     if (found != _layouts.end() && (found->second.highlighted || !tokens)) return &found->second;
 
-    const std::string &text = buffer.line(index);
+    std::string_view text = buffer.line(index);
     NSString *string = [[NSString alloc] initWithBytes:text.data() length:text.size() encoding:NSUTF8StringEncoding];
     bool utf8 = string != nil;
     if (!string) string = [[NSString alloc] initWithBytes:text.data() length:text.size() encoding:NSISOLatin1StringEncoding];
@@ -1241,7 +1241,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 }
 
 /// Splits a long line into rows that fit the editor's width, each with its own CoreText line.
-- (void)addWrapRowsToLayout:(LineLayout &)layout text:(const std::string &)text attributed:(NSAttributedString *)attributed {
+- (void)addWrapRowsToLayout:(LineLayout &)layout text:(std::string_view)text attributed:(NSAttributedString *)attributed {
     gw::WrapResult wrapped = gw::wrapLine(text, _wrapColumns, static_cast<uint32_t>(_tabSize));
     if (wrapped.rowStarts.size() < 2) {
         return;
@@ -1766,7 +1766,7 @@ static constexpr CGFloat kMiniChar = 1.25;
             continue;
         }
         NSColor *color = [self colorForSeverity:item->severity];
-        const std::string &text = buffer.line(line);
+        std::string_view text = buffer.line(line);
         size_t startByte = std::min(item->range.start.column, text.size());
         size_t endByte = item->range.end.line == line ? std::min(item->range.end.column, text.size()) : text.size();
         if (endByte <= startByte) {
@@ -1913,7 +1913,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 // MARK: Sticky scroll
 
 /// "public:", "private:" and "protected:" sit inside the class rather than heading a block.
-static bool isAccessLabel(const std::string &line) {
+static bool isAccessLabel(std::string_view line) {
     size_t start = line.find_first_not_of(" \t");
     if (start == std::string::npos) {
         return false;
@@ -2087,7 +2087,7 @@ static bool isAccessLabel(const std::string &line) {
     gw::Position position = [self positionForPoint:point];
     const auto &buffer = _document->buffer();
     gw::Range word = buffer.wordAt(position);
-    const std::string &text = buffer.line(position.line);
+    std::string_view text = buffer.line(position.line);
     bool onWord = word.start.line == position.line && word.end.column > word.start.column &&
                   position.column < text.size() && !std::isspace(static_cast<unsigned char>(text[position.column]));
     // The pointer must really be over the text, not just to the right of the line.
@@ -2346,7 +2346,7 @@ static bool isAccessLabel(const std::string &line) {
     [_occurrenceColor setFill];
     for (size_t line = first; line <= last; ++line) {
         if ([self isLineHidden:line]) continue;
-        const std::string &text = buffer.line(line);
+        std::string_view text = buffer.line(line);
         size_t found = text.find(word);
         while (found != std::string::npos) {
             size_t end = found + word.size();
@@ -2419,7 +2419,7 @@ static bool isAccessLabel(const std::string &line) {
         return std::nullopt;
     }
     gw::Position caret = _document->selection.caret;
-    const std::string &text = _document->buffer().line(caret.line);
+    std::string_view text = _document->buffer().line(caret.line);
     const std::vector<gw::tm::Token> *tokens = _highlighter->tokens(_document->buffer(), caret.line);
     std::vector<gw::StyledSpan> spans = GWServices.shared.stylist.styleLine(text, *tokens);
     if (spans.empty()) {
@@ -2857,7 +2857,7 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
     }
     std::vector<gw::Selection> found;
     for (size_t line = 0; line < buffer.lineCount(); ++line) {
-        const std::string &text = buffer.line(line);
+        std::string_view text = buffer.line(line);
         size_t at = text.find(needle);
         while (at != std::string::npos) {
             bool wholeWord = true;
@@ -3132,9 +3132,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
     if (!_document) return;
     GW_FOR_EACH_CURSOR([self insertNewline:sender];)
     gw::Position caret = _document->selection.range().start;
-    const std::string &line = _document->buffer().line(caret.line);
+    std::string_view line = _document->buffer().line(caret.line);
     size_t indentEnd = std::min(_document->buffer().indentEnd(caret.line), caret.column);
-    std::string indent = line.substr(0, indentEnd);
+    std::string indent(line.substr(0, indentEnd));
     std::string previous = [self textAround:_document->selection.range().start before:YES];
     std::string next = [self textAround:_document->selection.range().end before:NO];
 
@@ -3200,7 +3200,7 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
         }
     }
     // In leading spaces, delete back to the previous indent stop.
-    const std::string &line = buffer.line(caret.line);
+    std::string_view line = buffer.line(caret.line);
     if (!_useTabs && caret.column > 0 && caret.column <= buffer.indentEnd(caret.line) &&
         line.find_first_not_of(' ', 0) >= caret.column) {
         size_t stop = ((caret.column - 1) / _tabSize) * _tabSize;
@@ -3264,7 +3264,7 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
     std::string replacement;
     for (size_t line = first; line <= last; ++line) {
         if (line > first) replacement += "\n";
-        replacement += transform(buffer.line(line), line);
+        replacement += transform(std::string(buffer.line(line)), line);
     }
     size_t oldLength = buffer.line(first).size();
     _document->replace({{first, 0}, {last, buffer.line(last).size()}}, replacement);
@@ -3315,7 +3315,7 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
     bool allCommented = true;
     size_t minIndent = std::string::npos;
     for (size_t line = first; line <= last; ++line) {
-        const std::string &text = buffer.line(line);
+        std::string_view text = buffer.line(line);
         size_t indent = buffer.indentEnd(line);
         if (indent == text.size()) continue;
         minIndent = std::min(minIndent, indent);
@@ -3358,7 +3358,7 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 
     gw::Selection before = _document->selection;
     const auto &buffer = _document->buffer();
-    std::string lineAbove = buffer.line(first - 1);
+    std::string lineAbove(buffer.line(first - 1));
     std::string movedBlock = [self joinedTextOfLinesFrom:first to:last];
     gw::Range whole = {{first - 1, 0}, {last, buffer.line(last).size()}};
     _document->replace(whole, movedBlock + "\n" + lineAbove);
@@ -3376,7 +3376,7 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 
     gw::Selection before = _document->selection;
     const auto &buffer = _document->buffer();
-    std::string lineBelow = buffer.line(last + 1);
+    std::string lineBelow(buffer.line(last + 1));
     std::string movedBlock = [self joinedTextOfLinesFrom:first to:last];
     gw::Range whole = {{first, 0}, {last + 1, buffer.line(last + 1).size()}};
     _document->replace(whole, lineBelow + "\n" + movedBlock);
@@ -3454,7 +3454,7 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
     if (!_document || _document->readOnly) return;
     size_t line = _document->selection.range().start.line;
     const auto &buffer = _document->buffer();
-    std::string indent = buffer.line(line).substr(0, buffer.indentEnd(line));
+    std::string indent(buffer.line(line).substr(0, buffer.indentEnd(line)));
     _document->replace({{line, 0}, {line, 0}}, indent + "\n");
     gw::Position caret = {line, indent.size()};
     _document->selection = {caret, caret};
@@ -3471,7 +3471,7 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
     gw::Selection selection = _document->selection;
 
     if (selection.empty()) {
-        const std::string &text = buffer.line(selection.caret.line);
+        std::string_view text = buffer.line(selection.caret.line);
         size_t start = selection.caret.column;
         size_t end = selection.caret.column;
         while (start > 0 && gw::isWordByte(static_cast<unsigned char>(text[start - 1]))) {
@@ -3507,7 +3507,7 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
     size_t lineCount = buffer.lineCount();
     for (size_t step = 0; step <= lineCount; ++step) {
         size_t line = (searchFrom.line + step) % lineCount;
-        const std::string &text = buffer.line(line);
+        std::string_view text = buffer.line(line);
         size_t from = step == 0 ? searchFrom.column : 0;
         size_t found = text.find(needle, from);
         if (found == std::string::npos) {
@@ -3537,7 +3537,7 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 /// The text of a selection, or the whole line when nothing is selected.
 - (std::string)copyTextOfSelection:(gw::Selection)selection {
     if (selection.empty()) {
-        return _document->buffer().line(selection.caret.line) + "\n";
+        return std::string(_document->buffer().line(selection.caret.line)) + "\n";
     }
     return _document->buffer().text(selection.range());
 }

@@ -355,7 +355,7 @@
 /// The replacement for one match, with $1 groups filled in for regular expressions.
 - (std::string)replacementFor:(const gw::Range &)match document:(gw::Document *)document {
     std::string template_ = _replaceField.stringValue.UTF8String ?: "";
-    const std::string &line = document->buffer().line(match.start.line);
+    std::string_view line = document->buffer().line(match.start.line);
     return _matcher->expand(line, match.start.column, match.end.column - match.start.column, template_);
 }
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "LineStore.hpp"
+
 #include <compare>
 #include <cstddef>
 #include <string>
@@ -25,16 +27,22 @@ struct Range {
 };
 
 /// The document's text as a list of lines (without their line endings). Line-based storage
-/// matches how syntax highlighting and rendering work, keeps edits local, and is plenty fast
-/// for source files; a rope can replace it later without changing this interface.
+/// matches how syntax highlighting and rendering work and keeps edits local. The lines live in a
+/// LineStore, which keeps the file's bytes in one block and copies a line out only when it is edited.
 class TextBuffer {
 public:
     TextBuffer();
     explicit TextBuffer(std::string_view text);
+    explicit TextBuffer(const char* text) : TextBuffer(std::string_view(text)) {}
+    /// Takes the text over without copying it (what opening a file uses).
+    explicit TextBuffer(std::string&& text);
 
     size_t lineCount() const { return lines_.size(); }
-    const std::string& line(size_t index) const { return lines_[index]; }
-    Position end() const { return {lines_.size() - 1, lines_.back().size()}; }
+    /// A line without its ending. The view stays valid until the buffer is next changed.
+    std::string_view line(size_t index) const { return lines_.view(index); }
+    Position end() const { return {lines_.size() - 1, lines_.view(lines_.size() - 1).size()}; }
+    /// Bytes of memory the text takes, for measuring.
+    size_t memoryBytes() const { return lines_.memoryBytes(); }
 
     /// Whole text, joined with the file's original line ending.
     std::string text() const;
@@ -59,12 +67,12 @@ public:
     size_t indentEnd(size_t line) const;
 
 private:
-    std::vector<std::string> lines_;
+    LineStore lines_;
     bool crlf_ = false;
 };
 
 /// Byte offset of the UTF-8 character boundary at or before `column`.
-size_t floorToCharacter(const std::string& line, size_t column);
+size_t floorToCharacter(std::string_view line, size_t column);
 bool isWordByte(unsigned char byte);
 
 }  // namespace gw

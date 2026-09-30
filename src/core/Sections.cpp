@@ -100,7 +100,7 @@ std::optional<Section> sectionForLine(size_t line, std::string_view text) {
 std::vector<Section> findSections(const TextBuffer& buffer) {
     std::vector<Section> sections;
     for (size_t line = 0; line < buffer.lineCount(); ++line) {
-        const std::string& text = buffer.line(line);
+        std::string_view text = buffer.line(line);
         // Cheap early exit: every form we recognise contains one of these letters.
         if (text.find_first_of("MTFp") == std::string::npos) {
             continue;

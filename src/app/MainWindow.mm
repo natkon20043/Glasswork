@@ -1283,7 +1283,7 @@ static bool isImageExtension(NSString *extension) {
     std::vector<std::pair<gw::Range, std::string>> edits;
     if (trim) {
         for (size_t line = 0; line < buffer.lineCount(); ++line) {
-            const std::string &text = buffer.line(line);
+            std::string_view text = buffer.line(line);
             size_t end = text.size();
             while (end > 0 && (text[end - 1] == ' ' || text[end - 1] == '\t')) {
                 --end;
@@ -1796,7 +1796,7 @@ static bool isImageExtension(NSString *extension) {
     const gw::Document &document = *tab->document;
     gw::Position caret = document.selection.caret;
     // Columns count characters (not bytes), from 1, like other editors.
-    const std::string &line = document.buffer().line(caret.line);
+    std::string_view line = document.buffer().line(caret.line);
     NSString *prefix = [[NSString alloc] initWithBytes:line.data() length:std::min(caret.column, line.size()) encoding:NSUTF8StringEncoding];
     NSMutableArray<NSAttributedString *> *left = [NSMutableArray array];
     [left addObject:segment(@"text.cursor", NSColor.controlAccentColor,
@@ -2578,7 +2578,7 @@ static bool isImageExtension(NSString *extension) {
     if (tab == nullptr || line >= tab->document->buffer().lineCount()) {
         return;
     }
-    const std::string &text = tab->document->buffer().line(line);
+    std::string_view text = tab->document->buffer().line(line);
     size_t start = std::min(column, text.size());
     size_t end = std::min(start + length, text.size());
     [_editorView selectRange:gw::Range{{line, start}, {line, end}}];
@@ -3747,7 +3747,7 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
 - (gw::Position)wordStartBeforeCaret {
     Tab *tab = [self currentTab];
     gw::Position caret = tab->document->selection.caret;
-    const std::string &line = tab->document->buffer().line(caret.line);
+    std::string_view line = tab->document->buffer().line(caret.line);
     size_t column = std::min(caret.column, line.size());
     while (column > 0 && gw::isWordByte(static_cast<unsigned char>(line[column - 1]))) {
         --column;

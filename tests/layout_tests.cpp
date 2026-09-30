@@ -4,6 +4,7 @@
 
 #include "EditorConfig.hpp"
 #include "Folding.hpp"
+#include "LineStore.hpp"
 #include "RowMap.hpp"
 #include "SemanticTokens.hpp"
 #include "Tasks.hpp"
@@ -12,6 +13,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <string>
 #include <unistd.h>
 
@@ -309,6 +311,83 @@ TEST(semanticTokensFollowEdits) {
     gw::adjustSemanticTokensForEdit(tokens, 0, 0, 0);
     CHECK_EQ(tokens.size(), size_t(3));
     CHECK_EQ(tokens[0].line, 1u);
+}
+
+// ---- LineStore
+
+TEST(lineStoreSplitsTextIntoLines) {
+    size_t crlf = 0, lf = 0;
+    gw::LineStore store = gw::LineStore::fromText("one\r\ntwo\nthree\r\n\nlast", &crlf, &lf);
+    CHECK_EQ(store.size(), size_t(5));
+    CHECK_EQ(std::string(store.view(0)), std::string("one"));
+    CHECK_EQ(std::string(store.view(1)), std::string("two"));
+    CHECK_EQ(std::string(store.view(2)), std::string("three"));
+    CHECK_EQ(std::string(store.view(3)), std::string(""));
+    CHECK_EQ(std::string(store.view(4)), std::string("last"));
+    CHECK_EQ(crlf, size_t(2));
+    CHECK_EQ(lf, size_t(2));
+    CHECK_EQ(store.editedLineCount(), size_t(0));  // nothing has been copied out yet
+
+    gw::LineStore empty = gw::LineStore::fromText("", nullptr, nullptr);
+    CHECK_EQ(empty.size(), size_t(1));
+    gw::LineStore trailing = gw::LineStore::fromText("a\n", nullptr, nullptr);
+    CHECK_EQ(trailing.size(), size_t(2));
+}
+
+TEST(lineStoreCopiesOnlyEditedLines) {
+    gw::LineStore store = gw::LineStore::fromText("aaa\nbbb\nccc", nullptr, nullptr);
+    std::string_view untouched = store.view(0);
+    store.edit(1) += "!";
+    CHECK_EQ(std::string(store.view(1)), std::string("bbb!"));
+    CHECK_EQ(store.editedLineCount(), size_t(1));
+    CHECK_EQ(std::string(untouched), std::string("aaa"));   // still valid: the block didn't move
+    store.edit(2) += "?";
+    CHECK_EQ(std::string(store.view(1)), std::string("bbb!"));  // and editing another line didn't move this one
+    // A line costs 8 bytes of bookkeeping.
+    CHECK_EQ(sizeof(gw::LineStore::LineRef), size_t(8));
+}
+
+TEST(lineStoreMatchesAPlainVectorOfStrings) {
+    std::mt19937 random(2024);
+    std::vector<std::string> model;
+    std::string text;
+    for (int line = 0; line < 200; ++line) {
+        std::string content = "line " + std::to_string(line) + std::string(random() % 30, 'x');
+        model.push_back(content);
+        text += content + (line + 1 < 200 ? "\n" : "");
+    }
+    gw::LineStore store = gw::LineStore::fromText(std::move(text), nullptr, nullptr);
+    for (int step = 0; step < 4000; ++step) {
+        int action = static_cast<int>(random() % 4);
+        if (action == 0 && !model.empty()) {
+            size_t index = random() % model.size();
+            std::string extra = std::to_string(step);
+            store.edit(index) += extra;
+            model[index] += extra;
+        } else if (action == 1) {
+            size_t index = random() % (model.size() + 1);
+            std::vector<std::string> added;
+            size_t count = 1 + random() % 3;
+            for (size_t n = 0; n < count; ++n) added.push_back("new" + std::to_string(step) + "_" + std::to_string(n));
+            model.insert(model.begin() + static_cast<long>(index), added.begin(), added.end());
+            store.insertOwned(index, std::move(added));
+        } else if (action == 2 && model.size() > 2) {
+            size_t first = random() % model.size();
+            size_t last = std::min(model.size(), first + 1 + random() % 3);
+            model.erase(model.begin() + static_cast<long>(first), model.begin() + static_cast<long>(last));
+            store.erase(first, last);
+        }
+        if (step % 50 == 0) {
+            CHECK_EQ(store.size(), model.size());
+            for (size_t index = 0; index < model.size(); ++index) {
+                if (std::string(store.view(index)) != model[index]) {
+                    CHECK(false);
+                    return;
+                }
+            }
+        }
+    }
+    CHECK_EQ(store.size(), model.size());
 }
 
 // ---- Tasks

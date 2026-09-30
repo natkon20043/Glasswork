@@ -70,10 +70,10 @@ NSAttributedString *GWHighlightedCode(NSString *code, NSString *language, CGFloa
         if (line > 0) {
             [result appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n" attributes:plain]];
         }
-        const std::string &text = buffer.line(line);
+        std::string_view text = buffer.line(line);
         const std::vector<gw::tm::Token> *tokens = highlighter.tokens(buffer, line);
         if (tokens == nullptr || text.empty()) {
-            [result appendAttributedString:[[NSAttributedString alloc] initWithString:@(text.c_str()) attributes:plain]];
+            [result appendAttributedString:[[NSAttributedString alloc] initWithString:@(std::string(text).c_str()) attributes:plain]];
             continue;
         }
 

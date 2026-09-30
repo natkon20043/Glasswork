@@ -10,7 +10,7 @@ constexpr size_t kBlankLookAhead = 500;
 
 /// Indentation of a line in columns, or -1 if the line is blank.
 long indentOf(const TextBuffer& buffer, size_t line, size_t tabSize) {
-    const std::string& text = buffer.line(line);
+    std::string_view text = buffer.line(line);
     size_t column = 0;
     for (char character : text) {
         if (character == ' ') {

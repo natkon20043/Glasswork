@@ -52,7 +52,7 @@ std::optional<Document> Document::open(const std::filesystem::path& path, std::s
         return std::nullopt;
     }
     Document document;
-    document.buffer_ = TextBuffer(contents);
+    document.buffer_ = TextBuffer(std::move(contents));
     document.path_ = path;
     document.rememberDiskState();
     return document;

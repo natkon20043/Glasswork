@@ -106,11 +106,11 @@ size_t Highlighter::chooseAnchor(const TextBuffer& buffer, size_t line) {
     // Start a little above the wanted line, so the island has some code to settle in on.
     size_t from = line > 12 ? line - 12 : 0;
     for (size_t candidate = from + 1; candidate-- > lowest;) {
-        const std::string& text = buffer.line(candidate);
+        std::string_view text = buffer.line(candidate);
         if (text.empty() || text[0] == ' ' || text[0] == '\t') continue;
         bool afterBlank = candidate == 0;
         if (!afterBlank) {
-            const std::string& above = buffer.line(candidate - 1);
+            std::string_view above = buffer.line(candidate - 1);
             afterBlank = above.find_first_not_of(" \t") == std::string::npos;
         }
         if (afterBlank) return candidate;

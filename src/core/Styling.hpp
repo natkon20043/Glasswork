@@ -61,7 +61,7 @@ class Stylist {
 public:
     Stylist(const Theme& theme, ColorCustomizations customizations);
 
-    std::vector<StyledSpan> styleLine(const std::string& text, const std::vector<tm::Token>& tokens);
+    std::vector<StyledSpan> styleLine(std::string_view text, const std::vector<tm::Token>& tokens);
 
     /// The look for a scope path from the theme plus the user's scope rules.
     TextStyle styleForScopes(const tm::ScopeNode* scopes);

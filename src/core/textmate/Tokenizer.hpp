@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace gw::tm {
@@ -60,6 +61,6 @@ struct LineResult {
 
 /// Tokenizes one line (without its line ending) given the state after the previous line.
 /// `base` is the document's grammar, used for `$base` includes.
-LineResult tokenizeLine(Grammar& base, const std::string& line, const State& previous);
+LineResult tokenizeLine(Grammar& base, std::string_view line, const State& previous);
 
 }  // namespace gw::tm

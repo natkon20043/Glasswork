@@ -919,7 +919,7 @@ static NSImage *symbolImage(NSString *name, CGFloat size, NSFontWeight weight = 
                 while (lineStart <= text.size()) {
                     size_t newline = text.find('\n', lineStart);
                     size_t lineEnd = newline == std::string::npos ? text.size() : newline;
-                    std::string line = text.substr(lineStart, lineEnd - lineStart);
+                    std::string line(text.substr(lineStart, lineEnd - lineStart));
                     if (lineNumber == onlyLine) {
                         size_t lineCount = 0;
                         line = matcher->replaceAll(line, replacement, &lineCount);

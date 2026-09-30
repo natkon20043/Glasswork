@@ -17,7 +17,7 @@ bool isWordByte(unsigned char byte) {
     return std::isalnum(byte) || byte == '_' || byte >= 0x80;
 }
 
-size_t floorToCharacter(const std::string& line, size_t column) {
+size_t floorToCharacter(std::string_view line, size_t column) {
     column = std::min(column, line.size());
     while (column > 0 && column < line.size() && isContinuationByte(static_cast<unsigned char>(line[column]))) {
         --column;
@@ -25,24 +25,14 @@ size_t floorToCharacter(const std::string& line, size_t column) {
     return column;
 }
 
-TextBuffer::TextBuffer() : lines_{std::string()} {}
+TextBuffer::TextBuffer() = default;
 
-TextBuffer::TextBuffer(std::string_view text) {
-    size_t crlfCount = 0, lfCount = 0;
-    size_t start = 0;
-    for (size_t index = 0; index < text.size(); ++index) {
-        if (text[index] != '\n') continue;
-        size_t end = index;
-        if (end > start && text[end - 1] == '\r') {
-            --end;
-            ++crlfCount;
-        } else {
-            ++lfCount;
-        }
-        lines_.emplace_back(text.substr(start, end - start));
-        start = index + 1;
-    }
-    lines_.emplace_back(text.substr(start));
+TextBuffer::TextBuffer(std::string_view text) : TextBuffer(std::string(text)) {}
+
+TextBuffer::TextBuffer(std::string&& text) {
+    size_t crlfCount = 0;
+    size_t lfCount = 0;
+    lines_ = LineStore::fromText(std::move(text), &crlfCount, &lfCount);
     crlf_ = crlfCount > lfCount;
 }
 
@@ -50,11 +40,11 @@ std::string TextBuffer::text() const {
     const char* eol = crlf_ ? "\r\n" : "\n";
     std::string result;
     size_t total = 0;
-    for (const auto& line : lines_) total += line.size() + 2;
+    for (size_t index = 0; index < lines_.size(); ++index) total += lines_.view(index).size() + 2;
     result.reserve(total);
     for (size_t index = 0; index < lines_.size(); ++index) {
         if (index > 0) result += eol;
-        result += lines_[index];
+        result += lines_.view(index);
     }
     return result;
 }
@@ -62,20 +52,22 @@ std::string TextBuffer::text() const {
 std::string TextBuffer::text(Range range) const {
     range = range.normalized();
     Position start = clamp(range.start), end = clamp(range.end);
-    if (start.line == end.line) return lines_[start.line].substr(start.column, end.column - start.column);
-    std::string result = lines_[start.line].substr(start.column);
+    if (start.line == end.line) {
+        return std::string(lines_.view(start.line).substr(start.column, end.column - start.column));
+    }
+    std::string result(lines_.view(start.line).substr(start.column));
     for (size_t line = start.line + 1; line < end.line; ++line) {
         result += '\n';
-        result += lines_[line];
+        result += lines_.view(line);
     }
     result += '\n';
-    result += lines_[end.line].substr(0, end.column);
+    result += lines_.view(end.line).substr(0, end.column);
     return result;
 }
 
 Position TextBuffer::insert(Position at, std::string_view text) {
     at = clamp(at);
-    std::string& first = lines_[at.line];
+    std::string& first = lines_.edit(at.line);
     std::string tail = first.substr(at.column);
     first.erase(at.column);
 
@@ -100,8 +92,9 @@ Position TextBuffer::insert(Position at, std::string_view text) {
     std::vector<std::string> added(pieces.begin() + 1, pieces.end());
     size_t column = added.back().size();
     added.back() += tail;
-    lines_.insert(lines_.begin() + static_cast<long>(at.line) + 1, added.begin(), added.end());
-    return {at.line + added.size(), column};
+    size_t addedCount = added.size();
+    lines_.insertOwned(at.line + 1, std::move(added));
+    return {at.line + addedCount, column};
 }
 
 void TextBuffer::erase(Range range) {
@@ -109,23 +102,27 @@ void TextBuffer::erase(Range range) {
     Position start = clamp(range.start), end = clamp(range.end);
     if (start == end) return;
     if (start.line == end.line) {
-        lines_[start.line].erase(start.column, end.column - start.column);
+        lines_.edit(start.line).erase(start.column, end.column - start.column);
         return;
     }
-    lines_[start.line].erase(start.column);
-    lines_[start.line] += lines_[end.line].substr(end.column);
-    lines_.erase(lines_.begin() + static_cast<long>(start.line) + 1, lines_.begin() + static_cast<long>(end.line) + 1);
+    // Keep what follows the erased range on its last line; it moves onto the first line.
+    // (A copy: editing the first line may move the strings a view would point into.)
+    std::string keptTail(lines_.view(end.line).substr(end.column));
+    std::string& firstLine = lines_.edit(start.line);
+    firstLine.erase(start.column);
+    firstLine += keptTail;
+    lines_.erase(start.line + 1, end.line + 1);
 }
 
 Position TextBuffer::clamp(Position position) const {
     position.line = std::min(position.line, lines_.size() - 1);
-    position.column = floorToCharacter(lines_[position.line], position.column);
+    position.column = floorToCharacter(lines_.view(position.line), position.column);
     return position;
 }
 
 Position TextBuffer::nextCharacter(Position position) const {
     position = clamp(position);
-    const std::string& text = lines_[position.line];
+    std::string_view text = lines_.view(position.line);
     if (position.column >= text.size()) {
         return position.line + 1 < lines_.size() ? Position{position.line + 1, 0} : position;
     }
@@ -137,9 +134,9 @@ Position TextBuffer::nextCharacter(Position position) const {
 Position TextBuffer::previousCharacter(Position position) const {
     position = clamp(position);
     if (position.column == 0) {
-        return position.line > 0 ? Position{position.line - 1, lines_[position.line - 1].size()} : position;
+        return position.line > 0 ? Position{position.line - 1, lines_.view(position.line - 1).size()} : position;
     }
-    const std::string& text = lines_[position.line];
+    std::string_view text = lines_.view(position.line);
     size_t column = position.column - 1;
     while (column > 0 && isContinuationByte(static_cast<unsigned char>(text[column]))) --column;
     return {position.line, column};
@@ -147,7 +144,7 @@ Position TextBuffer::previousCharacter(Position position) const {
 
 Position TextBuffer::nextWordEnd(Position position) const {
     position = clamp(position);
-    const std::string& text = lines_[position.line];
+    std::string_view text = lines_.view(position.line);
     if (position.column >= text.size()) return nextCharacter(position);
     size_t column = position.column;
     while (column < text.size() && !isWordByte(static_cast<unsigned char>(text[column]))) ++column;
@@ -158,7 +155,7 @@ Position TextBuffer::nextWordEnd(Position position) const {
 Position TextBuffer::previousWordStart(Position position) const {
     position = clamp(position);
     if (position.column == 0) return previousCharacter(position);
-    const std::string& text = lines_[position.line];
+    std::string_view text = lines_.view(position.line);
     size_t column = position.column;
     while (column > 0 && !isWordByte(static_cast<unsigned char>(text[column - 1]))) --column;
     while (column > 0 && isWordByte(static_cast<unsigned char>(text[column - 1]))) --column;
@@ -167,7 +164,7 @@ Position TextBuffer::previousWordStart(Position position) const {
 
 Range TextBuffer::wordAt(Position position) const {
     position = clamp(position);
-    const std::string& text = lines_[position.line];
+    std::string_view text = lines_.view(position.line);
     size_t start = position.column, end = position.column;
     while (start > 0 && isWordByte(static_cast<unsigned char>(text[start - 1]))) --start;
     while (end < text.size() && isWordByte(static_cast<unsigned char>(text[end]))) ++end;
@@ -176,7 +173,7 @@ Range TextBuffer::wordAt(Position position) const {
 }
 
 size_t TextBuffer::indentEnd(size_t line) const {
-    const std::string& text = lines_[std::min(line, lines_.size() - 1)];
+    std::string_view text = lines_.view(std::min(line, lines_.size() - 1));
     size_t column = 0;
     while (column < text.size() && (text[column] == ' ' || text[column] == '\t')) ++column;
     return column;

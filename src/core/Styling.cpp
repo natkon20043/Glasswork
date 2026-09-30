@@ -171,7 +171,7 @@ bool Stylist::isVariableScope(const tm::ScopeNode* scopes) {
     return variable;
 }
 
-std::vector<StyledSpan> Stylist::styleLine(const std::string& text, const std::vector<tm::Token>& tokens) {
+std::vector<StyledSpan> Stylist::styleLine(std::string_view text, const std::vector<tm::Token>& tokens) {
     std::vector<StyledSpan> spans;
     bool dark = theme_.isDark();
     bool wantsNames = customizations_.rainbowVariables || !customizations_.identifiers.empty();
@@ -206,7 +206,7 @@ std::vector<StyledSpan> Stylist::styleLine(const std::string& text, const std::v
             while (wordEnd < tokenEnd && isIdentifierByte(static_cast<unsigned char>(text[wordEnd]))) {
                 ++wordEnd;
             }
-            std::string word = text.substr(position, wordEnd - position);
+            std::string word(text.substr(position, wordEnd - position));
 
             TextStyle style = base;
             bool changed = false;

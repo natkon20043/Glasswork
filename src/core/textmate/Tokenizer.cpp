@@ -404,12 +404,12 @@ private:
 
 }  // namespace
 
-LineResult tokenizeLine(Grammar& base, const std::string& line, const State& previous) {
+LineResult tokenizeLine(Grammar& base, std::string_view line, const State& previous) {
     LineResult result;
     result.state = previous.frames.empty() ? initialState(base) : previous;
 
     // Grammars expect each line to end with "\n" (for `$` and end-of-line patterns).
-    std::string text = line.size() > kMaxTokenizedBytes ? line.substr(0, kMaxTokenizedBytes) : line;
+    std::string text(line.size() > kMaxTokenizedBytes ? line.substr(0, kMaxTokenizedBytes) : line);
     text += '\n';
     LineTokenizer tokenizer(base, text, 0);
     tokenizer.run(0, result.state);
