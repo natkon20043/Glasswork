@@ -7,6 +7,7 @@
 #include "Sections.hpp"
 #include "Snippet.hpp"
 #include "Styling.hpp"
+#include "WordSuggestions.hpp"
 #include "Highlighter.hpp"
 #include "TextBuffer.hpp"
 #include "Theme.hpp"
@@ -492,6 +493,47 @@ TEST(undoClearsExtraSelections) {
     document.extraSelections = {{{0, 1}, {0, 1}}};
     document.undo();
     CHECK(document.extraSelections.empty());
+}
+
+// MARK: Word suggestions
+
+TEST(wordSuggestionsOfferWordsFromTheDocument) {
+    gw::TextBuffer buffer("alpha beta alphabet\nAlpine alpha gamma\nal");
+    auto words = gw::wordSuggestions(buffer, "al", {2, 2});
+    // "alpha" appears twice, so it comes first; the case of a lower-case prefix is ignored.
+    CHECK_EQ(words.size(), size_t(3));
+    CHECK_EQ(words[0], std::string("alpha"));
+    CHECK_EQ(words[1], std::string("Alpine"));
+    CHECK_EQ(words[2], std::string("alphabet"));
+}
+
+TEST(wordSuggestionsSkipTheWordBeingTypedAndShortWords) {
+    gw::TextBuffer buffer("go gone goner\ngon");
+    auto words = gw::wordSuggestions(buffer, "gon", {1, 3});
+    CHECK_EQ(words.size(), size_t(2));  // "gon" itself is not offered; "go" is too short anyway
+    CHECK_EQ(words[0], std::string("gone"));
+    CHECK_EQ(words[1], std::string("goner"));
+}
+
+TEST(wordSuggestionsWithCapitalPrefixAreCaseSensitive) {
+    gw::TextBuffer buffer("Foo foo FooBar\nF");
+    auto words = gw::wordSuggestions(buffer, "F", {1, 1});
+    CHECK_EQ(words.size(), size_t(2));
+    CHECK_EQ(words[0], std::string("Foo"));
+    CHECK_EQ(words[1], std::string("FooBar"));
+}
+
+TEST(wordSuggestionsOnlyLookNearTheCaret) {
+    std::string text;
+    for (int line = 0; line < 100; ++line) {
+        text += line == 0 ? "faraway\n" : "filler\n";
+    }
+    text += "fa";
+    gw::TextBuffer buffer(text);
+    auto near = gw::wordSuggestions(buffer, "fa", {100, 2}, 10, 20);
+    CHECK(near.empty());  // line 0 is 100 lines away, outside the radius of 20
+    auto all = gw::wordSuggestions(buffer, "fa", {100, 2}, 10, 200);
+    CHECK_EQ(all.size(), size_t(1));
 }
 
 // MARK: Navigation history

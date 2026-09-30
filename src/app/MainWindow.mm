@@ -37,6 +37,7 @@
 #include "LanguageServer.hpp"
 #include "LineDiff.hpp"
 #include "Sections.hpp"
+#include "WordSuggestions.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -3858,7 +3859,7 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
 
 - (void)editorTypedText:(NSString *)typed {
     Tab *tab = [self currentTab];
-    if (tab == nullptr || !tab->document->path() || !_language.enabled) {
+    if (tab == nullptr) {
         return;
     }
     if (typed == nil) {
@@ -3923,25 +3924,14 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
 
 - (void)requestSuggestionsExplicitly:(BOOL)explicitly {
     Tab *tab = [self currentTab];
-    if (tab == nullptr || !tab->document->path()) {
-        if (explicitly) {
-            [self languageMessage:@"Save this file first so the language server can understand it."];
-        }
+    if (tab == nullptr) {
         return;
     }
     gw::Document *document = tab->document.get();
-    if (![_language serverSupports:@"completionProvider" forDocument:document]) {
-        if (explicitly) {
-            NSString *status = [_language statusTextForLanguage:@(document->languageId.c_str())];
-            NSString *hint = [_language installHintForLanguage:@(document->languageId.c_str())];
-            if (status.length == 0) {
-                [self languageMessage:@"There is no language server for this kind of file yet."];
-            } else if (hint.length > 0) {
-                [self languageMessage:hint];
-            } else {
-                _statusLeft.stringValue = [status stringByAppendingString:@" · not ready yet"];
-            }
-        }
+    // Without a language server (a new file, a plain-text file, one still starting) the words
+    // already in the file are offered instead.
+    if (!document->path() || !_language.enabled || ![_language serverSupports:@"completionProvider" forDocument:document]) {
+        [self showWordSuggestionsAtWordStart:[self wordStartBeforeCaret] explicitly:explicitly];
         return;
     }
     gw::Position caret = document->selection.caret;
@@ -3968,6 +3958,7 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
         rows = result.value("items", Json::array());
     }
     if (!rows.is_array() || rows.empty()) {
+        [self showWordSuggestionsAtWordStart:wordStart explicitly:NO];
         return;
     }
     NSMutableArray<GWSuggestion *> *items = [NSMutableArray array];
@@ -3992,6 +3983,7 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
         }
     }
     if (items.count == 0) {
+        [self showWordSuggestionsAtWordStart:wordStart explicitly:NO];
         return;
     }
     Tab *tab = [self currentTab];
@@ -4001,6 +3993,42 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
     _suggestionWordStart = wordStart;
     [_suggestions setItems:items];
     NSRect caretRect = [_editorView screenRectForPosition:tab->document->selection.caret];
+    [_suggestions showBelowScreenRect:caretRect parentWindow:self.window];
+    [_suggestions filterWithPrefix:[self typedPrefix]];
+}
+
+/// Completion from the words already in the file, for when there is nothing better.
+- (void)showWordSuggestionsAtWordStart:(gw::Position)wordStart explicitly:(BOOL)explicitly {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr) {
+        return;
+    }
+    gw::Document *document = tab->document.get();
+    std::string prefix = std::string([[self typedPrefix] UTF8String]);
+    // Automatic word suggestions wait for three letters, so ordinary prose isn't interrupted
+    // (Return would accept a suggestion); ⌃Space asks for them at any point.
+    if (prefix.size() < 3 && !explicitly) {
+        return;
+    }
+    std::vector<std::string> words = gw::wordSuggestions(document->buffer(), prefix, document->selection.caret);
+    if (words.empty()) {
+        return;
+    }
+    using Json = gw::lsp::Json;
+    NSMutableArray<GWSuggestion *> *items = [NSMutableArray array];
+    for (size_t index = 0; index < words.size(); ++index) {
+        GWSuggestion *item = [GWSuggestion new];
+        item.label = @(words[index].c_str());
+        item.detail = @"word in this file";
+        item.filterText = item.label;
+        item.sortText = [NSString stringWithFormat:@"%05zu", index];  // keep the most used first
+        item.kind = 1;  // Text
+        item.raw = std::make_shared<Json>(Json{{"label", words[index]}, {"insertText", words[index]}});
+        [items addObject:item];
+    }
+    _suggestionWordStart = wordStart;
+    [_suggestions setItems:items];
+    NSRect caretRect = [_editorView screenRectForPosition:document->selection.caret];
     [_suggestions showBelowScreenRect:caretRect parentWindow:self.window];
     [_suggestions filterWithPrefix:[self typedPrefix]];
 }

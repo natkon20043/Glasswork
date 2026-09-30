@@ -89,6 +89,8 @@ Glasswork talks to language servers over LSP, in the background, so typing never
 | Rust | rust-analyzer | `rustup component add rust-analyzer` |
 | Go | gopls | `go install golang.org/x/tools/gopls@latest` |
 
+In files without a language server (plain text, Markdown, a new file, or while one is still starting) completion offers the words already in the file, after three letters or on ⌃Space.
+
 If a server isn't installed, the status bar says so and the menu commands tell you how to install it. Turn everything off with `"lsp.enabled": false`.
 
 What you get:
