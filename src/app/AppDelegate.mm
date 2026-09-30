@@ -301,6 +301,13 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
         [self transformItem],
         [self item:@"Insert Line Below" action:@selector(insertLineBelow:) key:@"\r" modifiers:command],
         [self item:@"Insert Line Above" action:@selector(insertLineAbove:) key:@"\r" modifiers:command | shift],
+        [self item:@"Expand Selection" action:@selector(expandSelection:)
+               key:[NSString stringWithFormat:@"%C", (unichar)NSRightArrowFunctionKey]
+         modifiers:NSEventModifierFlagControl | command | shift],
+        [self item:@"Shrink Selection" action:@selector(shrinkSelection:)
+               key:[NSString stringWithFormat:@"%C", (unichar)NSLeftArrowFunctionKey]
+         modifiers:NSEventModifierFlagControl | command | shift],
+        [self item:@"Go to Matching Bracket" action:@selector(goToMatchingBracket:) key:@"\\" modifiers:command | shift],
         [self item:@"Add Next Occurrence" action:@selector(selectNextOccurrence:) key:@"d"],
         [self item:@"Select All Occurrences" action:@selector(selectAllOccurrences:) key:@"g" modifiers:NSEventModifierFlagControl | command],
         [self item:@"Add Cursor Above" action:@selector(addCursorAbove:) key:[NSString stringWithFormat:@"%C", (unichar)NSUpArrowFunctionKey] modifiers:command | option],

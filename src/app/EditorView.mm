@@ -1,5 +1,6 @@
 #import "EditorView.h"
 
+#include "SelectionExpand.hpp"
 #include "TextTransforms.hpp"
 
 #import "Services.h"
@@ -664,6 +665,8 @@ static constexpr CGFloat kMiniChar = 1.25;
     uint64_t _matchVersion;
     gw::Position _matchCaret;
     std::optional<std::pair<gw::Position, gw::Position>> _match;
+    std::vector<gw::Selection> _expandHistory;  // what Shrink Selection goes back to
+    gw::Selection _lastExpanded;                // the selection Expand left, to notice when it was changed since
 
     NSFont *_font;
     CGFloat _charWidth;
@@ -3273,6 +3276,61 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
     size_t last = range.end.line;
     if (last > range.start.line && range.end.column == 0) --last;
     return {range.start.line, last};
+}
+
+// MARK: Expand selection and brackets
+
+static bool sameSelection(const gw::Selection &a, const gw::Selection &b) {
+    return a.anchor == b.anchor && a.caret == b.caret;
+}
+
+/// ⌃⇧⌘→: selects the word, then what is inside the brackets, the brackets, the line, and so on outwards.
+- (IBAction)expandSelection:(id)sender {
+    if (!_document) return;
+    if (!sameSelection(_document->selection, _lastExpanded)) {
+        _expandHistory.clear();  // the selection was changed by hand since
+    }
+    gw::Range bigger = gw::expandedSelection(_document->buffer(), _document->selection.range());
+    gw::Range now = _document->selection.range();
+    if (bigger.start == now.start && bigger.end == now.end) {
+        NSBeep();
+        return;
+    }
+    _expandHistory.push_back(_document->selection);
+    _document->extraSelections.clear();
+    _document->selection = {bigger.start, bigger.end};
+    _lastExpanded = _document->selection;
+    [self selectionDidChange];
+}
+
+/// ⌃⇧⌘←: goes back to the selection before the last Expand.
+- (IBAction)shrinkSelection:(id)sender {
+    if (!_document) return;
+    if (_expandHistory.empty() || !sameSelection(_document->selection, _lastExpanded)) {
+        _expandHistory.clear();
+        NSBeep();
+        return;
+    }
+    _document->extraSelections.clear();
+    _document->selection = _expandHistory.back();
+    _expandHistory.pop_back();
+    _lastExpanded = _document->selection;
+    [self selectionDidChange];
+}
+
+/// ⇧⌘\: jumps to the bracket that pairs with the one at the caret.
+- (IBAction)goToMatchingBracket:(id)sender {
+    if (!_document) return;
+    auto match = [self bracketMatch];
+    if (!match) {
+        NSBeep();
+        return;
+    }
+    gw::Position caret = _document->selection.caret;
+    gw::Position opener = match->first, closer = match->second;
+    bool touchingOpener = caret == opener || (caret.line == opener.line && caret.column == opener.column + 1);
+    gw::Position target = touchingOpener ? gw::Position{closer.line, closer.column + 1} : opener;
+    [self moveCaretTo:target extend:NO];
 }
 
 /// Replaces the selected text with `transform` of it, as one undo step, and keeps the new

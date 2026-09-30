@@ -5,6 +5,7 @@
 #include "Fuzzy.hpp"
 #include "NavigationHistory.hpp"
 #include "Sections.hpp"
+#include "SelectionExpand.hpp"
 #include "Snippet.hpp"
 #include "Styling.hpp"
 #include "TextTransforms.hpp"
@@ -494,6 +495,57 @@ TEST(undoClearsExtraSelections) {
     document.extraSelections = {{{0, 1}, {0, 1}}};
     document.undo();
     CHECK(document.extraSelections.empty());
+}
+
+// MARK: Expand selection
+
+static bool sameRange(gw::Range range, size_t startLine, size_t startColumn, size_t endLine, size_t endColumn) {
+    return range.start == (gw::Position{startLine, startColumn}) && range.end == (gw::Position{endLine, endColumn});
+}
+
+TEST(expandSelectionGrowsOutwards) {
+    //           0         1         2
+    //           0123456789012345678901234567890
+    gw::TextBuffer buffer("    call(alpha, beta(gamma));\nnext");
+    gw::Range range{{0, 23}, {0, 23}};                 // inside "gamma"
+    range = gw::expandedSelection(buffer, range);
+    CHECK(sameRange(range, 0, 21, 0, 26));             // gamma
+    range = gw::expandedSelection(buffer, range);
+    CHECK(sameRange(range, 0, 20, 0, 27));             // (gamma)
+    range = gw::expandedSelection(buffer, range);
+    CHECK(sameRange(range, 0, 9, 0, 27));              // alpha, beta(gamma)
+    range = gw::expandedSelection(buffer, range);
+    CHECK(sameRange(range, 0, 8, 0, 28));              // (alpha, beta(gamma))
+    range = gw::expandedSelection(buffer, range);
+    CHECK(sameRange(range, 0, 4, 0, 29));              // the line without its indent
+    range = gw::expandedSelection(buffer, range);
+    CHECK(sameRange(range, 0, 0, 0, 29));              // the whole line
+    range = gw::expandedSelection(buffer, range);
+    CHECK(sameRange(range, 0, 0, 1, 4));               // everything
+    range = gw::expandedSelection(buffer, range);
+    CHECK(sameRange(range, 0, 0, 1, 4));               // nothing bigger
+}
+
+TEST(expandSelectionAcrossLinesAndBracketKinds) {
+    gw::TextBuffer buffer("f(a) {\n    if (x[1]) {\n        y;\n    }\n}");
+    gw::Range range = gw::expandedSelection(buffer, {{2, 8}, {2, 8}});   // on "y"
+    CHECK(sameRange(range, 2, 8, 2, 9));
+    range = gw::expandedSelection(buffer, range);                         // the line "y;"
+    CHECK(sameRange(range, 2, 8, 2, 10));
+    range = gw::expandedSelection(buffer, range);                         // the whole line
+    CHECK(sameRange(range, 2, 0, 2, 10));
+    range = gw::expandedSelection(buffer, range);                         // inside the inner braces
+    CHECK(sameRange(range, 1, 15, 3, 4));
+    range = gw::expandedSelection(buffer, range);                         // the braces too
+    CHECK(sameRange(range, 1, 14, 3, 5));
+}
+
+TEST(expandSelectionIgnoresBracketsThatDoNotPair) {
+    gw::TextBuffer buffer("a ) b ( c");
+    gw::Range range = gw::expandedSelection(buffer, {{0, 4}, {0, 4}});   // on "b"
+    CHECK(sameRange(range, 0, 4, 0, 5));
+    range = gw::expandedSelection(buffer, range);                         // no pair: the line
+    CHECK(sameRange(range, 0, 0, 0, 9));
 }
 
 // MARK: Text transforms

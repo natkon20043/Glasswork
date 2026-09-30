@@ -140,6 +140,9 @@ NS_ASSUME_NONNULL_BEGIN
 // Editing commands (also reachable from the menu bar through the responder chain).
 - (IBAction)toggleLineComment:(nullable id)sender;
 - (IBAction)indentLines:(nullable id)sender;
+- (IBAction)expandSelection:(nullable id)sender;
+- (IBAction)shrinkSelection:(nullable id)sender;
+- (IBAction)goToMatchingBracket:(nullable id)sender;
 - (IBAction)makeUpperCase:(nullable id)sender;
 - (IBAction)makeLowerCase:(nullable id)sender;
 - (IBAction)makeTitleCase:(nullable id)sender;
