@@ -48,6 +48,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// Moves the caret to the start of `line` and centres it on screen.
 - (void)jumpToLine:(size_t)line;
 - (void)jumpToPosition:(gw::Position)position;
+/// Call after changing the selection from outside (scrolls to the caret and redraws).
+- (void)selectionDidChange;
 /// Runs several edits to the document as one undo step (used by Replace All).
 - (void)editDocument:(void (^)(gw::Document &document))edits;
 /// Applies a language-server completion as one undoable edit.

@@ -3942,41 +3942,16 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
     [_suggestions filterWithPrefix:[self typedPrefix]];
 }
 
-/// A snippet body with its tab stops removed: "foo(${1:a}, ${2:b})$0" → "foo(a, b)".
-static std::string plainTextFromSnippet(const std::string &snippet) {
-    std::string result;
-    for (size_t index = 0; index < snippet.size(); ++index) {
-        char c = snippet[index];
-        if (c == '\\' && index + 1 < snippet.size()) {
-            result += snippet[++index];
-            continue;
-        }
-        if (c != '$') {
-            result += c;
-            continue;
-        }
-        if (index + 1 < snippet.size() && std::isdigit(static_cast<unsigned char>(snippet[index + 1]))) {
-            while (index + 1 < snippet.size() && std::isdigit(static_cast<unsigned char>(snippet[index + 1]))) {
-                ++index;
-            }
-            continue;
-        }
-        if (index + 1 < snippet.size() && snippet[index + 1] == '{') {
-            size_t close = snippet.find('}', index);
-            std::string inside = snippet.substr(index + 2, close == std::string::npos ? std::string::npos : close - index - 2);
-            size_t colon = inside.find(':');
-            if (colon != std::string::npos) {
-                result += inside.substr(colon + 1);
-            }
-            if (close == std::string::npos) {
-                break;
-            }
-            index = close;
-            continue;
-        }
-        result += c;
-    }
-    return result;
+/// For development: inserts a snippet at the caret the way accepting a completion does
+/// (see GLASSWORK_ACTIONS), so Tab through the placeholders can be checked without a server.
+- (void)debugInsertCallSnippet:(id)sender {
+    GWSuggestion *suggestion = [GWSuggestion new];
+    suggestion.raw = std::make_shared<gw::lsp::Json>(gw::lsp::Json{
+        {"label", "call"},
+        {"insertText", "call(${1:first}, ${2:second});$0"},
+        {"insertTextFormat", 2},
+    });
+    [self acceptSuggestion:suggestion];
 }
 
 - (void)acceptSuggestion:(GWSuggestion *)suggestion {
@@ -4002,8 +3977,17 @@ static std::string plainTextFromSnippet(const std::string &snippet) {
     } catch (const std::exception &) {
         // Keep the plain replacement of the typed word.
     }
-    if (item.value("insertTextFormat", 1) == 2) {
-        text = plainTextFromSnippet(text);
+    // A snippet ("foo(${1:a}, ${2:b})") is inserted as text; its placeholders are visited with Tab.
+    bool isSnippet = item.value("insertTextFormat", 1) == 2;
+    gw::ParsedSnippet snippet;
+    if (isSnippet) {
+        std::string_view caretLine = buffer.line(range.start.line);
+        size_t indentLength = 0;
+        while (indentLength < caretLine.size() && (caretLine[indentLength] == ' ' || caretLine[indentLength] == '\t')) {
+            ++indentLength;
+        }
+        snippet = gw::parseSnippet(text, caretLine.substr(0, indentLength));
+        text = snippet.text;
     }
     // The range from the server can end before what was typed since; cover up to the caret.
     if (range.end < caret && range.end.line == caret.line) {
@@ -4023,6 +4007,21 @@ static std::string plainTextFromSnippet(const std::string &snippet) {
         }
     }
     [self applyEdits:edits toCurrentDocumentPlacingCaretAfterFirst:YES];
+
+    if (isSnippet && !snippet.hasOnlyFinalStop()) {
+        // Edits above the insertion (an added #include) moved it down or up by whole lines.
+        gw::Position snippetStart = range.start;
+        for (size_t index = 1; index < edits.size(); ++index) {
+            const gw::Range &other = edits[index].first;
+            if (other.start < range.start) {
+                long removedLines = static_cast<long>(other.end.line) - static_cast<long>(other.start.line);
+                long addedLines = std::count(edits[index].second.begin(), edits[index].second.end(), '\n');
+                snippetStart.line = static_cast<size_t>(static_cast<long>(snippetStart.line) + addedLines - removedLines);
+            }
+        }
+        tab->document->startSnippet(snippetStart, snippet);
+        [_editorView selectionDidChange];
+    }
 }
 
 /// Applies edits (positions in the document as it is now) as one undoable step. They are

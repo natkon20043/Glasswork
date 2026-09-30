@@ -227,6 +227,7 @@ Position Document::apply(Position at, const std::string& removed, const std::str
         extra.anchor = positionAfterEdit(extra.anchor, at, removedEnd, end);
         extra.caret = positionAfterEdit(extra.caret, at, removedEnd, end);
     }
+    followEditInSnippet(at, removedEnd, end);
     if (!breakpointLines.empty() && (lineDelta != 0 || removedEnd.line != at.line)) {
         size_t removedLines = removedEnd.line - at.line;
         std::set<size_t> moved;
@@ -243,6 +244,88 @@ Position Document::apply(Position at, const std::string& removed, const std::str
     }
     notify(at.line, lineDelta, end.line);
     return end;
+}
+
+/// Where the end of a range goes when text is typed exactly at that end: with the text, so a
+/// placeholder grows as its content is typed.
+static Position rangeEndAfterEdit(Position p, Position at, Position removedEnd, Position end) {
+    bool isInsertionAtEnd = p == at && removedEnd == at;
+    if (isInsertionAtEnd) {
+        return end;
+    }
+    return positionAfterEdit(p, at, removedEnd, end);
+}
+
+void Document::followEditInSnippet(Position at, Position removedEnd, Position end) {
+    for (std::vector<Range>& stop : snippet_.stops) {
+        for (Range& range : stop) {
+            range.start = positionAfterEdit(range.start, at, removedEnd, end);
+            range.end = rangeEndAfterEdit(range.end, at, removedEnd, end);
+        }
+    }
+    snippet_.whole.start = positionAfterEdit(snippet_.whole.start, at, removedEnd, end);
+    snippet_.whole.end = rangeEndAfterEdit(snippet_.whole.end, at, removedEnd, end);
+}
+
+void Document::startSnippet(Position start, const ParsedSnippet& snippet) {
+    endSnippet();
+    std::vector<std::vector<Range>> stops;
+    for (const std::vector<SnippetSpan>& spans : snippet.stops) {
+        std::vector<Range> ranges;
+        for (const SnippetSpan& span : spans) {
+            Position rangeStart = endOfInsertion(start, std::string_view(snippet.text).substr(0, span.offset));
+            Position rangeEnd = endOfInsertion(start, std::string_view(snippet.text).substr(0, span.offset + span.length));
+            ranges.push_back(Range{rangeStart, rangeEnd});
+        }
+        stops.push_back(std::move(ranges));
+    }
+    snippet_.stops = std::move(stops);
+    snippet_.current = 0;
+    snippet_.whole = Range{start, endOfInsertion(start, snippet.text)};
+    selectSnippetStop(0);
+}
+
+void Document::selectSnippetStop(size_t index) {
+    snippet_.current = index;
+    const std::vector<Range>& ranges = snippet_.stops[index];
+    selection = Selection{ranges[0].start, ranges[0].end};
+    extraSelections.clear();
+    for (size_t mirror = 1; mirror < ranges.size(); ++mirror) {
+        extraSelections.push_back(Selection{ranges[mirror].start, ranges[mirror].end});
+    }
+    preferredX.reset();
+    bool isFinalStop = index + 1 == snippet_.stops.size();
+    if (isFinalStop) {
+        endSnippet();
+    }
+}
+
+bool Document::jumpSnippetStop(int direction) {
+    if (!snippetActive()) {
+        return false;
+    }
+    Position caret = selection.caret;
+    bool caretInside = !(caret < snippet_.whole.start) && !(snippet_.whole.end < caret);
+    if (!caretInside) {
+        endSnippet();
+        return false;
+    }
+    size_t target = snippet_.current;
+    if (direction > 0) {
+        target = snippet_.current + 1;
+    } else if (snippet_.current > 0) {
+        target = snippet_.current - 1;
+    }
+    if (target >= snippet_.stops.size()) {
+        endSnippet();
+        return false;
+    }
+    selectSnippetStop(target);
+    return true;
+}
+
+void Document::endSnippet() {
+    snippet_ = SnippetSession{};
 }
 
 Position positionAfterEdit(Position p, Position at, Position removedEnd, Position end) {
@@ -335,6 +418,7 @@ bool Document::undo() {
         apply(edit.at, edit.inserted, edit.removed);
         selection = edit.selectionBefore;
         extraSelections.clear();
+        endSnippet();
         redoStack_.push_back(std::move(edit));
     } while (group != 0 && !undoStack_.empty() && undoStack_.back().group == group);
     preferredX.reset();
@@ -350,6 +434,7 @@ bool Document::redo() {
         apply(edit.at, edit.removed, edit.inserted);
         selection = edit.selectionAfter;
         extraSelections.clear();
+        endSnippet();
         edit.typing = false;  // never merge new typing into a redone step
         undoStack_.push_back(std::move(edit));
     } while (group != 0 && !redoStack_.empty() && redoStack_.back().group == group);

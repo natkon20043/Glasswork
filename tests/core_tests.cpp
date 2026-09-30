@@ -4,6 +4,7 @@
 #include "EditorSettings.hpp"
 #include "Fuzzy.hpp"
 #include "Sections.hpp"
+#include "Snippet.hpp"
 #include "Styling.hpp"
 #include "Highlighter.hpp"
 #include "TextBuffer.hpp"
@@ -490,6 +491,97 @@ TEST(undoClearsExtraSelections) {
     document.extraSelections = {{{0, 1}, {0, 1}}};
     document.undo();
     CHECK(document.extraSelections.empty());
+}
+
+// MARK: Snippets
+
+TEST(snippetWithPlaceholdersGivesTextAndStops) {
+    gw::ParsedSnippet snippet = gw::parseSnippet("foo(${1:a}, ${2:bb})$0");
+    CHECK_EQ(snippet.text, std::string("foo(a, bb)"));
+    CHECK_EQ(snippet.stops.size(), size_t(3));  // $1, $2, then $0
+    CHECK_EQ(snippet.stops[0][0].offset, size_t(4));
+    CHECK_EQ(snippet.stops[0][0].length, size_t(1));
+    CHECK_EQ(snippet.stops[1][0].offset, size_t(7));
+    CHECK_EQ(snippet.stops[1][0].length, size_t(2));
+    CHECK_EQ(snippet.stops[2][0].offset, size_t(10));
+    CHECK_EQ(snippet.stops[2][0].length, size_t(0));
+}
+
+TEST(snippetWithoutFinalStopEndsAtTheEnd) {
+    gw::ParsedSnippet snippet = gw::parseSnippet("if ($1) {\n\t$2\n}");
+    CHECK_EQ(snippet.stops.size(), size_t(3));
+    CHECK_EQ(snippet.stops[2][0].offset, snippet.text.size());  // the implicit final stop
+    gw::ParsedSnippet plain = gw::parseSnippet("just text");
+    CHECK(plain.hasOnlyFinalStop());
+    CHECK(!snippet.hasOnlyFinalStop());
+}
+
+TEST(snippetMirrorsShareTheirDefaultText) {
+    gw::ParsedSnippet snippet = gw::parseSnippet("for (int ${1:i} = 0; $1 < n; ++$1)");
+    CHECK_EQ(snippet.text, std::string("for (int i = 0; i < n; ++i)"));
+    CHECK_EQ(snippet.stops[0].size(), size_t(3));  // three places for stop 1
+}
+
+TEST(snippetChoicesEscapesAndVariables) {
+    gw::ParsedSnippet choice = gw::parseSnippet("${1|public,private|} x");
+    CHECK_EQ(choice.text, std::string("public x"));
+    gw::ParsedSnippet escaped = gw::parseSnippet("cost: \\$5 \\} $TM_FILENAME ${TM_FILENAME_BASE:fallback}");
+    CHECK_EQ(escaped.text, std::string("cost: $5 }  fallback"));
+    gw::ParsedSnippet nested = gw::parseSnippet("f(${1:a${2:b}c})");
+    CHECK_EQ(nested.text, std::string("f(abc)"));
+    CHECK_EQ(nested.stops[0][0].length, size_t(3));
+    CHECK_EQ(nested.stops[1][0].length, size_t(1));
+}
+
+TEST(snippetIndentsFollowingLines) {
+    gw::ParsedSnippet snippet = gw::parseSnippet("a\nb\n$0", "    ");
+    CHECK_EQ(snippet.text, std::string("a\n    b\n    "));
+    CHECK_EQ(snippet.stops[0][0].offset, snippet.text.size());
+}
+
+TEST(tabMovesThroughSnippetPlaceholders) {
+    gw::Document document;
+    document.replace({{0, 0}, {0, 0}}, "call(x, y);");
+    // Pretend "call(x, y)" came from the snippet "call(${1:x}, ${2:y})" starting at column 0.
+    gw::ParsedSnippet snippet = gw::parseSnippet("call(${1:x}, ${2:y})");
+    document.startSnippet({0, 0}, snippet);
+    CHECK(document.snippetActive());
+    CHECK(document.selection.range().start == (gw::Position{0, 5}));
+    CHECK(document.selection.range().end == (gw::Position{0, 6}));
+
+    document.typeText("first");  // replaces the selected placeholder
+    CHECK(document.jumpSnippetStop(+1));
+    CHECK(document.selection.range().start == (gw::Position{0, 12}));
+    CHECK(document.selection.range().end == (gw::Position{0, 13}));  // "y", moved right by the typing
+
+    CHECK(document.jumpSnippetStop(-1));  // and back to the first one
+    CHECK(document.selection.range().start == (gw::Position{0, 5}));
+    CHECK(document.selection.range().end == (gw::Position{0, 10}));  // "first"
+
+    CHECK(document.jumpSnippetStop(+1));
+    CHECK(document.jumpSnippetStop(+1));  // the final stop, after the closing bracket
+    CHECK(document.selection.caret == (gw::Position{0, 14}));
+    CHECK(!document.snippetActive());
+    CHECK(!document.jumpSnippetStop(+1));  // session over: Tab is an ordinary Tab again
+}
+
+TEST(mirroredPlaceholdersGetExtraCursors) {
+    gw::Document document;
+    gw::ParsedSnippet snippet = gw::parseSnippet("${1:i}+${1:i}");
+    document.replace({{0, 0}, {0, 0}}, snippet.text);
+    document.startSnippet({0, 0}, snippet);
+    CHECK_EQ(document.extraSelections.size(), size_t(1));
+    CHECK(document.extraSelections[0].range().start == (gw::Position{0, 2}));
+}
+
+TEST(snippetEndsWhenTheCaretLeavesIt) {
+    gw::Document document;
+    document.replace({{0, 0}, {0, 0}}, "x = f(a);\nlater");
+    gw::ParsedSnippet snippet = gw::parseSnippet("f(${1:a})");
+    document.startSnippet({0, 4}, snippet);
+    document.selection = {{1, 2}, {1, 2}};  // the user clicked somewhere else
+    CHECK(!document.jumpSnippetStop(+1));
+    CHECK(!document.snippetActive());
 }
 
 // MARK: Stylist and settings

@@ -189,7 +189,7 @@ Client::Client(const std::string &rootURI) {
             {"capabilities", {
                 {"general", {{"positionEncodings", {"utf-16"}}}},
                 {"textDocument", {
-                    {"completion", {{"completionItem", {{"snippetSupport", false}}}}},
+                    {"completion", {{"completionItem", {{"snippetSupport", true}}}}},
                     {"publishDiagnostics", {{"versionSupport", true}}}
                 }}
             }}

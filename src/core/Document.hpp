@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Snippet.hpp"
 #include "TextBuffer.hpp"
 
 #include <chrono>
@@ -110,6 +111,31 @@ public:
     bool canUndo() const { return !undoStack_.empty(); }
     bool canRedo() const { return !redoStack_.empty(); }
 
+    /// The tab stops of the snippet being filled in, if any. See startSnippet().
+    struct SnippetSession {
+        /// The stops still ahead and behind, in the order Tab visits them; the last one is the
+        /// final caret position. A stop with several ranges is mirrored: typing in one types in all.
+        std::vector<std::vector<Range>> stops;
+        /// The stop the caret is on now.
+        size_t current = 0;
+        /// Everything the snippet inserted; Tab only jumps while the caret is inside it.
+        Range whole;
+    };
+
+    bool snippetActive() const { return !snippet_.stops.empty(); }
+
+    /// Begins filling in a snippet that was just inserted with its first character at `start`.
+    /// Selects the first stop (with extra cursors on its mirrors). A snippet with nothing but a
+    /// final stop just puts the caret there and starts no session.
+    void startSnippet(Position start, const ParsedSnippet& snippet);
+
+    /// Moves to the next (direction > 0) or previous stop. Returns false, and ends the session,
+    /// when there is nothing to jump to, for example the caret has left the snippet.
+    /// Landing on the final stop ends the session too.
+    bool jumpSnippetStop(int direction);
+
+    void endSnippet();
+
     /// Called after every change.
     std::function<void(const Change&)> onChange;
 
@@ -132,6 +158,10 @@ private:
     /// Remembers what the file looked like when we last read or wrote it.
     void rememberDiskState();
 
+    void selectSnippetStop(size_t index);
+    void followEditInSnippet(Position at, Position removedEnd, Position end);
+
+    SnippetSession snippet_;
     TextBuffer buffer_;
     std::optional<std::filesystem::path> path_;
     long long diskModifiedNanoseconds_ = 0;

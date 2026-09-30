@@ -3050,6 +3050,7 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 
 - (void)cancelOperation:(id)sender {
     if (!_document) return;
+    _document->endSnippet();
     if (!_document->extraSelections.empty()) {
         // Escape first goes back to a single cursor.
         _document->extraSelections.clear();
@@ -3160,6 +3161,11 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 
 - (void)insertTab:(id)sender {
     if (!_document) return;
+    // While a snippet is being filled in, Tab moves to its next placeholder.
+    if (_multiDepth == 0 && _document->jumpSnippetStop(+1)) {
+        [self selectionDidChange];
+        return;
+    }
     GW_FOR_EACH_CURSOR([self insertTab:sender];)
     gw::Range range = _document->selection.range();
     if (range.start.line != range.end.line) {
@@ -3175,7 +3181,13 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
     [self didEdit];
 }
 
-- (void)insertBacktab:(id)sender { [self outdentLines:sender]; }
+- (void)insertBacktab:(id)sender {
+    if (_document && _multiDepth == 0 && _document->jumpSnippetStop(-1)) {
+        [self selectionDidChange];
+        return;
+    }
+    [self outdentLines:sender];
+}
 
 - (void)deleteBackward:(id)sender {
     if (!_document) return;

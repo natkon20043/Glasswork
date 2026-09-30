@@ -95,7 +95,7 @@ What you get:
 
 - **Problems** as you type: wavy underlines, a dot in the line numbers, the message at the end of the line (`editor.inlineDiagnostics`), and error and warning counts in the status bar. ⇧⌘M lists the problems in the file.
 - **Hover** (rest the pointer on a name): the declaration and documentation, plus any problems on it.
-- **Completion** as you type, fuzzy-filtered, with ↑↓, ↩ or ⇥ to accept and ⎋ to close. ⌃Space opens it on demand.
+- **Completion** as you type, fuzzy-filtered, with ↑↓, ↩ or ⇥ to accept and ⎋ to close. ⌃Space opens it on demand. Snippet completions (such as a function call with its arguments) select the first placeholder; ⇥ moves to the next one, ⇧⇥ back, and the same placeholder written twice is typed in both places at once. ⎋ or moving away ends it.
 - **Signature help** while typing a call: the function's signature with the current argument in bold.
 - **Quick Fix** (⌘.) applies the fixes a server offers for the problems at the caret.
 - **Go to Symbol in File** (⌘R) and **in Project** (⌘T).
@@ -105,7 +105,6 @@ Open the project folder and provide a `compile_commands.json` for accurate C-fam
 
 Current boundaries:
 
-- Snippet completions insert their placeholder text without tab stops.
 - Documents over 4 MB aren't sent to servers.
 - Files are sent whole after each pause in typing, not as incremental edits.
 - The client does not run downloaded extension JavaScript, and semantic-token colouring isn't used yet.
