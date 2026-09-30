@@ -7,6 +7,7 @@
 #include "Sections.hpp"
 #include "Snippet.hpp"
 #include "Styling.hpp"
+#include "TextTransforms.hpp"
 #include "WordSuggestions.hpp"
 #include "Highlighter.hpp"
 #include "TextBuffer.hpp"
@@ -493,6 +494,31 @@ TEST(undoClearsExtraSelections) {
     document.extraSelections = {{{0, 1}, {0, 1}}};
     document.undo();
     CHECK(document.extraSelections.empty());
+}
+
+// MARK: Text transforms
+
+TEST(caseTransforms) {
+    CHECK_EQ(gw::upperCaseText("Hello, wörld 9"), std::string("HELLO, WöRLD 9"));
+    CHECK_EQ(gw::lowerCaseText("Hello, WORLD"), std::string("hello, world"));
+    CHECK_EQ(gw::titleCaseText("the QUICK brown-fox don't"), std::string("The Quick Brown-Fox Don't"));
+}
+
+TEST(sortLines) {
+    CHECK_EQ(gw::sortLinesText("pear\nApple\napple\nfig\n", false), std::string("Apple\napple\nfig\npear\n"));
+    CHECK_EQ(gw::sortLinesText("pear\nApple\nfig", true), std::string("pear\nfig\nApple"));
+    CHECK_EQ(gw::sortLinesText("b\nA\na\nB", false, true), std::string("A\na\nb\nB"));  // stable when equal
+    CHECK_EQ(gw::sortLinesText("", false), std::string(""));
+}
+
+TEST(uniqueLines) {
+    CHECK_EQ(gw::uniqueLinesText("a\nb\na\nc\nb\n"), std::string("a\nb\nc\n"));
+}
+
+TEST(joinLines) {
+    CHECK_EQ(gw::joinLinesText("int a =\n    1 +\n\t2;"), std::string("int a = 1 + 2;"));
+    CHECK_EQ(gw::joinLinesText("one\n\ntwo\n"), std::string("one two\n"));
+    CHECK_EQ(gw::joinLinesText("single"), std::string("single"));
 }
 
 // MARK: Word suggestions

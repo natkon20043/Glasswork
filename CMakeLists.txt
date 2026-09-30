@@ -42,6 +42,7 @@ add_library(glasswork_core STATIC
     src/core/Snippet.cpp
     src/core/NavigationHistory.cpp
     src/core/WordSuggestions.cpp
+    src/core/TextTransforms.cpp
     src/core/Dap.cpp
     src/core/Highlighter.cpp
     src/core/Jsonc.cpp

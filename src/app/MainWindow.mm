@@ -236,6 +236,16 @@ bool looksBinary(const char *path) {
 
 - (void)layout {
     [super layout];
+    // The window animates the card itself when the chat, sidebar or terminal opens. The parts
+    // inside must not animate as well: their animations can finish after a later layout and
+    // put the code area back at a stale size, leaving it a small corner of the card.
+    [NSAnimationContext beginGrouping];
+    NSAnimationContext.currentContext.allowsImplicitAnimation = NO;
+    [self layoutParts];
+    [NSAnimationContext endGrouping];
+}
+
+- (void)layoutParts {
     CGFloat width = NSWidth(self.bounds), height = NSHeight(self.bounds);
     self.breadcrumbBar.frame = NSMakeRect(0, 0, width, kBreadcrumbHeight);
     CGFloat top = kBreadcrumbHeight;
@@ -248,6 +258,8 @@ bool looksBinary(const char *path) {
     self.scrollView.frame = NSMakeRect(gutter, top, width - minimapWidth - gutter, height - top);
     self.minimap.frame = NSMakeRect(width - kMinimapWidth, top + 4, kMinimapWidth - 6, height - top - 8);
     self.previewScroll.frame = NSMakeRect(0, top, width, height - top);
+    // The text area is sized from the visible area, which has just changed.
+    [self.editor updateFrameSize];
     CGFloat stickyHeight = self.editor.stickyHeight;
     self.editor.stickyView.frame = NSMakeRect(0, top, width - minimapWidth, stickyHeight);
     self.editor.stickyView.hidden = stickyHeight <= 0 || self.previewMode;

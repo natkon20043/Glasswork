@@ -189,6 +189,21 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
 
 /// File > Open Recent. The list is rebuilt each time the menu opens, from the folders and
 /// files macOS has noted as recent (MainWindow notes them when they are opened).
+/// Edit > Transform: case changes and line sorting.
+- (NSMenuItem *)transformItem {
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Transform"];
+    [menu addItem:[self item:@"Make Upper Case" action:@selector(makeUpperCase:) key:@""]];
+    [menu addItem:[self item:@"Make Lower Case" action:@selector(makeLowerCase:) key:@""]];
+    [menu addItem:[self item:@"Make Title Case" action:@selector(makeTitleCase:) key:@""]];
+    [menu addItem:NSMenuItem.separatorItem];
+    [menu addItem:[self item:@"Sort Lines Ascending" action:@selector(sortLinesAscending:) key:@""]];
+    [menu addItem:[self item:@"Sort Lines Descending" action:@selector(sortLinesDescending:) key:@""]];
+    [menu addItem:[self item:@"Remove Duplicate Lines" action:@selector(removeDuplicateLines:) key:@""]];
+    NSMenuItem *holder = [[NSMenuItem alloc] initWithTitle:@"Transform" action:nil keyEquivalent:@""];
+    holder.submenu = menu;
+    return holder;
+}
+
 - (NSMenuItem *)openRecentItem {
     _recentMenu = [[NSMenu alloc] initWithTitle:@"Open Recent"];
     _recentMenu.delegate = self;
@@ -278,6 +293,8 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
         [self item:@"Duplicate Line Up" action:@selector(duplicateLinesUp:) key:[NSString stringWithFormat:@"%C", (unichar)NSUpArrowFunctionKey] modifiers:option | shift],
         [self item:@"Duplicate Line Down" action:@selector(duplicateLinesDown:) key:[NSString stringWithFormat:@"%C", (unichar)NSDownArrowFunctionKey] modifiers:option | shift],
         [self item:@"Delete Line" action:@selector(deleteLines:) key:@"k" modifiers:command | shift],
+        [self item:@"Join Lines" action:@selector(joinSelectedLines:) key:@"j" modifiers:NSEventModifierFlagControl],
+        [self transformItem],
         [self item:@"Insert Line Below" action:@selector(insertLineBelow:) key:@"\r" modifiers:command],
         [self item:@"Insert Line Above" action:@selector(insertLineAbove:) key:@"\r" modifiers:command | shift],
         [self item:@"Add Next Occurrence" action:@selector(selectNextOccurrence:) key:@"d"],

@@ -24,6 +24,7 @@ The first configuration downloads nlohmann/json and Oniguruma. A from-scratch bu
 **Editing**
 - TextMate grammars and themes from Open VSX (Extensions menu), declarative language configuration.
 - Quick Open (⌘P), command palette (⇧⌘P), section picker (⌃6), go to line (⌃G). Go ▸ Back and Forward (⌃- and ⌃⇧-) return to where you jumped from, like a browser, across files. File ▸ Open Recent lists folders and files you opened lately.
+- Edit ▸ Transform: upper, lower and title case, sort lines up or down, remove duplicate lines; Join Lines (⌃J).
 - Line commands: move (⌥↑/⌥↓), duplicate (⇧⌥↑/⇧⌥↓), delete (⇧⌘K), insert line below/above (⌘↩ / ⇧⌘↩), toggle comment (⌘/), indent/outdent. Brackets and quotes close themselves and wrap a selection.
 - Multiple cursors: ⌥-click, ⌘D for the next occurrence, ⌃⌘G for every occurrence, ⌥⌘↑/⌥⌘↓ for cursors above and below. Typing, deleting, Return, cut, copy, paste and movement act at every cursor as one undo step; Esc goes back to one.
 - `.editorconfig` files set the indent style and size per file type, and `files.trimTrailingWhitespace` / `files.insertFinalNewline` (or the same keys in `.editorconfig`) clean up on save.

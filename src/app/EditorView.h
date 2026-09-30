@@ -50,6 +50,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)jumpToPosition:(gw::Position)position;
 /// Call after changing the selection from outside (scrolls to the caret and redraws).
 - (void)selectionDidChange;
+/// Sizes the text area to the visible area and the text. The window calls this after laying out.
+- (void)updateFrameSize;
 /// Runs several edits to the document as one undo step (used by Replace All).
 - (void)editDocument:(void (^)(gw::Document &document))edits;
 /// Applies a language-server completion as one undoable edit.
@@ -138,6 +140,13 @@ NS_ASSUME_NONNULL_BEGIN
 // Editing commands (also reachable from the menu bar through the responder chain).
 - (IBAction)toggleLineComment:(nullable id)sender;
 - (IBAction)indentLines:(nullable id)sender;
+- (IBAction)makeUpperCase:(nullable id)sender;
+- (IBAction)makeLowerCase:(nullable id)sender;
+- (IBAction)makeTitleCase:(nullable id)sender;
+- (IBAction)sortLinesAscending:(nullable id)sender;
+- (IBAction)sortLinesDescending:(nullable id)sender;
+- (IBAction)removeDuplicateLines:(nullable id)sender;
+- (IBAction)joinSelectedLines:(nullable id)sender;
 - (IBAction)outdentLines:(nullable id)sender;
 
 /// Overrides how this file is indented (from its .editorconfig): `usesTabs` is 1 for tabs, 0 for

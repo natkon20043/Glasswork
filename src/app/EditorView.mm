@@ -1,5 +1,7 @@
 #import "EditorView.h"
 
+#include "TextTransforms.hpp"
+
 #import "Services.h"
 #import "StartupTiming.h"
 
@@ -1039,7 +1041,13 @@ static constexpr CGFloat kMiniChar = 1.25;
     if (_wrapEnabled) {
         width = clip.width;  // wrapped text never scrolls sideways
     }
-    if (!NSEqualSizes(self.frame.size, NSMakeSize(width, height))) [self setFrameSize:NSMakeSize(width, height)];
+    if (!NSEqualSizes(self.frame.size, NSMakeSize(width, height))) {
+        [self setFrameSize:NSMakeSize(width, height)];
+        // Growing (the window was laid out bigger than it started) must repaint the new area;
+        // otherwise only the part that was drawn before shows.
+        self.needsDisplay = YES;
+        _gutter.needsDisplay = YES;
+    }
 }
 
 // MARK: Syntax colours and brackets
@@ -3265,6 +3273,69 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
     size_t last = range.end.line;
     if (last > range.start.line && range.end.column == 0) --last;
     return {range.start.line, last};
+}
+
+/// Replaces the selected text with `transform` of it, as one undo step, and keeps the new
+/// text selected. With nothing selected the word at the caret is used, or with `wholeLines`
+/// every line the selection touches (an empty selection then does nothing).
+- (void)transformSelectedText:(std::string (*)(std::string_view))transform wholeLines:(BOOL)wholeLines {
+    if (!_document || _document->readOnly) return;
+    const auto &buffer = _document->buffer();
+    gw::Range range = _document->selection.range();
+    if (wholeLines) {
+        if (_document->selection.empty()) {
+            NSBeep();
+            return;
+        }
+        auto [first, last] = [self selectedLines];
+        range = {{first, 0}, {last, buffer.line(last).size()}};
+    } else if (_document->selection.empty()) {
+        gw::Position caret = _document->selection.caret;
+        std::string_view line = buffer.line(caret.line);
+        size_t start = std::min(caret.column, line.size());
+        size_t end = start;
+        while (start > 0 && gw::isWordByte(static_cast<unsigned char>(line[start - 1]))) --start;
+        while (end < line.size() && gw::isWordByte(static_cast<unsigned char>(line[end]))) ++end;
+        if (start == end) {
+            NSBeep();
+            return;
+        }
+        range = {{caret.line, start}, {caret.line, end}};
+    }
+    std::string original = buffer.text(range);
+    std::string replacement = transform(original);
+    if (replacement == original) return;
+
+    _document->extraSelections.clear();
+    _document->replace(range, replacement);
+    gw::Position end = gw::endOfInsertion(range.start, replacement);
+    _document->selection = {range.start, end};
+    [self didEdit];
+}
+
+- (IBAction)makeUpperCase:(id)sender { [self transformSelectedText:gw::upperCaseText wholeLines:NO]; }
+- (IBAction)makeLowerCase:(id)sender { [self transformSelectedText:gw::lowerCaseText wholeLines:NO]; }
+- (IBAction)makeTitleCase:(id)sender { [self transformSelectedText:gw::titleCaseText wholeLines:NO]; }
+
+static std::string sortAscending(std::string_view text) { return gw::sortLinesText(text, false); }
+static std::string sortDescending(std::string_view text) { return gw::sortLinesText(text, true); }
+
+- (IBAction)sortLinesAscending:(id)sender { [self transformSelectedText:sortAscending wholeLines:YES]; }
+- (IBAction)sortLinesDescending:(id)sender { [self transformSelectedText:sortDescending wholeLines:YES]; }
+- (IBAction)removeDuplicateLines:(id)sender { [self transformSelectedText:gw::uniqueLinesText wholeLines:YES]; }
+
+/// Joins the selected lines into one; with nothing selected, the caret's line and the next.
+- (IBAction)joinSelectedLines:(id)sender {
+    if (!_document || _document->readOnly) return;
+    if (_document->selection.empty()) {
+        size_t line = _document->selection.caret.line;
+        if (line + 1 >= _document->buffer().lineCount()) {
+            NSBeep();
+            return;
+        }
+        _document->selection = {{line, 0}, {line + 1, _document->buffer().line(line + 1).size()}};
+    }
+    [self transformSelectedText:gw::joinLinesText wholeLines:YES];
 }
 
 /// Rewrites whole lines as one undoable edit, then selects them if several were involved.
