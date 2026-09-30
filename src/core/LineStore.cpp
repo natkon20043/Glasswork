@@ -120,6 +120,14 @@ void LineStore::erase(size_t first, size_t last) {
     }
 }
 
+size_t LineStore::totalBytes() const {
+    size_t total = 0;
+    for (const LineRef& ref : refs_) {
+        total += ref.length == kOwned ? owned_[ref.offset].size() : ref.length;
+    }
+    return total;
+}
+
 size_t LineStore::memoryBytes() const {
     size_t total = block_.capacity() + refs_.capacity() * sizeof(LineRef) + owned_.size() * sizeof(std::string) +
                    freeSlots_.capacity() * sizeof(uint32_t);

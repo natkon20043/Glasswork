@@ -44,7 +44,13 @@ void Highlighter::didChange(const Change& change) {
         island.valid = std::min(island.valid, inside);
     }
 
-    size_t first = std::min(change.firstLine, states_.size());
+    // The per-line arrays only cover the lines tokenized so far (they grow as tokenizing goes
+    // down the file), so an edit below that part has nothing in them to move.
+    if (change.firstLine >= states_.size()) {
+        reusableFrom_ = reusableUntil_ = 0;
+        return;
+    }
+    size_t first = change.firstLine;
     // Keep the per-line arrays aligned with the buffer. Entries are added or removed at the
     // start of the edited range, so the slot of the last edited line keeps the old end state
     // of the last line the edit replaced: exactly what its new end state is compared with.
@@ -71,7 +77,7 @@ void Highlighter::didChange(const Change& change) {
 
 const std::vector<tm::Token>* Highlighter::tokens(const TextBuffer& buffer, size_t line, size_t budget) {
     if (!grammar_ || line >= buffer.lineCount()) return nullptr;
-    if (states_.size() != buffer.lineCount()) {
+    if (states_.size() > buffer.lineCount()) {
         states_.resize(buffer.lineCount());
         tokens_.resize(buffer.lineCount());
         valid_ = std::min(valid_, buffer.lineCount());
@@ -85,6 +91,11 @@ const std::vector<tm::Token>* Highlighter::tokens(const TextBuffer& buffer, size
         if (work >= budget) return nullptr;
         auto result = tm::tokenizeLine(*grammar_, buffer.line(valid_),
                                        valid_ == 0 ? tm::initialState(*grammar_) : states_[valid_ - 1]);
+        if (valid_ >= states_.size()) {
+            // Past what has been tokenized before: make room for this line's result.
+            states_.emplace_back();
+            tokens_.emplace_back();
+        }
         // Past the edit: if this line now ends in the same state as before the edit, every
         // line after it (up to the old frontier) still has correct tokens.
         bool converged = valid_ >= reusableFrom_ && valid_ < reusableUntil_ && result.state == states_[valid_];

@@ -166,10 +166,12 @@ struct ServerEntry {
     if (server == nullptr) {
         return;
     }
-    std::string text = document->buffer().text();
-    if (text.size() > kLargestTrackedFile) {
+    // Look at the size first: copying a huge file's text just to find out it is too big would
+    // cost as much memory as the file itself.
+    if (document->buffer().byteSize() > kLargestTrackedFile) {
         return;
     }
+    std::string text = document->buffer().text();
     Tracked tracked;
     tracked.uri = uri;
     tracked.languageId = document->languageId;

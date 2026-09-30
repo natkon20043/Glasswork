@@ -41,6 +41,8 @@ public:
     /// A line without its ending. The view stays valid until the buffer is next changed.
     std::string_view line(size_t index) const { return lines_.view(index); }
     Position end() const { return {lines_.size() - 1, lines_.view(lines_.size() - 1).size()}; }
+    /// The text's size in bytes (about what `text().size()` would be) without building the text.
+    size_t byteSize() const { return lines_.totalBytes() + lines_.size(); }
     /// Bytes of memory the text takes, for measuring.
     size_t memoryBytes() const { return lines_.memoryBytes(); }
 

@@ -53,6 +53,8 @@ public:
     /// Removes lines `first` up to (not including) `last`.
     void erase(size_t first, size_t last);
 
+    /// The text's size in bytes, not counting line endings. A quick pass over the lines.
+    size_t totalBytes() const;
     /// Bytes of memory used: the file block, the references and the edited lines.
     size_t memoryBytes() const;
     /// Lines that have been edited and now own their text.
