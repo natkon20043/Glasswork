@@ -107,7 +107,7 @@ Current boundaries:
 
 - Documents over 4 MB aren't sent to servers.
 - Files are sent whole after each pause in typing, not as incremental edits.
-- The client does not run downloaded extension JavaScript, and semantic-token colouring isn't used yet.
+- The client does not run downloaded extension JavaScript.
 
 ## Developer hooks
 
