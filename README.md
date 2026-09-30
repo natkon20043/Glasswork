@@ -34,6 +34,7 @@ The first configuration downloads nlohmann/json and Oniguruma. A from-scratch bu
 - Files changed outside the editor (by Claude, a build, git) reload straight away; the changed lines flash. Unsaved edits are never overwritten without asking.
 - Soft word wrap (⌥Z, or `editor.wordWrap`) breaks at words and keeps a line's indentation on the rows below it. Code folding (⌥⌘[ and ⌥⌘], Fold All / Unfold All in the Edit menu, or the arrows in the line numbers) folds by indentation in every language.
 - Several windows: New Window (⇧⌘N) or Open Folder in New Window (⌥⇧⌘O), each with its own folder, tabs, terminal and chat.
+- Save All (⌥⌘S), Close Other Tabs (⌥⌘T) and Reopen Closed Tab (⇧⌘T, several deep, back to the line you left).
 - Optional auto-save, and the open files, caret and scroll position of each folder come back when you reopen it.
 
 **File tree**

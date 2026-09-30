@@ -12,6 +12,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// Shows the open panel for a folder (or file) and opens what is chosen in this window.
 - (IBAction)openFolder:(nullable id)sender;
 - (IBAction)goBack:(nullable id)sender;
+- (IBAction)reopenClosedTab:(nullable id)sender;
+- (IBAction)saveAllDocuments:(nullable id)sender;
+- (IBAction)closeOtherTabs:(nullable id)sender;
 - (IBAction)goForward:(nullable id)sender;
 /// Asks about unsaved changes. Returns NO if the user cancelled.
 - (BOOL)confirmCloseAll;

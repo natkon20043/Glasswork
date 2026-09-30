@@ -271,7 +271,11 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
         [self item:@"Save" action:@selector(saveDocument:) key:@"s"],
         [self item:@"Save As…" action:@selector(saveDocumentAs:) key:@"s" modifiers:command | shift],
         NSMenuItem.separatorItem,
+        [self item:@"Save All" action:@selector(saveAllDocuments:) key:@"s" modifiers:command | option],
+        NSMenuItem.separatorItem,
         [self item:@"Close Tab" action:@selector(closeTab:) key:@"w"],
+        [self item:@"Close Other Tabs" action:@selector(closeOtherTabs:) key:@"t" modifiers:command | option],
+        [self item:@"Reopen Closed Tab" action:@selector(reopenClosedTab:) key:@"t" modifiers:command | shift],
         [self item:@"Close Window" action:@selector(performClose:) key:@"w" modifiers:command | shift],
     ] parent:main];
 

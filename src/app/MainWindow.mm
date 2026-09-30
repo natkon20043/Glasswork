@@ -456,6 +456,7 @@ bool looksBinary(const char *path) {
     NSStackView *_recentList;
     std::vector<std::unique_ptr<Tab>> _tabs;
     NSInteger _selected;
+    std::vector<gw::NavigationLocation> _recentlyClosed;  // for Reopen Closed Tab, newest last
     gw::NavigationHistory _navigation;   // Go Back / Go Forward
     BOOL _navigating;                    // true while going back or forward, so that is not recorded
 
@@ -1090,6 +1091,10 @@ bool looksBinary(const char *path) {
     if (tab.document->isDirty() && ![self confirmCloseDocument:*tab.document]) return;
     if (tab.document->path() && !tab.isVirtual) {
         _breakpointStore[tab.document->path()->string()] = tab.document->breakpointLines;
+        _recentlyClosed.push_back({tab.document->path()->string(), tab.document->selection.caret});
+        if (_recentlyClosed.size() > 20) {
+            _recentlyClosed.erase(_recentlyClosed.begin());
+        }
     }
     if (index == _selected) [_editorView setDocument:nullptr highlighter:nullptr configuration:{}];
     [_language untrackDocument:tab.document.get()];
@@ -5109,6 +5114,44 @@ static std::vector<std::pair<gw::Range, std::string>> editsFromLsp(const gw::lsp
         [self closeTabAtIndex:_selected];
     } else {
         [self.window performClose:sender];
+    }
+}
+
+/// ⇧⌘T: brings back the tab closed most recently, at the line it was on.
+- (IBAction)reopenClosedTab:(id)sender {
+    while (!_recentlyClosed.empty()) {
+        gw::NavigationLocation location = _recentlyClosed.back();
+        _recentlyClosed.pop_back();
+        NSString *path = @(location.path.c_str());
+        if (![NSFileManager.defaultManager fileExistsAtPath:path]) {
+            continue;  // deleted since; try the one before
+        }
+        [self goToLocation:location];
+        return;
+    }
+    NSBeep();
+}
+
+/// ⌥⌘S: saves every file that has unsaved changes.
+- (IBAction)saveAllDocuments:(id)sender {
+    for (auto &tab : _tabs) {
+        bool canSave = tab->document->isDirty() && !tab->isVirtual && tab->document->path().has_value();
+        if (canSave) {
+            [self saveTab:*tab];
+        }
+    }
+}
+
+/// Closes every tab except the one in front. Each file with unsaved changes asks first.
+- (IBAction)closeOtherTabs:(id)sender {
+    if (_selected < 0) {
+        return;
+    }
+    uint64_t keep = _tabs[static_cast<size_t>(_selected)]->identifier;
+    for (NSInteger index = static_cast<NSInteger>(_tabs.size()) - 1; index >= 0; --index) {
+        if (_tabs[static_cast<size_t>(index)]->identifier != keep) {
+            [self closeTabAtIndex:index];
+        }
     }
 }
 
