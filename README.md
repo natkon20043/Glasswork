@@ -12,10 +12,10 @@ Install Xcode, CMake and Ninja, then:
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ctest --test-dir build --output-on-failure
-open build/Glasswork.app
+open build/app.noindex/Glasswork.app
 ```
 
-`scripts/package.sh` builds a release, ad-hoc signs it and writes `dist/Glasswork.zip`.
+`scripts/package.sh` builds a release, ad-hoc signs it and writes `dist/Glasswork.zip`. `scripts/install.sh` does that and installs the one `Glasswork.app` into `/Applications`. Development builds go into `build/app.noindex/`, which Spotlight ignores, so only the installed app shows up.
 
 The first configuration downloads nlohmann/json and Oniguruma. A from-scratch build takes about 15 seconds on an M-series Mac.
 

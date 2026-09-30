@@ -24,11 +24,11 @@ cmake --build "$build_folder"
 ctest --test-dir "$build_folder" --output-on-failure
 
 echo "Signing (ad hoc)..."
-codesign --force --deep --sign - "$build_folder/Glasswork.app"
+codesign --force --deep --sign - "$build_folder/app.noindex/Glasswork.app"
 
 echo "Zipping..."
 mkdir -p "$dist_folder"
 rm -f "$dist_folder/Glasswork.zip"
-ditto -c -k --keepParent "$build_folder/Glasswork.app" "$dist_folder/Glasswork.zip"
+ditto -c -k --keepParent "$build_folder/app.noindex/Glasswork.app" "$dist_folder/Glasswork.zip"
 
 echo "Done: $dist_folder/Glasswork.zip"

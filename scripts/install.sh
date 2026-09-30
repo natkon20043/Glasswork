@@ -17,16 +17,18 @@ echo "Installing to /Applications..."
 osascript -e 'tell application "Glasswork" to quit' >/dev/null 2>&1 || true
 sleep 1
 rm -rf /Applications/Glasswork.app
-ditto "$project_folder/build-release/Glasswork.app" /Applications/Glasswork.app
+ditto "$project_folder/build-release/app.noindex/Glasswork.app" /Applications/Glasswork.app
 
 echo "Hiding the development copies from Spotlight and Launchpad..."
 for folder in "$project_folder/build" "$project_folder/build-release" "$project_folder/dist"; do
     if [ -d "$folder" ]; then
         touch "$folder/.metadata_never_index"
     fi
-    if [ -d "$folder/Glasswork.app" ]; then
-        "$lsregister" -u "$folder/Glasswork.app" >/dev/null 2>&1 || true
-    fi
+    for old in "$folder/Glasswork.app" "$folder/app.noindex/Glasswork.app"; do
+        if [ -d "$old" ]; then
+            "$lsregister" -u "$old" >/dev/null 2>&1 || true
+        fi
+    done
 done
 # An old location that no longer exists can still be remembered.
 "$lsregister" -u "$HOME/Glasswork/build/Glasswork.app" >/dev/null 2>&1 || true

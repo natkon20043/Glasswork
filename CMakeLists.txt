@@ -158,8 +158,11 @@ add_executable(Glasswork MACOSX_BUNDLE
     src/app/StartupTiming.mm
     src/app/SourceControlPanel.mm
     src/app/Services.mm)
+# The app is built into a folder ending in ".noindex", which Spotlight skips, so development
+# builds never show up next to the installed Glasswork.app.
 set_target_properties(Glasswork PROPERTIES
     MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/resources/Info.plist.in
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/app.noindex
     OUTPUT_NAME Glasswork)
 target_compile_options(Glasswork PRIVATE -fobjc-arc -Wall -Wno-unused-parameter)
 target_link_libraries(Glasswork PRIVATE glasswork_core
