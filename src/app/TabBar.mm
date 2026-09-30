@@ -2,6 +2,8 @@
 
 #import "FileIcons.h"
 
+#import <QuartzCore/QuartzCore.h>
+
 #include <algorithm>
 #include <cmath>
 
@@ -16,12 +18,22 @@
     NSTimeInterval _pillStart;
     NSTimer *_pillTimer;
     NSTrackingArea *_tracking;
+
+    // Too many tabs to fit: the row scrolls sideways, and its ends fade out where more tabs are hidden.
+    CGFloat _scrollX;
+    NSTimer *_scrollTimer;
+    CAGradientLayer *_fadeMask;
 }
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
     if ((self = [super initWithFrame:frameRect])) {
         _hoverIndex = -1;
         _selectedIndex = -1;
+        self.wantsLayer = YES;
+        _fadeMask = [CAGradientLayer layer];
+        _fadeMask.startPoint = CGPointMake(0, 0.5);
+        _fadeMask.endPoint = CGPointMake(1, 0.5);
+        self.layer.mask = _fadeMask;
     }
     return self;
 }
@@ -34,6 +46,7 @@
     _items = [items copy];
     [self layoutTabs];
     [self movePillAnimated:NO];
+    [self revealSelectedTabAnimated:NO];
     self.needsDisplay = YES;
 }
 
@@ -42,6 +55,7 @@
     _selectedIndex = selectedIndex;
     [self layoutTabs];
     [self movePillAnimated:changed && !NSIsEmptyRect(_pill)];
+    [self revealSelectedTabAnimated:changed];
     self.needsDisplay = YES;
 }
 
@@ -49,6 +63,109 @@
     [super setFrameSize:newSize];
     [self layoutTabs];
     [self movePillAnimated:NO];
+    _scrollX = std::min(std::max(_scrollX, 0.0), [self maxScroll]);
+    [self updateFadeMask];
+}
+
+// MARK: Scrolling
+
+/// The full width of all tabs in a row.
+- (CGFloat)contentWidth {
+    if (_tabRects.count == 0) {
+        return 0;
+    }
+    return NSMaxX(_tabRects.lastObject.rectValue) + 5;
+}
+
+- (CGFloat)maxScroll {
+    return std::max(0.0, [self contentWidth] - NSWidth(self.bounds));
+}
+
+/// Fades the left and right edges where tabs are cut off.
+- (void)updateFadeMask {
+    CGFloat width = NSWidth(self.bounds);
+    _fadeMask.frame = self.bounds;
+    if (width <= 0) {
+        return;
+    }
+    BOOL fadeLeft = _scrollX > 0.5;
+    BOOL fadeRight = _scrollX < [self maxScroll] - 0.5;
+    CGFloat edge = std::min(0.5, 26.0 / width);
+    CGColorRef opaque = NSColor.blackColor.CGColor;
+    CGColorRef clear = NSColor.clearColor.CGColor;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    _fadeMask.colors = @[(__bridge id)(fadeLeft ? clear : opaque), (__bridge id)opaque, (__bridge id)opaque,
+                         (__bridge id)(fadeRight ? clear : opaque)];
+    _fadeMask.locations = @[@0, @(fadeLeft ? edge : 0.0), @(fadeRight ? 1 - edge : 1.0), @1];
+    [CATransaction commit];
+}
+
+- (void)setScrollX:(CGFloat)value {
+    _scrollX = std::min(std::max(value, 0.0), [self maxScroll]);
+    [self updateFadeMask];
+    self.needsDisplay = YES;
+}
+
+/// Slides the row so the selected tab is fully visible, with a little room around it.
+- (void)revealSelectedTabAnimated:(BOOL)animated {
+    [_scrollTimer invalidate];
+    _scrollTimer = nil;
+    if (_selectedIndex < 0 || _selectedIndex >= static_cast<NSInteger>(_tabRects.count)) {
+        [self updateFadeMask];
+        return;
+    }
+    NSRect tab = _tabRects[static_cast<NSUInteger>(_selectedIndex)].rectValue;
+    CGFloat margin = 30;
+    CGFloat target = _scrollX;
+    if (NSMinX(tab) - margin < _scrollX) {
+        target = NSMinX(tab) - margin;
+    } else if (NSMaxX(tab) + margin > _scrollX + NSWidth(self.bounds)) {
+        target = NSMaxX(tab) + margin - NSWidth(self.bounds);
+    }
+    target = std::min(std::max(target, 0.0), [self maxScroll]);
+    if (std::abs(target - _scrollX) < 0.5) {
+        [self updateFadeMask];
+        return;
+    }
+    if (!animated) {
+        [self setScrollX:target];
+        return;
+    }
+    CGFloat from = _scrollX;
+    NSTimeInterval start = NSDate.timeIntervalSinceReferenceDate;
+    __weak GWTabBar *weakSelf = self;
+    _scrollTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60 repeats:YES block:^(NSTimer *timer) {
+        GWTabBar *bar = weakSelf;
+        if (!bar) {
+            [timer invalidate];
+            return;
+        }
+        double t = std::min(1.0, (NSDate.timeIntervalSinceReferenceDate - start) / 0.24);
+        double eased = 1 - std::pow(1 - t, 3);
+        [bar setScrollX:from + (target - from) * eased];
+        if (t >= 1) {
+            [timer invalidate];
+            bar->_scrollTimer = nil;
+        }
+    }];
+}
+
+/// Trackpad swipes sideways, or a mouse wheel: the row scrolls.
+- (void)scrollWheel:(NSEvent *)event {
+    if ([self maxScroll] <= 0) {
+        [super scrollWheel:event];
+        return;
+    }
+    CGFloat horizontal = event.scrollingDeltaX;
+    CGFloat vertical = event.scrollingDeltaY;
+    CGFloat delta = std::abs(horizontal) > std::abs(vertical) ? -horizontal : -vertical;
+    if (!event.hasPreciseScrollingDeltas) {
+        delta *= 12;  // a wheel notch is a coarse step
+    }
+    [_scrollTimer invalidate];
+    _scrollTimer = nil;
+    [self setScrollX:_scrollX + delta];
 }
 
 // MARK: Layout
@@ -112,6 +229,10 @@
 // MARK: Drawing
 
 - (void)drawRect:(NSRect)dirtyRect {
+    [NSGraphicsContext saveGraphicsState];
+    NSAffineTransform *shift = [NSAffineTransform transform];
+    [shift translateXBy:-_scrollX yBy:0];
+    [shift concat];
     // The selection pill: a brighter lens of glass with a crisp rim.
     if (!NSIsEmptyRect(_pill)) {
         NSBezierPath *pill = [NSBezierPath bezierPathWithRoundedRect:_pill xRadius:NSHeight(_pill) / 2 yRadius:NSHeight(_pill) / 2];
@@ -169,6 +290,7 @@
             [[NSBezierPath bezierPathWithOvalInRect:NSInsetRect(mark, 5, 5)] fill];
         }
     }
+    [NSGraphicsContext restoreGraphicsState];
 }
 
 // MARK: Mouse
@@ -191,8 +313,15 @@
     return -1;
 }
 
+/// A point in the view as a point in the row of tabs, which may be scrolled.
+- (NSPoint)rowPointForEvent:(NSEvent *)event {
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    point.x += _scrollX;
+    return point;
+}
+
 - (void)mouseMoved:(NSEvent *)event {
-    NSInteger hover = [self tabAtPoint:[self convertPoint:event.locationInWindow fromView:nil]];
+    NSInteger hover = [self tabAtPoint:[self rowPointForEvent:event]];
     if (hover != _hoverIndex) {
         _hoverIndex = hover;
         self.needsDisplay = YES;
@@ -204,8 +333,19 @@
     self.needsDisplay = YES;
 }
 
+/// Middle-click closes a tab.
+- (void)otherMouseUp:(NSEvent *)event {
+    if (event.buttonNumber != 2) {
+        return;
+    }
+    NSInteger index = [self tabAtPoint:[self rowPointForEvent:event]];
+    if (index >= 0 && self.onClose) {
+        self.onClose(index);
+    }
+}
+
 - (void)mouseDown:(NSEvent *)event {
-    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    NSPoint point = [self rowPointForEvent:event];
     NSInteger index = [self tabAtPoint:point];
     if (index >= 0) {
         NSRect rect = _tabRects[static_cast<NSUInteger>(index)].rectValue;
