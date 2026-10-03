@@ -11,11 +11,28 @@
 
 #include "Theme.hpp"
 
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
 
 NS_ASSUME_NONNULL_BEGIN
+
+/// A look an extension gave to a stretch of text (`setDecorations`): colours, text styling, an
+/// outline, and a note drawn at the end of the line.
+struct GWDecoration {
+    gw::Range range;
+    std::optional<gw::Color> background;
+    std::optional<gw::Color> foreground;
+    std::optional<gw::Color> border;
+    bool wholeLine = false;  // the background covers the whole line, not just the range
+    bool bold = false;
+    bool italic = false;
+    bool underline = false;
+    bool strikethrough = false;
+    std::string afterText;   // a note after the end of the line
+    std::optional<gw::Color> afterColor;
+};
 
 /// The code editor: draws a document with CoreText on a translucent backdrop and handles
 /// typing, selection and editing commands. It lives inside an NSScrollView, which it gives
@@ -78,6 +95,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setLineTints:(std::vector<gw::Color>)tints;
 
 // MARK: Language intelligence
+
+/// Inline hints from a language server: parameter names and inferred types, drawn between the
+/// characters they sit among. Replaces all of them; an empty list takes them away.
+- (void)setInlayHints:(std::vector<GWInlayHint>)hints;
+/// Extension decorations, grouped by the decoration type that made them. Replaces all of them.
+- (void)setDecorationGroups:(const std::map<std::string, std::vector<GWDecoration>> &)groups;
 
 /// Problems to underline (and mark in the line numbers).
 - (void)setDiagnostics:(std::vector<GWDiagnostic>)diagnostics;

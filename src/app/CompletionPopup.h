@@ -16,8 +16,19 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *filterText;
 @property (nonatomic, copy) NSString *sortText;
 @property (nonatomic) NSInteger kind;  // LSP CompletionItemKind
+/// Struck through in the list.
+@property (nonatomic) BOOL deprecated;
+/// The server's pick for the item most likely wanted when nothing has been typed.
+@property (nonatomic) BOOL preselect;
+/// Markdown shown beside the list while the item is selected. Often only arrives after the
+/// server resolves the item.
+@property (nonatomic, copy, nullable) NSString *documentation;
+/// Typing one of these letters accepts the item first ("." after a name, "(" and so on).
+@property (nonatomic, copy) NSString *commitCharacters;
 /// The server's own description of the item, for applying it.
 @property (nonatomic) std::shared_ptr<gw::lsp::Json> raw;
+/// Whether the server was asked to fill in documentation and extra edits already.
+@property (nonatomic) BOOL resolved;
 @end
 
 /// The list that appears under the caret while typing: fuzzy-filtered as you keep typing,
@@ -27,6 +38,14 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, readonly) BOOL visible;
 @property (nonatomic, copy, nullable) void (^onAccept)(GWSuggestion *item);
+/// The highlighted item changed (arrows, or the list was refiltered). Used to fetch its documentation.
+@property (nonatomic, copy, nullable) void (^onSelectionChanged)(GWSuggestion *item);
+/// The row highlighted now, if the list is showing.
+@property (nonatomic, readonly, nullable) GWSuggestion *selectedSuggestion;
+/// Notes an accepted item so it ranks higher next time.
+- (void)recordAccepted:(GWSuggestion *)item;
+/// Updates the documentation panel if `item` is still the one highlighted.
+- (void)documentationChangedForSuggestion:(GWSuggestion *)item;
 
 /// Replaces the suggestions (unfiltered). Nothing is shown until `showBelowScreenRect:`.
 - (void)setItems:(NSArray<GWSuggestion *> *)items;

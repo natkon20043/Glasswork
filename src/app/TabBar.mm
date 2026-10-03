@@ -255,10 +255,7 @@
         }
 
         // File-type icon, then the name.
-        NSImage *icon = [NSImage imageWithSystemSymbolName:GWSymbolForFile(item.title) accessibilityDescription:nil];
-        NSImageSymbolConfiguration *configuration = [[NSImageSymbolConfiguration configurationWithPointSize:11 weight:NSFontWeightSemibold]
-            configurationByApplyingConfiguration:[NSImageSymbolConfiguration configurationWithPaletteColors:@[GWColorForFile(item.title)]]];
-        icon = [icon imageWithSymbolConfiguration:configuration];
+        NSImage *icon = GWFileIconImage(item.title, NO, NO, 13);
         NSRect iconRect = NSMakeRect(NSMinX(rect) + 14, NSMidY(rect) - icon.size.height / 2, icon.size.width, icon.size.height);
         [icon drawInRect:iconRect fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:selected ? 1 : 0.8
                 respectFlipped:YES hints:nil];

@@ -136,12 +136,19 @@ EditorSettings parseSettings(const std::string& jsonc, std::string* error) {
     readValue(document, "window.frostedBackdrop", settings.frostedBackdrop);
     readValue(document, "window.glassStyle", settings.glassStyle);
     readValue(document, "workbench.colorTheme", settings.theme);
+    readValue(document, "workbench.iconTheme", settings.iconTheme);
+    if (document.contains("extensions.disabled") && document["extensions.disabled"].is_array()) {
+        for (const auto& id : document["extensions.disabled"]) {
+            if (id.is_string()) settings.disabledExtensions.push_back(id.get<std::string>());
+        }
+    }
     readValue(document, "editor.highlightOccurrences", settings.highlightOccurrences);
     readValue(document, "editor.minimap", settings.showMinimap);
     readValue(document, "editor.indentGuides", settings.indentGuides);
     readValue(document, "editor.bracketPairColorization", settings.bracketPairColors);
     readValue(document, "editor.sectionDividers", settings.sectionDividers);
     readValue(document, "editor.inlineDiagnostics", settings.inlineDiagnostics);
+    readValue(document, "editor.inlayHints.enabled", settings.inlayHints);
     readValue(document, "editor.stickyScroll", settings.stickyScroll);
     readValue(document, "editor.semanticHighlighting", settings.semanticHighlighting);
     readValue(document, "lsp.enabled", settings.languageServers);
@@ -225,6 +232,8 @@ std::string serializeSettings(const EditorSettings& settings) {
         << "\n"
         << "  // Look\n"
         << "  \"workbench.colorTheme\": " << json(settings.theme).dump() << ",  // View > Theme lists them\n"
+        << "  \"extensions.disabled\": " << json(settings.disabledExtensions).dump() << ",  // extensions switched off (Extensions > Manage Extensions)\n"
+        << "  \"workbench.iconTheme\": " << json(settings.iconTheme).dump() << ",  // a file icon theme from an extension; empty for the built-in icons\n"
         << "  \"editor.opacity\": " << settings.editorOpacity << ",  // 0.15 (see-through) to 1 (solid)\n"
         << "  \"window.glassTint\": " << settings.glassTint << ",  // 0 = clear glass, 1 = strongest tint\n"
         << "  \"window.frostedBackdrop\": " << boolean(settings.frostedBackdrop)
@@ -237,6 +246,8 @@ std::string serializeSettings(const EditorSettings& settings) {
         << ",  // lines above \"// MARK: - Name\" comments\n"
         << "  \"editor.inlineDiagnostics\": " << boolean(settings.inlineDiagnostics)
         << ",  // show each problem's message at the end of its line\n"
+        << "  \"editor.inlayHints.enabled\": " << boolean(settings.inlayHints)
+        << ",  // parameter names and inferred types, shown inline\n"
         << "  \"editor.stickyScroll\": " << boolean(settings.stickyScroll)
         << ",  // pin the current function or class header at the top while you scroll\n"
         << "  \"editor.semanticHighlighting\": " << boolean(settings.semanticHighlighting)

@@ -216,8 +216,89 @@ std::string Document::displayName() const {
     return path_ ? path_->filename().string() : std::string("Untitled");
 }
 
+namespace {
+
+/// A second of typing is a few dozen edits. Past these limits it is cheaper to send the file.
+constexpr size_t kMostSyncEdits = 1000;
+constexpr size_t kMostSyncBytes = 512 * 1024;
+
+/// How many UTF-16 code units the first `byteColumn` bytes of a UTF-8 line take up.
+size_t utf16Units(std::string_view line, size_t byteColumn) {
+    size_t units = 0;
+    size_t byte = 0;
+    if (byteColumn > line.size()) {
+        byteColumn = line.size();
+    }
+    while (byte < byteColumn) {
+        unsigned char first = static_cast<unsigned char>(line[byte]);
+        size_t width = 1;
+        if (first >= 0xF0) {
+            width = 4;
+        } else if (first >= 0xE0) {
+            width = 3;
+        } else if (first >= 0xC0) {
+            width = 2;
+        }
+        if (byte + width > byteColumn) {
+            break;
+        }
+        // A character outside the Basic Multilingual Plane is a surrogate pair in UTF-16.
+        units += (width == 4) ? 2 : 1;
+        byte += width;
+    }
+    return units;
+}
+
+}  // namespace
+
+void Document::recordSyncEdits(bool on) {
+    recordingSyncEdits_ = on;
+    syncEditsOverflowed_ = false;
+    syncEdits_.clear();
+    syncEditBytes_ = 0;
+}
+
+std::optional<std::vector<SyncEdit>> Document::takeSyncEdits() {
+    bool overflowed = syncEditsOverflowed_;
+    std::vector<SyncEdit> edits = std::move(syncEdits_);
+    syncEdits_.clear();
+    syncEditBytes_ = 0;
+    syncEditsOverflowed_ = false;
+    if (overflowed) {
+        return std::nullopt;
+    }
+    return edits;
+}
+
+/// Called before the buffer changes, because the columns are measured on the old text.
+void Document::recordSyncEdit(Position at, Position removedEnd, const std::string& inserted) {
+    if (syncEditsOverflowed_) {
+        return;
+    }
+    bool tooMany = syncEdits_.size() >= kMostSyncEdits;
+    bool tooBig = syncEditBytes_ + inserted.size() > kMostSyncBytes;
+    if (tooMany || tooBig) {
+        syncEditsOverflowed_ = true;
+        syncEdits_.clear();
+        syncEditBytes_ = 0;
+        return;
+    }
+
+    SyncEdit edit;
+    edit.startLine = at.line;
+    edit.startUnits = utf16Units(buffer_.line(at.line), at.column);
+    edit.endLine = removedEnd.line;
+    edit.endUnits = utf16Units(buffer_.line(removedEnd.line), removedEnd.column);
+    edit.text = inserted;
+    syncEditBytes_ += inserted.size();
+    syncEdits_.push_back(std::move(edit));
+}
+
 Position Document::apply(Position at, const std::string& removed, const std::string& inserted) {
     Position removedEnd = endOfInsertion(at, removed);
+    if (recordingSyncEdits_) {
+        recordSyncEdit(at, removedEnd, inserted);
+    }
     long lineDelta = static_cast<long>(std::count(inserted.begin(), inserted.end(), '\n')) -
                      static_cast<long>(std::count(removed.begin(), removed.end(), '\n'));
     buffer_.erase({at, removedEnd});

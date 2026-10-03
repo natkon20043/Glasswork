@@ -10,6 +10,8 @@
 #import <QuartzCore/QuartzCore.h>
 
 #include <algorithm>
+#include <map>
+#include <set>
 #include <cmath>
 #include <optional>
 #include <unordered_map>
@@ -41,6 +43,15 @@ constexpr size_t kHighlightBudget = 400;
 /// Padding between the line-number ruler and the text.
 constexpr CGFloat kTextInset = 14;
 
+/// One decoration as it applies to one line: the bytes it covers there and how it looks.
+struct LineDecoration {
+    size_t startByte = 0;
+    size_t endByte = 0;      // clipped to the line's length when drawn
+    bool toEndOfLine = false;
+    GWDecoration look;       // the colours and styling (its range is the whole decoration's)
+    bool showsNote = false;  // the note is drawn on the decoration's last line only
+};
+
 /// A laid-out line plus maps between UTF-8 byte offsets (the document's units) and UTF-16
 /// offsets (CoreText's units).
 struct LineLayout {
@@ -63,6 +74,11 @@ struct LineLayout {
     std::vector<CTLineRef> rowLines;
     CGFloat continuationIndent = 0;
 
+    /// Room opened before a character for an inlay hint (by that character's UTF-16 unit). It is made
+    /// with kerning on the character before, and CoreText reports the character's position half way
+    /// through that gap, so offsets are corrected by half of it.
+    std::map<uint32_t, CGFloat> gapBefore;
+
     LineLayout() = default;
     LineLayout(const LineLayout &) = delete;
     LineLayout &operator=(const LineLayout &) = delete;
@@ -74,7 +90,8 @@ struct LineLayout {
           highlighted(other.highlighted),
           rowStartUnits(std::move(other.rowStartUnits)),
           rowLines(std::move(other.rowLines)),
-          continuationIndent(other.continuationIndent) {
+          continuationIndent(other.continuationIndent),
+          gapBefore(std::move(other.gapBefore)) {
         other.line = nullptr;
         other.rowLines.clear();
     }
@@ -91,6 +108,7 @@ struct LineLayout {
             rowLines = std::move(other.rowLines);
             other.rowLines.clear();
             continuationIndent = other.continuationIndent;
+            gapBefore = std::move(other.gapBefore);
         }
         return *this;
     }
@@ -130,7 +148,12 @@ struct LineLayout {
     CGFloat offsetInRow(size_t row, uint32_t unit) const {
         uint32_t start = rowStart(row);
         uint32_t local = unit > start ? unit - start : 0;
-        return indentForRow(row) + CTLineGetOffsetForStringIndex(lineForRow(row), local, nullptr);
+        CGFloat offset = indentForRow(row) + CTLineGetOffsetForStringIndex(lineForRow(row), local, nullptr);
+        auto gap = gapBefore.find(unit);
+        if (gap != gapBefore.end()) {
+            offset += gap->second / 2;  // CoreText puts the character half way through its kerned gap
+        }
+        return offset;
     }
     CGFloat offsetForUnit(uint32_t unit) const { return offsetInRow(rowForUnit(unit), unit); }
 
@@ -681,6 +704,10 @@ static constexpr CGFloat kMiniChar = 1.25;
 
     std::vector<gw::LineChange> _lineChanges;
     std::vector<gw::Color> _lineTints;
+    /// Extension decorations, spread over the lines they touch (a range of 3 lines is 3 entries).
+    std::unordered_map<size_t, std::vector<LineDecoration>> _decorationsByLine;
+    /// Language server hints by line, in column order.
+    std::unordered_map<size_t, std::vector<GWInlayHint>> _inlayByLine;
     std::vector<gw::Range> _findMatches;
     long _currentFindMatch;
 
@@ -753,6 +780,129 @@ static constexpr CGFloat kMiniChar = 1.25;
 - (void)setLineChanges:(std::vector<gw::LineChange>)changes {
     _lineChanges = std::move(changes);
     _gutter.needsDisplay = YES;
+}
+
+- (void)setInlayHints:(std::vector<GWInlayHint>)hints {
+    _inlayByLine.clear();
+    for (GWInlayHint &hint : hints) {
+        _inlayByLine[hint.position.line].push_back(std::move(hint));
+    }
+    _layouts.clear();  // each hint reserves space in its line
+    self.needsDisplay = YES;
+    _minimap.needsDisplay = YES;
+}
+
+/// How hints look: a little smaller than the code, muted.
+- (NSDictionary *)inlayHintAttributes {
+    return @{NSFontAttributeName: [NSFont systemFontOfSize:std::max<CGFloat>(9, _font.pointSize - 2.5) weight:NSFontWeightRegular],
+             NSForegroundColorAttributeName: [NSColor.secondaryLabelColor colorWithAlphaComponent:0.95]};
+}
+
+static constexpr CGFloat kInlayChipPadding = 5;  // inside the chip, each side
+static constexpr CGFloat kInlayGap = 3;          // between the chip and the code
+
+/// The room a hint takes in its line: its text, the chip's padding and a gap.
+- (CGFloat)inlayWidthForHint:(const GWInlayHint &)hint {
+    NSString *label = @(hint.label.c_str());
+    CGFloat text = ceil([label sizeWithAttributes:[self inlayHintAttributes]].width);
+    return text + kInlayChipPadding * 2 + kInlayGap * (hint.padLeft ? 2 : 1) + (hint.padRight ? kInlayGap : 0);
+}
+
+/// Opens a gap in the line for each hint, without adding any characters: the character before it
+/// gets extra kerning, which moves everything after it, so every position in the line stays valid.
+- (void)applyInlayHintsToLine:(size_t)line text:(std::string_view)text attributed:(NSMutableAttributedString *)attributed layout:(LineLayout &)layout {
+    auto found = _inlayByLine.find(line);
+    if (found == _inlayByLine.end() || _wrapEnabled) {
+        return;
+    }
+    std::map<NSUInteger, CGFloat> gapAfterCharacter;
+    for (const GWInlayHint &hint : found->second) {
+        size_t column = hint.position.column;
+        if (column == 0 || column >= text.size()) {
+            continue;  // at the very start the gap has no character to hang on; at the end it is drawn outside the line
+        }
+        uint32_t unit = layout.unitForByte(column);
+        if (unit == 0 || unit > attributed.length) {
+            continue;
+        }
+        NSRange composed = [attributed.string rangeOfComposedCharacterSequenceAtIndex:unit - 1];
+        CGFloat width = [self inlayWidthForHint:hint];
+        gapAfterCharacter[composed.location] += width;
+        layout.gapBefore[unit] += width;
+    }
+    for (const auto &[location, width] : gapAfterCharacter) {
+        NSRange composed = [attributed.string rangeOfComposedCharacterSequenceAtIndex:location];
+        [attributed addAttribute:NSKernAttributeName value:@(width) range:composed];
+    }
+}
+
+/// The hints themselves, drawn as small chips in the gaps opened above.
+- (void)drawInlayHintsFromLine:(size_t)first toLine:(size_t)last {
+    if (_inlayByLine.empty() || _wrapEnabled) {
+        return;
+    }
+    const auto &buffer = _document->buffer();
+    NSDictionary *attributes = [self inlayHintAttributes];
+    for (size_t line = first; line <= last; ++line) {
+        auto found = _inlayByLine.find(line);
+        if (found == _inlayByLine.end() || [self isLineHidden:line] || [self rowsForLine:line] != 1) {
+            continue;
+        }
+        LineLayout *layout = [self layoutForLine:line];
+        size_t size = buffer.line(line).size();
+        // Hints that share a spot sit side by side, the first one furthest left.
+        std::map<size_t, CGFloat> usedAtColumn;
+        std::map<size_t, CGFloat> totalAtColumn;
+        for (const GWInlayHint &hint : found->second) {
+            if (hint.position.column > 0 && hint.position.column < size) {
+                totalAtColumn[hint.position.column] += [self inlayWidthForHint:hint];
+            }
+        }
+        for (const GWInlayHint &hint : found->second) {
+            size_t column = std::min(hint.position.column, size);
+            CGFloat width = [self inlayWidthForHint:hint];
+            CGFloat x;
+            if (column == 0) {
+                continue;
+            } else if (column >= size) {
+                x = self.textLeft + layout->offsetForUnit(layout->unitForByte(size)) + kInlayGap * (hint.padLeft ? 2 : 1);
+            } else {
+                CGFloat spot = self.textLeft + layout->offsetForUnit(layout->unitForByte(column));
+                x = spot - totalAtColumn[column] + usedAtColumn[column] + kInlayGap * (hint.padLeft ? 2 : 1);
+                usedAtColumn[column] += width;
+            }
+            NSString *label = @(hint.label.c_str());
+            NSSize textSize = [label sizeWithAttributes:attributes];
+            CGFloat top = [self yForLine:line];
+            NSRect chip = NSMakeRect(x, top + 4, textSize.width + kInlayChipPadding * 2, _lineHeight - 8);
+            [[NSColor.secondaryLabelColor colorWithAlphaComponent:0.14] setFill];
+            [[NSBezierPath bezierPathWithRoundedRect:chip xRadius:4 yRadius:4] fill];
+            [label drawAtPoint:NSMakePoint(x + kInlayChipPadding, top + (_lineHeight - textSize.height) / 2) withAttributes:attributes];
+        }
+    }
+}
+
+- (void)setDecorationGroups:(const std::map<std::string, std::vector<GWDecoration>> &)groups {
+    _decorationsByLine.clear();
+    constexpr size_t kMostLinesPerDecoration = 5000;
+    for (const auto &[key, decorations] : groups) {
+        for (const GWDecoration &decoration : decorations) {
+            gw::Range range = decoration.range.normalized();
+            size_t lastLine = std::min(range.end.line, range.start.line + kMostLinesPerDecoration);
+            for (size_t line = range.start.line; line <= lastLine; ++line) {
+                LineDecoration entry;
+                entry.look = decoration;
+                entry.startByte = line == range.start.line ? range.start.column : 0;
+                entry.toEndOfLine = line < range.end.line;
+                entry.endByte = line == range.end.line ? range.end.column : 0;
+                entry.showsNote = line == lastLine;
+                _decorationsByLine[line].push_back(std::move(entry));
+            }
+        }
+    }
+    _layouts.clear();  // text colours and styles are part of a laid-out line
+    self.needsDisplay = YES;
+    _minimap.needsDisplay = YES;
 }
 
 - (void)setLineTints:(std::vector<gw::Color>)tints {
@@ -1219,6 +1369,8 @@ static constexpr CGFloat kMiniChar = 1.25;
         layout.highlighted = true;
     }
     [self applySemanticTokensToLine:index text:attributed unitCount:string.length];
+    [self applyDecorationsToLine:index text:text attributed:attributed layout:layout];
+    [self applyInlayHintsToLine:index text:text attributed:attributed layout:layout];
     // Colour brackets by nesting depth (skipping strings and comments).
     bool bracketColors = GWServices.shared.settings.bracketPairColors;
     std::optional<int> depth;
@@ -1249,6 +1401,136 @@ static constexpr CGFloat kMiniChar = 1.25;
     }
     auto inserted = _layouts.insert_or_assign(index, std::move(layout));
     return &inserted.first->second;
+}
+
+/// Text colour and styling from extension decorations.
+- (void)applyDecorationsToLine:(size_t)line text:(std::string_view)text attributed:(NSMutableAttributedString *)attributed layout:(LineLayout &)layout {
+    auto found = _decorationsByLine.find(line);
+    if (found == _decorationsByLine.end()) {
+        return;
+    }
+    for (const LineDecoration &entry : found->second) {
+        const GWDecoration &look = entry.look;
+        bool changesText = look.foreground || look.bold || look.italic || look.underline || look.strikethrough;
+        if (!changesText) {
+            continue;
+        }
+        size_t startByte = std::min(entry.startByte, text.size());
+        size_t endByte = entry.toEndOfLine ? text.size() : std::min(entry.endByte, text.size());
+        if (endByte <= startByte) {
+            continue;
+        }
+        uint32_t start = layout.unitForByte(startByte);
+        uint32_t end = layout.unitForByte(endByte);
+        if (end <= start || end > attributed.length) {
+            continue;
+        }
+        NSRange range = NSMakeRange(start, end - start);
+        if (look.foreground) {
+            [attributed addAttribute:NSForegroundColorAttributeName value:GWColor(*look.foreground) range:range];
+        }
+        if (look.bold || look.italic) {
+            [attributed addAttribute:NSFontAttributeName value:[GWServices.shared editorFontBold:look.bold italic:look.italic] range:range];
+        }
+        if (look.underline) {
+            [attributed addAttribute:NSUnderlineStyleAttributeName value:@(NSUnderlineStyleSingle) range:range];
+        }
+        if (look.strikethrough) {
+            [attributed addAttribute:NSStrikethroughStyleAttributeName value:@(NSUnderlineStyleSingle) range:range];
+        }
+    }
+}
+
+/// Backgrounds and outlines from extension decorations, drawn behind the text.
+- (void)drawDecorationsFromLine:(size_t)first toLine:(size_t)last {
+    if (_decorationsByLine.empty()) {
+        return;
+    }
+    NSRect visible = self.visibleRect;
+    const auto &buffer = _document->buffer();
+    for (size_t line = first; line <= last; ++line) {
+        auto found = _decorationsByLine.find(line);
+        if (found == _decorationsByLine.end() || [self isLineHidden:line]) {
+            continue;
+        }
+        for (const LineDecoration &entry : found->second) {
+            const GWDecoration &look = entry.look;
+            if (look.background && look.wholeLine) {
+                [GWColor(*look.background) setFill];
+                NSRect band = NSMakeRect(NSMinX(visible) + 4, [self yForLine:line] + 1, NSWidth(visible) - 8, [self rowsForLine:line] * _lineHeight - 2);
+                [[NSBezierPath bezierPathWithRoundedRect:band xRadius:5 yRadius:5] fill];
+                continue;
+            }
+            if (!look.background && !look.border) {
+                continue;
+            }
+            size_t size = buffer.line(line).size();
+            size_t startByte = std::min(entry.startByte, size);
+            size_t endByte = entry.toEndOfLine ? size : std::min(entry.endByte, size);
+            if (endByte <= startByte) {
+                continue;
+            }
+            [self enumerateSegmentsInLine:line fromByte:startByte toByte:endByte continuesPastEnd:NO
+                                    block:^(CGFloat left, CGFloat right, CGFloat top) {
+                NSRect box = NSMakeRect(left - 1, top + 2, right - left + 2, self->_lineHeight - 4);
+                NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:box xRadius:3 yRadius:3];
+                if (look.background) {
+                    [GWColor(*look.background) setFill];
+                    [path fill];
+                }
+                if (look.border) {
+                    [GWColor(*look.border) setStroke];
+                    path.lineWidth = 1;
+                    [path stroke];
+                }
+            }];
+        }
+    }
+}
+
+/// Notes extensions put after the end of a line (an error message, a blame line…). A line that
+/// already shows a language server's message inline keeps that one, rather than two notes overlapping.
+- (void)drawDecorationNotesFromLine:(size_t)first toLine:(size_t)last {
+    if (_decorationsByLine.empty() || _wrapEnabled) {
+        return;
+    }
+    std::set<size_t> linesWithDiagnostics;
+    if (GWServices.shared.settings.inlineDiagnostics) {
+        for (const GWDiagnostic &diagnostic : _diagnostics) {
+            linesWithDiagnostics.insert(diagnostic.range.start.line);
+        }
+    }
+    for (size_t line = first; line <= last; ++line) {
+        auto found = _decorationsByLine.find(line);
+        if (found == _decorationsByLine.end() || [self isLineHidden:line] || [self rowsForLine:line] != 1 || linesWithDiagnostics.count(line) > 0) {
+            continue;
+        }
+        for (const LineDecoration &entry : found->second) {
+            if (!entry.showsNote || entry.look.afterText.empty()) {
+                continue;
+            }
+            NSString *note = @(entry.look.afterText.c_str());
+            NSRange newline = [note rangeOfString:@"\n"];
+            if (newline.location != NSNotFound) {
+                note = [note substringToIndex:newline.location];
+            }
+            LineLayout *layout = [self layoutForLine:line];
+            CGFloat endX = self.textLeft + layout->offsetInRow(0, static_cast<uint32_t>(layout->unitToByte.size() - 1));
+            CGFloat left = endX + _charWidth * 3;
+            CGFloat available = NSMaxX(self.visibleRect) - left - 24;
+            if (available < 60 || note.length == 0) {
+                continue;
+            }
+            NSColor *color = entry.look.afterColor ? GWColor(*entry.look.afterColor) : [NSColor.secondaryLabelColor colorWithAlphaComponent:0.9];
+            NSDictionary *attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:_font.pointSize - 1.5],
+                                         NSForegroundColorAttributeName: color};
+            NSSize size = [note sizeWithAttributes:attributes];
+            CGFloat top = [self yForLine:line];
+            NSRect textRect = NSMakeRect(left, top + (_lineHeight - size.height) / 2, std::min(size.width, available), size.height);
+            [note drawWithRect:textRect options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine attributes:attributes];
+            break;  // one note per line
+        }
+    }
 }
 
 /// Splits a long line into rows that fit the editor's width, each with its own CoreText line.
@@ -1611,6 +1893,7 @@ static constexpr CGFloat kMiniChar = 1.25;
         [self drawSectionDividersFromLine:first toLine:last];
     }
     [self drawHighlightsFromLine:first toLine:last];
+    [self drawDecorationsFromLine:first toLine:last];
     if (settings.highlightOccurrences) {
         [self drawOccurrencesFromLine:first toLine:last];
     }
@@ -1677,6 +1960,8 @@ static constexpr CGFloat kMiniChar = 1.25;
     }
 
     [self drawDiagnosticsFromLine:first toLine:last];
+    [self drawInlayHintsFromLine:first toLine:last];
+    [self drawDecorationNotesFromLine:first toLine:last];
 
     // The other cursors are plain bars (only the main one blinks).
     for (const gw::Selection &extra : _document->extraSelections) {
@@ -2921,6 +3206,13 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
         return gw::Selection{anchor, at};
     };
 
+    BOOL shiftHeld = (event.modifierFlags & NSEventModifierFlagShift) != 0;
+    BOOL optionHeld = (event.modifierFlags & NSEventModifierFlagOption) != 0;
+    if (shiftHeld && optionHeld && !inGutter) {
+        [self trackColumnSelectionFrom:point];  // ⇧⌥-drag: a rectangle of text
+        return;
+    }
+
     if (event.modifierFlags & NSEventModifierFlagShift) anchor = _document->selection.anchor;
     if (event.modifierFlags & NSEventModifierFlagOption) {
         // ⌥-click: keep what is selected and start another cursor here.
@@ -2943,6 +3235,56 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
         if (inGutter) dragPoint.x = NSMinX(self.visibleRect);
         _document->selection = selectForClick([self positionForPoint:dragPoint]);
         [self selectionDidChange];
+    }
+}
+
+/// Column (rectangular) selection: every row between the two points gets one selection
+/// running from the first point's x to the second point's x. Short rows get a selection that
+/// ends where the row does. The row under the pointer is the main selection.
+- (void)selectColumnFrom:(NSPoint)start to:(NSPoint)end {
+    long totalRows = _rowMap.empty() ? static_cast<long>(_document->buffer().lineCount())
+                                     : static_cast<long>(_rowMap.totalRows());
+    long startRow = static_cast<long>(std::floor(start.y / _lineHeight));
+    long endRow = static_cast<long>(std::floor(end.y / _lineHeight));
+    startRow = std::clamp(startRow, 0L, totalRows - 1);
+    endRow = std::clamp(endRow, 0L, totalRows - 1);
+
+    // Walk from the row where the drag started to the row where it is now, so the last
+    // selection made is the one under the pointer.
+    long step = endRow >= startRow ? 1 : -1;
+    std::vector<gw::Selection> selections;
+    size_t previousLine = static_cast<size_t>(-1);
+    for (long row = startRow;; row += step) {
+        double rowMiddle = row * _lineHeight + _lineHeight / 2;
+        gw::Position first = [self positionForPoint:NSMakePoint(start.x, rowMiddle)];
+        gw::Position second = [self positionForPoint:NSMakePoint(end.x, rowMiddle)];
+        bool sameLineAsBefore = first.line == previousLine;  // a wrapped line takes several rows
+        if (!sameLineAsBefore) {
+            selections.push_back(gw::Selection{first, second});
+            previousLine = first.line;
+        }
+        if (row == endRow) break;
+    }
+
+    _document->selection = selections.back();
+    _document->extraSelections.assign(selections.begin(), selections.end() - 1);
+    [self normalizeCursors];
+    [self selectionDidChange];
+    self.needsDisplay = YES;
+}
+
+- (void)trackColumnSelectionFrom:(NSPoint)start {
+    _document->preferredX.reset();
+    [self selectColumnFrom:start to:start];
+    while (true) {
+        NSEvent *next = [self.window nextEventMatchingMask:NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp
+                                                 untilDate:NSDate.distantFuture
+                                                    inMode:NSEventTrackingRunLoopMode
+                                                   dequeue:YES];
+        if (next.type == NSEventTypeLeftMouseUp) break;
+        [self autoscroll:next];
+        NSPoint dragPoint = [self convertPoint:next.locationInWindow fromView:nil];
+        [self selectColumnFrom:start to:dragPoint];
     }
 }
 

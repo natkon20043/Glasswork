@@ -255,11 +255,31 @@
     }
     NSString *name = item.url.lastPathComponent;
     cell.textField.stringValue = name;
-    NSString *symbol = item.isDirectory ? @"folder.fill" : GWSymbolForFile(name);
-    NSImageSymbolConfiguration *configuration = [NSImageSymbolConfiguration configurationWithPointSize:12 weight:NSFontWeightMedium];
-    cell.imageView.image = [[NSImage imageWithSystemSymbolName:symbol accessibilityDescription:nil] imageWithSymbolConfiguration:configuration];
-    cell.imageView.contentTintColor = item.isDirectory ? NSColor.controlAccentColor : GWColorForFile(name);
+    BOOL expanded = item.isDirectory && [outlineView isItemExpanded:item];
+    cell.imageView.image = GWFileIconImage(name, item.isDirectory, expanded, 14);
+    cell.imageView.contentTintColor = nil;  // the image carries its own colours
     return cell;
+}
+
+- (void)refreshIcons {
+    NSInteger rows = _outline.numberOfRows;
+    if (rows > 0) {
+        [_outline reloadDataForRowIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, static_cast<NSUInteger>(rows))]
+                            columnIndexes:[NSIndexSet indexSetWithIndex:0]];
+    }
+}
+
+// A folder's icon differs open and closed (in icon themes that say so).
+- (void)outlineViewItemDidExpand:(NSNotification *)notification {
+    id item = notification.userInfo[@"NSObject"];
+    NSInteger row = item ? [_outline rowForItem:item] : -1;
+    if (row >= 0) {
+        [_outline reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:static_cast<NSUInteger>(row)] columnIndexes:[NSIndexSet indexSetWithIndex:0]];
+    }
+}
+
+- (void)outlineViewItemDidCollapse:(NSNotification *)notification {
+    [self outlineViewItemDidExpand:notification];
 }
 
 // ---------------------------------------------------------------------------

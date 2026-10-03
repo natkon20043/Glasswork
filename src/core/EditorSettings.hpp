@@ -4,6 +4,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace gw {
 
@@ -24,6 +25,8 @@ struct EditorSettings {
     /// "regular" or "clear" glass for the sidebar, tab bar and status bar.
     std::string glassStyle = "regular";
     std::string theme = "Dark Modern";
+    std::vector<std::string> disabledExtensions;  // ids ("publisher.name") switched off
+    std::string iconTheme;  // id of the file icon theme ("" for the built-in symbols)
 
     bool highlightOccurrences = true;
     bool showMinimap = true;
@@ -36,6 +39,7 @@ struct EditorSettings {
     bool semanticHighlighting = true;
     /// Show each problem's message at the end of its line.
     bool inlineDiagnostics = true;
+    bool inlayHints = true;  // show a language server's inline hints (parameter names, inferred types)
     /// Run language servers (completion, problems, hover, rename…).
     bool languageServers = true;
 

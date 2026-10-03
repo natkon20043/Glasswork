@@ -23,6 +23,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Reloads everything (keeps expanded folders open).
 - (void)reload;
+/// Redraws every visible row's icon (the file icon theme changed).
+- (void)refreshIcons;
 /// Re-reads one folder that is already loaded, keeping what is expanded inside it.
 - (void)reloadDirectory:(NSURL *)folder;
 

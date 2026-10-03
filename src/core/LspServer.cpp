@@ -101,8 +101,48 @@ std::vector<Diagnostic> parseDiagnostics(const Json& array) {
 // ---------------------------------------------------------------------------
 // LanguageServer
 
-LanguageServer::LanguageServer(ServerSpec spec, std::string rootPath)
-    : spec_(std::move(spec)), rootPath_(std::move(rootPath)) {}
+namespace {
+
+/// The usual transport: the server is a child program talking over its standard input and output.
+class ProcessTransport : public ServerTransport {
+public:
+    ProcessTransport(std::vector<std::string> argv, std::string workingDirectory)
+        : argv_(std::move(argv)), workingDirectory_(std::move(workingDirectory)) {}
+
+    bool start(std::string* error) override {
+        ProcessOptions options;
+        options.workingDirectory = workingDirectory_;
+        process_.onOutput = [this](std::string_view bytes) {
+            if (onOutput) onOutput(bytes);
+        };
+        process_.onErrorOutput = [](std::string_view) {};  // servers log to stderr; nobody reads it
+        process_.onExit = [this](int code) {
+            if (onExit) onExit(code);
+        };
+        return process_.start(argv_, options, error);
+    }
+    bool write(std::string_view bytes) override { return process_.write(bytes); }
+    void closeInput() override { process_.closeInput(); }
+    void terminate() override { process_.terminate(); }
+    bool isRunning() const override { return process_.isRunning(); }
+
+private:
+    std::vector<std::string> argv_;
+    std::string workingDirectory_;
+    // Declared last so the reader thread is joined before the members its callbacks use go away.
+    ChildProcess process_;
+};
+
+}  // namespace
+
+std::unique_ptr<ServerTransport> makeProcessTransport(const ServerSpec& spec, const std::string& workingDirectory) {
+    return std::make_unique<ProcessTransport>(spec.command, workingDirectory);
+}
+
+LanguageServer::LanguageServer(ServerSpec spec, std::string rootPath, std::unique_ptr<ServerTransport> transport)
+    : spec_(std::move(spec)), rootPath_(std::move(rootPath)), transport_(std::move(transport)) {
+    liveness_->server = this;
+}
 
 LanguageServer::~LanguageServer() {
     // Callbacks that reach into the owner must not run during teardown.
@@ -111,26 +151,41 @@ LanguageServer::~LanguageServer() {
         onDiagnostics = nullptr;
         onReady = nullptr;
         onExit = nullptr;
+        onApplyEdit = nullptr;
+        onShowMessage = nullptr;
+        onShowMessageRequest = nullptr;
+        onLogMessage = nullptr;
+        onProgress = nullptr;
+        onConfiguration = nullptr;
     }
-    process_.terminate();
+    {
+        std::lock_guard<std::mutex> lock(liveness_->mutex);
+        liveness_->server = nullptr;  // a reply that arrives from now on is dropped
+    }
+    if (transport_) {
+        transport_->terminate();
+    }
 }
 
 bool LanguageServer::start(std::string* error) {
-    std::vector<std::string> argv = spec_.command;
-    std::string program = resolveProgram(argv.empty() ? std::string() : argv[0]);
-    if (program.empty()) {
-        if (error != nullptr) {
-            *error = spec_.name + " isn't installed. " + spec_.installHint;
+    if (!transport_) {
+        // A child program: find it first, so a missing server is reported with its install hint.
+        std::vector<std::string> argv = spec_.command;
+        std::string program = resolveProgram(argv.empty() ? std::string() : argv[0]);
+        if (program.empty()) {
+            if (error != nullptr) {
+                *error = spec_.name + " isn't installed. " + spec_.installHint;
+            }
+            return false;
         }
-        return false;
+        argv[0] = program;
+        ServerSpec resolved = spec_;
+        resolved.command = argv;
+        transport_ = makeProcessTransport(resolved, rootPath_);
     }
-    argv[0] = program;
 
-    ProcessOptions options;
-    options.workingDirectory = rootPath_;
-    process_.onOutput = [this](std::string_view bytes) { handleOutput(bytes); };
-    process_.onErrorOutput = [](std::string_view) {};  // servers log to stderr; nobody reads it
-    process_.onExit = [this](int code) {
+    transport_->onOutput = [this](std::string_view bytes) { handleOutput(bytes); };
+    transport_->onExit = [this](int code) {
         std::map<int, ResponseHandler> orphaned;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -149,7 +204,7 @@ bool LanguageServer::start(std::string* error) {
             exitHandler(code);
         }
     };
-    if (!process_.start(argv, options, error)) {
+    if (!transport_->start(error)) {
         return false;
     }
 
@@ -164,11 +219,36 @@ bool LanguageServer::start(std::string* error) {
           {"workspaceFolders", Json::array({{{"uri", fileURI(rootPath_)}, {"name", "workspace"}}})},
           {"capabilities",
            {{"general", {{"positionEncodings", Json::array({"utf-16"})}}},
-            {"workspace", {{"workspaceEdit", {{"documentChanges", true}}}, {"configuration", true}}},
+            {"window", {{"workDoneProgress", true}, {"showMessage", {{"messageActionItem", {{"additionalPropertiesSupport", false}}}}}}},
+            {"workspace",
+             {{"workspaceEdit", {{"documentChanges", true}}},
+              {"configuration", true},
+              {"didChangeConfiguration", {{"dynamicRegistration", false}}},
+              {"didChangeWatchedFiles", {{"dynamicRegistration", true}, {"relativePatternSupport", true}}},
+              {"applyEdit", static_cast<bool>(onApplyEdit)},
+              {"executeCommand", Json::object()}}},
             {"textDocument",
              {{"synchronization", {{"didSave", true}}},
+              {"inlayHint", {{"dynamicRegistration", false}}},
+              {"codeAction",
+               {{"isPreferredSupport", true},
+                {"dataSupport", true},
+                {"resolveSupport", {{"properties", Json::array({"edit"})}}},
+                {"codeActionLiteralSupport",
+                 {{"codeActionKind",
+                   {{"valueSet", Json::array({"", "quickfix", "refactor", "refactor.extract", "refactor.inline",
+                                              "refactor.rewrite", "source", "source.organizeImports"})}}}}}}},
               {"completion",
-               {{"completionItem", {{"snippetSupport", false}, {"documentationFormat", Json::array({"markdown", "plaintext"})}}}}},
+               {{"completionItem",
+                 {{"snippetSupport", true},
+                  {"documentationFormat", Json::array({"markdown", "plaintext"})},
+                  {"deprecatedSupport", true},
+                  {"tagSupport", {{"valueSet", Json::array({1})}}},
+                  {"preselectSupport", true},
+                  {"commitCharactersSupport", true},
+                  {"labelDetailsSupport", true},
+                  {"resolveSupport", {{"properties", Json::array({"documentation", "detail", "additionalTextEdits"})}}}}},
+                {"contextSupport", true}}},
               {"hover", {{"contentFormat", Json::array({"markdown", "plaintext"})}}},
               {"signatureHelp",
                {{"signatureInformation", {{"documentationFormat", Json::array({"markdown", "plaintext"})}}}}},
@@ -193,7 +273,7 @@ bool LanguageServer::start(std::string* error) {
         std::lock_guard<std::mutex> lock(mutex_);
         pending_[handshakeId] = [this](const Json& result, const std::string&) { finishHandshake(result); };
     }
-    process_.write(frameMessage(initialize));
+    transport_->write(frameMessage(initialize));
     return true;
 }
 
@@ -205,9 +285,9 @@ void LanguageServer::finishHandshake(const Json& result) {
         ready_ = true;
         queued.swap(waitingForReady_);
     }
-    process_.write(frameMessage({{"jsonrpc", "2.0"}, {"method", "initialized"}, {"params", Json::object()}}));
+    transport_->write(frameMessage({{"jsonrpc", "2.0"}, {"method", "initialized"}, {"params", Json::object()}}));
     for (Json& message : queued) {
-        process_.write(frameMessage(message));
+        transport_->write(frameMessage(message));
     }
     std::function<void()> readyHandler;
     {
@@ -226,15 +306,17 @@ void LanguageServer::stop() {
         wasRunning = ready_ && !stopping_;
         stopping_ = true;
     }
-    if (wasRunning) {
-        process_.write(frameMessage({{"jsonrpc", "2.0"}, {"id", nextId_.fetch_add(1)}, {"method", "shutdown"}}));
-        process_.write(frameMessage({{"jsonrpc", "2.0"}, {"method", "exit"}}));
-        process_.closeInput();
+    if (wasRunning && transport_) {
+        transport_->write(frameMessage({{"jsonrpc", "2.0"}, {"id", nextId_.fetch_add(1)}, {"method", "shutdown"}}));
+        transport_->write(frameMessage({{"jsonrpc", "2.0"}, {"method", "exit"}}));
+        transport_->closeInput();
     }
-    process_.terminate();
+    if (transport_) {
+        transport_->terminate();
+    }
 }
 
-bool LanguageServer::isRunning() const { return process_.isRunning(); }
+bool LanguageServer::isRunning() const { return transport_ != nullptr && transport_->isRunning(); }
 
 bool LanguageServer::isReady() const {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -248,14 +330,28 @@ Json LanguageServer::capabilities() const {
 
 bool LanguageServer::supports(const std::string& capability) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!capabilities_.is_object() || !capabilities_.contains(capability)) {
-        return false;
+
+    // "codeActionProvider.resolveProvider" looks inside the capability, one name at a time.
+    const Json* current = &capabilities_;
+    size_t nameStart = 0;
+    while (nameStart <= capability.size()) {
+        size_t dot = capability.find('.', nameStart);
+        size_t nameEnd = dot == std::string::npos ? capability.size() : dot;
+        std::string name = capability.substr(nameStart, nameEnd - nameStart);
+        if (!current->is_object() || !current->contains(name)) {
+            return false;
+        }
+        current = &(*current)[name];
+        if (dot == std::string::npos) {
+            break;
+        }
+        nameStart = dot + 1;
     }
-    const Json& value = capabilities_[capability];
-    if (value.is_boolean()) {
-        return value.get<bool>();
+
+    if (current->is_boolean()) {
+        return current->get<bool>();
     }
-    return !value.is_null();
+    return !current->is_null();
 }
 
 void LanguageServer::send(Json message) {
@@ -268,7 +364,7 @@ void LanguageServer::send(Json message) {
             return;
         }
     }
-    process_.write(frame);
+    transport_->write(frame);
 }
 
 void LanguageServer::didOpen(const std::string& uri, const std::string& languageId, uint64_t version, const std::string& text) {
@@ -282,6 +378,66 @@ void LanguageServer::didChange(const std::string& uri, uint64_t version, const s
           {"method", "textDocument/didChange"},
           {"params",
            {{"textDocument", {{"uri", uri}, {"version", version}}}, {"contentChanges", Json::array({{{"text", text}}})}}}});
+}
+
+void LanguageServer::didChangeIncremental(const std::string& uri, uint64_t version, const std::vector<SyncEdit>& edits) {
+    Json changes = Json::array();
+    for (const SyncEdit& edit : edits) {
+        Json start = {{"line", edit.startLine}, {"character", edit.startUnits}};
+        Json end = {{"line", edit.endLine}, {"character", edit.endUnits}};
+        changes.push_back({{"range", {{"start", start}, {"end", end}}}, {"text", edit.text}});
+    }
+    send({{"jsonrpc", "2.0"},
+          {"method", "textDocument/didChange"},
+          {"params", {{"textDocument", {{"uri", uri}, {"version", version}}}, {"contentChanges", changes}}}});
+}
+
+bool LanguageServer::wantsIncrementalSync() const {
+    constexpr int kIncremental = 2;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!capabilities_.is_object() || !capabilities_.contains("textDocumentSync")) {
+        return false;
+    }
+    const Json& sync = capabilities_["textDocumentSync"];
+    if (sync.is_number_integer()) {
+        return sync.get<int>() == kIncremental;
+    }
+    if (sync.is_object() && sync.contains("change") && sync["change"].is_number_integer()) {
+        return sync["change"].get<int>() == kIncremental;
+    }
+    return false;
+}
+
+bool LanguageServer::watchesFiles() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !watchers_.empty();
+}
+
+void LanguageServer::didChangeWatchedFiles(const std::vector<FileEvent>& events) {
+    Json changes = Json::array();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const FileEvent& event : events) {
+            int kindBit = event.type == 1 ? 1 : (event.type == 2 ? 2 : 4);
+            for (const Watcher& watcher : watchers_) {
+                if ((watcher.kinds & kindBit) == 0) continue;
+                std::string prefix = watcher.base + "/";
+                if (event.path.rfind(prefix, 0) != 0) continue;  // outside the folder the pattern is for
+                if (watcher.pattern->matches(event.path.substr(prefix.size()))) {
+                    changes.push_back({{"uri", fileURI(event.path)}, {"type", event.type}});
+                    break;
+                }
+            }
+        }
+    }
+    if (changes.empty()) {
+        return;
+    }
+    send({{"jsonrpc", "2.0"}, {"method", "workspace/didChangeWatchedFiles"}, {"params", {{"changes", changes}}}});
+}
+
+void LanguageServer::didChangeConfiguration(const Json& settings) {
+    send({{"jsonrpc", "2.0"}, {"method", "workspace/didChangeConfiguration"}, {"params", {{"settings", settings}}}});
 }
 
 void LanguageServer::didSave(const std::string& uri) {
@@ -332,6 +488,159 @@ void LanguageServer::handleOutput(std::string_view bytes) {
     }
 }
 
+std::string capabilityKeyForMethod(const std::string& method) {
+    static const std::map<std::string, std::string> keys = {
+        {"textDocument/completion", "completionProvider"},
+        {"textDocument/hover", "hoverProvider"},
+        {"textDocument/signatureHelp", "signatureHelpProvider"},
+        {"textDocument/definition", "definitionProvider"},
+        {"textDocument/declaration", "declarationProvider"},
+        {"textDocument/typeDefinition", "typeDefinitionProvider"},
+        {"textDocument/implementation", "implementationProvider"},
+        {"textDocument/references", "referencesProvider"},
+        {"textDocument/documentHighlight", "documentHighlightProvider"},
+        {"textDocument/documentSymbol", "documentSymbolProvider"},
+        {"workspace/symbol", "workspaceSymbolProvider"},
+        {"textDocument/codeAction", "codeActionProvider"},
+        {"textDocument/codeLens", "codeLensProvider"},
+        {"textDocument/documentLink", "documentLinkProvider"},
+        {"textDocument/formatting", "documentFormattingProvider"},
+        {"textDocument/rangeFormatting", "documentRangeFormattingProvider"},
+        {"textDocument/onTypeFormatting", "documentOnTypeFormattingProvider"},
+        {"textDocument/rename", "renameProvider"},
+        {"textDocument/foldingRange", "foldingRangeProvider"},
+        {"textDocument/selectionRange", "selectionRangeProvider"},
+        {"textDocument/semanticTokens", "semanticTokensProvider"},
+        {"textDocument/semanticTokens/full", "semanticTokensProvider"},
+        {"textDocument/inlayHint", "inlayHintProvider"},
+        {"workspace/executeCommand", "executeCommandProvider"},
+    };
+    auto found = keys.find(method);
+    return found == keys.end() ? std::string() : found->second;
+}
+
+namespace {
+
+/// Combines two registrations of the same capability: lists are joined, flags are or-ed
+/// (two completion providers with different trigger characters trigger on both sets).
+Json mergeCapability(const Json& existing, const Json& incoming) {
+    if (!existing.is_object() || !incoming.is_object()) {
+        return incoming.is_object() ? incoming : (existing.is_object() ? existing : Json(true));
+    }
+    Json merged = existing;
+    for (const auto& [key, value] : incoming.items()) {
+        if (!merged.contains(key)) {
+            merged[key] = value;
+        } else if (merged[key].is_array() && value.is_array()) {
+            for (const Json& item : value) {
+                bool present = false;
+                for (const Json& known : merged[key]) {
+                    if (known == item) {
+                        present = true;
+                        break;
+                    }
+                }
+                if (!present) {
+                    merged[key].push_back(item);
+                }
+            }
+        } else if (merged[key].is_boolean() && value.is_boolean()) {
+            merged[key] = merged[key].get<bool>() || value.get<bool>();
+        }
+    }
+    return merged;
+}
+
+}  // namespace
+
+/// `client/registerCapability`: the server adds features after the handshake (many do, and the
+/// extension host always does, since providers appear as extensions activate).
+void LanguageServer::registerCapabilities(const Json& registrations) {
+    if (!registrations.is_array()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!capabilities_.is_object()) {
+        capabilities_ = Json::object();
+    }
+    for (const Json& registration : registrations) {
+        std::string id = registration.value("id", "");
+        if (registration.value("method", "") == "workspace/didChangeWatchedFiles") {
+            // Not a capability: a list of file patterns the server wants to hear about.
+            Json options = registration.contains("registerOptions") ? registration["registerOptions"] : Json::object();
+            for (const Json& watcher : options.value("watchers", Json::array())) {
+                if (!watcher.is_object() || !watcher.contains("globPattern")) continue;
+                Watcher entry;
+                entry.registrationId = id;
+                entry.kinds = watcher.value("kind", 7);
+                entry.base = rootPath_;
+                const Json& glob = watcher["globPattern"];
+                std::string pattern;
+                if (glob.is_string()) {
+                    pattern = glob.get<std::string>();
+                } else if (glob.is_object() && glob.contains("pattern")) {
+                    pattern = glob.value("pattern", "");
+                    Json base = glob.contains("baseUri") ? glob["baseUri"] : Json();
+                    std::string baseUri = base.is_string() ? base.get<std::string>() : (base.is_object() ? base.value("uri", "") : "");
+                    if (!baseUri.empty()) entry.base = pathFromURI(baseUri);
+                }
+                if (pattern.empty()) continue;
+                entry.pattern = std::make_shared<GlobPattern>(pattern);
+                watchers_.push_back(std::move(entry));
+            }
+            continue;
+        }
+        std::string key = capabilityKeyForMethod(registration.value("method", ""));
+        if (key.empty()) {
+            continue;
+        }
+        Json options = registration.contains("registerOptions") ? registration["registerOptions"] : Json(true);
+        bool existedBefore = capabilities_.contains(key) && !dynamicOnlyKeys_.count(key);
+        if (!capabilities_.contains(key)) {
+            dynamicOnlyKeys_.insert(key);
+        }
+        Json current = capabilities_.contains(key) ? capabilities_[key] : Json();
+        capabilities_[key] = current.is_null() ? (options.is_object() ? options : Json(true)) : mergeCapability(current, options);
+        (void)existedBefore;
+        if (!id.empty()) {
+            registrationKeys_[id] = key;
+        }
+    }
+}
+
+void LanguageServer::unregisterCapabilities(const Json& unregisterations) {
+    if (!unregisterations.is_array()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const Json& item : unregisterations) {
+        std::string id = item.value("id", "");
+        watchers_.erase(std::remove_if(watchers_.begin(), watchers_.end(), [&](const Watcher& watcher) { return watcher.registrationId == id; }),
+                        watchers_.end());
+        auto found = registrationKeys_.find(id);
+        if (found == registrationKeys_.end()) {
+            continue;
+        }
+        std::string key = found->second;
+        registrationKeys_.erase(found);
+        bool stillRegistered = false;
+        for (const auto& [otherId, otherKey] : registrationKeys_) {
+            if (otherKey == key) {
+                stillRegistered = true;
+                break;
+            }
+        }
+        if (!stillRegistered && dynamicOnlyKeys_.count(key) > 0 && capabilities_.is_object()) {
+            capabilities_.erase(key);
+            dynamicOnlyKeys_.erase(key);
+        }
+    }
+}
+
+void LanguageServer::replyToApplyEdit(const Json& requestId, bool applied) {
+    transport_->write(frameMessage({{"jsonrpc", "2.0"}, {"id", requestId}, {"result", {{"applied", applied}}}}));
+}
+
 void LanguageServer::handleMessage(const Json& message) {
     trace("<-", message);
     bool hasMethod = message.contains("method");
@@ -363,24 +672,116 @@ void LanguageServer::handleMessage(const Json& message) {
         std::string method = message["method"].get<std::string>();
         Json result;
         if (method == "workspace/configuration") {
-            size_t count = message["params"].value("items", Json::array()).size();
-            result = Json::array();
-            for (size_t index = 0; index < count; ++index) {
-                result.push_back(Json());
+            std::function<Json(const std::string&, const std::string&)> provider;
+            {
+                std::lock_guard<std::mutex> lock(callbackMutex_);
+                provider = onConfiguration;
             }
+            result = Json::array();
+            for (const Json& item : message["params"].value("items", Json::array())) {
+                Json value;  // null: not set
+                if (provider && item.is_object()) {
+                    value = provider(item.value("section", ""), item.value("scopeUri", ""));
+                }
+                result.push_back(value);
+            }
+        } else if (method == "window/showMessageRequest") {
+            std::function<void(int, const std::string&, const std::vector<std::string>&, std::function<void(const std::string&)>)> handler;
+            {
+                std::lock_guard<std::mutex> lock(callbackMutex_);
+                handler = onShowMessageRequest;
+            }
+            if (handler) {
+                std::vector<std::string> actions;
+                for (const Json& action : message["params"].value("actions", Json::array())) {
+                    actions.push_back(action.value("title", ""));
+                }
+                std::shared_ptr<Liveness> liveness = liveness_;
+                Json requestId = message["id"];
+                Json originalActions = message["params"].value("actions", Json::array());
+                handler(message["params"].value("type", 3), message["params"].value("message", ""), actions,
+                        [liveness, requestId, originalActions](const std::string& chosen) {
+                            std::lock_guard<std::mutex> lock(liveness->mutex);
+                            if (liveness->server == nullptr) {
+                                return;
+                            }
+                            Json answer;  // null: dismissed
+                            for (const Json& action : originalActions) {
+                                if (action.value("title", "") == chosen && !chosen.empty()) {
+                                    answer = action;
+                                }
+                            }
+                            liveness->server->transport_->write(
+                                frameMessage({{"jsonrpc", "2.0"}, {"id", requestId}, {"result", answer}}));
+                        });
+                return;
+            }
+            result = Json();
         } else if (method == "workspace/applyEdit") {
+            std::function<void(const Json&, std::function<void(bool)>)> handler;
+            {
+                std::lock_guard<std::mutex> lock(callbackMutex_);
+                handler = onApplyEdit;
+            }
+            if (handler) {
+                // The answer goes out whenever the app has made (or refused) the changes.
+                std::shared_ptr<Liveness> liveness = liveness_;
+                Json requestId = message["id"];
+                handler(message["params"].value("edit", Json::object()), [liveness, requestId](bool applied) {
+                    std::lock_guard<std::mutex> lock(liveness->mutex);
+                    if (liveness->server != nullptr) {
+                        liveness->server->replyToApplyEdit(requestId, applied);
+                    }
+                });
+                return;
+            }
             result = {{"applied", false}};
-        } else if (method == "window/workDoneProgress/create" || method == "client/registerCapability" ||
-                   method == "client/unregisterCapability" || method == "window/showMessageRequest") {
+        } else if (method == "client/registerCapability") {
+            registerCapabilities(message["params"].value("registrations", Json::array()));
+            result = Json();
+        } else if (method == "client/unregisterCapability") {
+            unregisterCapabilities(message["params"].value("unregisterations", Json::array()));
+            result = Json();
+        } else if (method == "window/workDoneProgress/create") {
             result = Json();
         } else {
-            process_.write(frameMessage({{"jsonrpc", "2.0"},
+            transport_->write(frameMessage({{"jsonrpc", "2.0"},
                                          {"id", message["id"]},
                                          {"error", {{"code", -32601}, {"message", "Not supported by this client"}}}}));
             return;
         }
-        process_.write(frameMessage({{"jsonrpc", "2.0"}, {"id", message["id"]}, {"result", result}}));
+        transport_->write(frameMessage({{"jsonrpc", "2.0"}, {"id", message["id"]}, {"result", result}}));
         return;
+    }
+
+    if (hasMethod) {
+        std::string method = message["method"].get<std::string>();
+        const Json parameters = message.contains("params") ? message["params"] : Json::object();
+        if (method == "window/showMessage" || method == "window/logMessage") {
+            std::function<void(int, const std::string&)> handler;
+            {
+                std::lock_guard<std::mutex> lock(callbackMutex_);
+                handler = method == "window/showMessage" ? onShowMessage : onLogMessage;
+            }
+            if (handler) {
+                handler(parameters.value("type", 3), parameters.value("message", ""));
+            }
+            return;
+        }
+        if (method == "$/progress") {
+            std::function<void(const std::string&, const std::string&, const std::string&, const std::string&, int)> handler;
+            {
+                std::lock_guard<std::mutex> lock(callbackMutex_);
+                handler = onProgress;
+            }
+            if (handler && parameters.contains("value") && parameters["value"].is_object()) {
+                const Json& value = parameters["value"];
+                std::string token = parameters.contains("token") ? (parameters["token"].is_string() ? parameters["token"].get<std::string>() : parameters["token"].dump()) : "";
+                int percentage = value.contains("percentage") && value["percentage"].is_number() ? value["percentage"].get<int>() : -1;
+                handler(token, value.value("kind", ""), value.value("title", ""), value.value("message", ""), percentage);
+            }
+            return;
+        }
     }
 
     if (hasMethod && message["method"] == "textDocument/publishDiagnostics") {

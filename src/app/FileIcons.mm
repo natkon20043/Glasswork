@@ -1,5 +1,7 @@
 #import "FileIcons.h"
 
+#import "Services.h"
+
 namespace {
 
 NSColor *Hex(uint32_t rgb) {
@@ -67,4 +69,51 @@ NSAttributedString *GWSymbolString(NSString *symbol, NSColor *color, CGFloat poi
     NSMutableAttributedString *string = [[NSAttributedString attributedStringWithAttachment:attachment] mutableCopy];
     [string addAttribute:NSBaselineOffsetAttributeName value:@(-1.5) range:NSMakeRange(0, string.length)];
     return string;
+}
+
+// MARK: Themed icons
+
+namespace {
+
+/// Loaded SVGs by path, so scrolling a long folder doesn't read the same file again and again.
+NSImage *ThemeImageAtPath(const std::filesystem::path &path) {
+    static NSMutableDictionary<NSString *, NSImage *> *cache = [NSMutableDictionary dictionary];
+    NSString *key = @(path.c_str());
+    NSImage *image = cache[key];
+    if (image == nil) {
+        image = [[NSImage alloc] initWithContentsOfFile:key];
+        cache[key] = image ?: (NSImage *)NSNull.null;
+    }
+    return [image isKindOfClass:NSImage.class] ? image : nil;
+}
+
+}  // namespace
+
+NSImage *GWFileIconImage(NSString *filename, BOOL directory, BOOL expanded, CGFloat size) {
+    GWServices *services = GWServices.shared;
+    if (const gw::IconTheme *theme = services.iconTheme) {
+        bool light = !services.theme.isDark();
+        std::filesystem::path icon;
+        if (directory) {
+            icon = theme->iconForFolder(filename.UTF8String, expanded, false, light);
+        } else {
+            std::string language = services.extensions.languageForFile(filename.UTF8String).value_or("");
+            icon = theme->iconForFile(filename.UTF8String, language, light);
+        }
+        if (!icon.empty()) {
+            if (NSImage *image = ThemeImageAtPath(icon)) {
+                NSImage *sized = [image copy];
+                // An SVG's own size is whatever its author chose; draw them all at the same height.
+                CGFloat aspect = image.size.height > 0 ? image.size.width / image.size.height : 1;
+                sized.size = NSMakeSize(size * aspect, size);
+                return sized;
+            }
+        }
+    }
+    NSString *symbol = directory ? @"folder.fill" : GWSymbolForFile(filename);
+    NSColor *tint = directory ? NSColor.controlAccentColor : GWColorForFile(filename);
+    NSImageSymbolConfiguration *configuration = [[NSImageSymbolConfiguration configurationWithPointSize:size - 1 weight:NSFontWeightMedium]
+        configurationByApplyingConfiguration:[NSImageSymbolConfiguration configurationWithPaletteColors:@[tint]]];
+    NSImage *image = [[NSImage imageWithSystemSymbolName:symbol accessibilityDescription:nil] imageWithSymbolConfiguration:configuration];
+    return image ?: [NSImage imageWithSystemSymbolName:@"doc.fill" accessibilityDescription:nil];
 }

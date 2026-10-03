@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Document.hpp"
+#include "Glob.hpp"
 #include "LanguageServer.hpp"
 #include "Process.hpp"
 
@@ -9,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -61,13 +64,40 @@ struct Diagnostic {
 
 std::vector<Diagnostic> parseDiagnostics(const Json& array);
 
+/// Where a language server's bytes travel. Usually a child program's pipes (ProcessTransport),
+/// but a server can also live inside the extension host (see ExtensionHost), which is why the
+/// server code talks to this interface instead of to a process.
+class ServerTransport {
+public:
+    virtual ~ServerTransport() = default;
+
+    /// Bytes from the server, in whatever chunks arrive; set before start().
+    std::function<void(std::string_view)> onOutput;
+    /// The server went away (exit code, or 128 + signal); set before start().
+    std::function<void(int)> onExit;
+
+    virtual bool start(std::string* error) = 0;
+    virtual bool write(std::string_view bytes) = 0;
+    virtual void closeInput() = 0;
+    virtual void terminate() = 0;
+    virtual bool isRunning() const = 0;
+};
+
+/// Runs `spec.command` as a child process with `workingDirectory` as its folder.
+std::unique_ptr<ServerTransport> makeProcessTransport(const ServerSpec& spec, const std::string& workingDirectory);
+
+/// The capability a protocol method switches on ("textDocument/hover" → "hoverProvider"), or an
+/// empty string for methods that have none (resolve requests, notifications).
+std::string capabilityKeyForMethod(const std::string& method);
+
 /// A running language server: starts the program, does the handshake, keeps documents in sync
 /// and answers requests. Everything is asynchronous — callbacks arrive on a background thread.
 class LanguageServer {
 public:
     using ResponseHandler = std::function<void(const Json& result, const std::string& error)>;
 
-    LanguageServer(ServerSpec spec, std::string rootPath);
+    /// With no `transport`, the server runs as the child program the spec names.
+    LanguageServer(ServerSpec spec, std::string rootPath, std::unique_ptr<ServerTransport> transport = nullptr);
     ~LanguageServer();
     LanguageServer(const LanguageServer&) = delete;
     LanguageServer& operator=(const LanguageServer&) = delete;
@@ -88,7 +118,27 @@ public:
     // Document synchronisation. Sent as soon as the server is ready.
     void didOpen(const std::string& uri, const std::string& languageId, uint64_t version, const std::string& text);
     void didChange(const std::string& uri, uint64_t version, const std::string& text);
+    /// Tells the server only what changed. Only for servers where wantsIncrementalSync() is true.
+    void didChangeIncremental(const std::string& uri, uint64_t version, const std::vector<SyncEdit>& edits);
+    /// True if the server asked to be sent changes rather than the whole file each time
+    /// (`textDocumentSync` 2, or an object whose `change` is 2).
+    bool wantsIncrementalSync() const;
     void didSave(const std::string& uri);
+    /// Tells the server the settings changed (`workspace/didChangeConfiguration`). Servers that
+    /// ask for their settings with `workspace/configuration` re-ask when they get this.
+    void didChangeConfiguration(const Json& settings);
+
+    /// A change to a file on disk, as `workspace/didChangeWatchedFiles` describes it.
+    struct FileEvent {
+        std::string path;  // absolute
+        int type = 2;      // 1 created, 2 changed, 3 deleted
+    };
+    /// True once the server has registered interest in file changes (most do, for build files and
+    /// sources the user has not opened).
+    bool watchesFiles() const;
+    /// Sends the server the events that match the files it asked to hear about; nothing is sent
+    /// if none do. Safe to call with events for files the server doesn't care about.
+    void didChangeWatchedFiles(const std::vector<FileEvent>& events);
     void didClose(const std::string& uri);
 
     /// Sends a request. The handler runs on the server's reader thread with the result, or with an
@@ -104,6 +154,29 @@ public:
     /// The server became ready, or ended (after which `isRunning()` is false).
     std::function<void()> onReady;
     std::function<void(int exitCode)> onExit;
+    /// `window/showMessage`: the server wants the user to see something. `type` is 1 error, 2 warning,
+    /// 3 info, 4 log.
+    std::function<void(int type, const std::string& message)> onShowMessage;
+    /// `window/showMessageRequest`: a message with buttons. Call `reply` with the chosen button's
+    /// title, or an empty string if it was dismissed. Without this handler it is dismissed.
+    std::function<void(int type, const std::string& message, const std::vector<std::string>& actions,
+                       std::function<void(const std::string& chosen)> reply)>
+        onShowMessageRequest;
+    /// `window/logMessage`: output for the server's log.
+    std::function<void(int type, const std::string& message)> onLogMessage;
+    /// `$/progress`: work the server reports ("Indexing", with a message and percentage). `kind` is
+    /// "begin", "report" or "end"; `token` tells reports apart.
+    std::function<void(const std::string& token, const std::string& kind, const std::string& title,
+                       const std::string& message, int percentage)>
+        onProgress;
+    /// `workspace/configuration`: the server asks for a setting by section ("python.analysis").
+    /// Return the value, or null for "not set".
+    std::function<Json(const std::string& section, const std::string& scopeUri)> onConfiguration;
+    /// The server asks us to change files (`workspace/applyEdit`), usually while running a command
+    /// such as a refactoring. `edit` is a WorkspaceEdit. Call `reply(true)` once the changes are
+    /// made (or `reply(false)` if they could not be), from any thread, any time later. Without
+    /// this handler such requests are refused.
+    std::function<void(const Json& edit, std::function<void(bool applied)> reply)> onApplyEdit;
 
 private:
     void handleOutput(std::string_view bytes);
@@ -112,8 +185,18 @@ private:
     void send(Json message);
     void finishHandshake(const Json& result);
 
+    /// Lets a late reply (made after the server is gone) find out that it is too late.
+    struct Liveness {
+        std::mutex mutex;
+        LanguageServer* server = nullptr;
+    };
+    void replyToApplyEdit(const Json& requestId, bool applied);
+    void registerCapabilities(const Json& registrations);
+    void unregisterCapabilities(const Json& unregisterations);
+
     ServerSpec spec_;
     std::string rootPath_;
+    std::shared_ptr<Liveness> liveness_ = std::make_shared<Liveness>();
 
     mutable std::mutex mutex_;
     std::mutex callbackMutex_;  // guards clearing the callbacks during teardown
@@ -125,9 +208,23 @@ private:
     std::map<int, ResponseHandler> pending_;
     std::vector<Json> waitingForReady_;  // messages queued during the handshake
 
+    /// What the server asked to hear about (`workspace/didChangeWatchedFiles` registrations).
+    struct Watcher {
+        std::string registrationId;
+        std::shared_ptr<GlobPattern> pattern;
+        std::string base;  // the folder the pattern is relative to
+        int kinds = 7;     // 1 create | 2 change | 4 delete
+    };
+    std::vector<Watcher> watchers_;
+
+    /// Capabilities added by `client/registerCapability`: registration id → capability key.
+    std::map<std::string, std::string> registrationKeys_;
+    /// Capability keys the server had no static answer for, so unregistering may remove them.
+    std::set<std::string> dynamicOnlyKeys_;
+
     // Declared last so it is destroyed first: its reader thread is joined before any of the
     // members above (which its callbacks use) go away.
-    ChildProcess process_;
+    std::unique_ptr<ServerTransport> transport_;
 };
 
 }  // namespace gw::lsp

@@ -252,6 +252,7 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
         [self item:@"About Glasswork" action:@selector(orderFrontStandardAboutPanel:) key:@""],
         NSMenuItem.separatorItem,
         [self item:@"Settings…" action:@selector(openSettings:) key:@","],
+        [self item:@"Keyboard Shortcuts (JSON)…" action:@selector(openKeybindings:) key:@""],
         NSMenuItem.separatorItem,
         [self item:@"Hide Glasswork" action:@selector(hide:) key:@"h"],
         [self item:@"Hide Others" action:@selector(hideOtherApplications:) key:@"h" modifiers:command | option],
@@ -433,8 +434,14 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
     opacity.delegate = self;
 
     NSMenu *extensions = [self submenu:@"Extensions" items:@[
-        [self item:@"Install from Open VSX…" action:@selector(installExtension:) key:@"x" modifiers:command | shift],
+        [self item:@"Search Extensions…" action:@selector(searchExtensions:) key:@"x" modifiers:command | shift],
+        [self item:@"Manage Extensions…" action:@selector(manageExtensions:) key:@""],
+        [self item:@"Install by ID…" action:@selector(installExtension:) key:@""],
         [self item:@"Browse Open VSX" action:@selector(browseOpenVSX:) key:@""],
+        NSMenuItem.separatorItem,
+        [self item:@"Select File Icon Theme…" action:@selector(selectIconTheme:) key:@""],
+        [self item:@"Show Extension Output…" action:@selector(showExtensionLogs:) key:@""],
+        [self item:@"Restart Extensions" action:@selector(restartExtensionHost:) key:@""],
         NSMenuItem.separatorItem,
     ] parent:main];
     for (NSMenuItem *item in extensions.itemArray) item.target = self;

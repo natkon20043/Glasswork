@@ -5,6 +5,7 @@
 
 #import <objc/runtime.h>
 
+#include "CompletionRank.hpp"
 #include "Fuzzy.hpp"
 
 #include <algorithm>
@@ -93,6 +94,10 @@ void iconForKind(NSInteger kind, NSString **symbol, NSColor **color) {
     NSScrollView *_scroll;
     NSRect _anchorRect;
     NSString *_prefix;
+    std::vector<gw::CompletionCandidate> _candidates;  // one per item in _allItems, for ranking
+    gw::CompletionHistory _history;
+    GWSuggestionPanel *_docPanel;
+    NSViewController *_docController;
 }
 
 - (instancetype)init {
@@ -155,6 +160,30 @@ void iconForKind(NSInteger kind, NSString **symbol, NSColor **color) {
 - (void)setItems:(NSArray<GWSuggestion *> *)items {
     _allItems = [items copy];
     _shownItems = _allItems;
+    _candidates.clear();
+    _candidates.reserve(_allItems.count);
+    for (GWSuggestion *item in _allItems) {
+        gw::CompletionCandidate candidate;
+        candidate.label = item.label.UTF8String ?: "";
+        candidate.filterText = item.filterText.UTF8String ?: "";
+        candidate.sortText = item.sortText.UTF8String ?: "";
+        candidate.kind = static_cast<int>(item.kind);
+        candidate.deprecated = item.deprecated;
+        candidate.preselect = item.preselect;
+        _candidates.push_back(std::move(candidate));
+    }
+}
+
+- (void)recordAccepted:(GWSuggestion *)item {
+    _history.accepted(item.label.UTF8String ?: "", static_cast<int>(item.kind));
+}
+
+- (GWSuggestion *)selectedSuggestion {
+    NSInteger row = _table.selectedRow;
+    if (!self.visible || row < 0 || row >= static_cast<NSInteger>(_shownItems.count)) {
+        return nil;
+    }
+    return _shownItems[static_cast<NSUInteger>(row)];
 }
 
 - (void)showBelowScreenRect:(NSRect)rect parentWindow:(NSWindow *)window {
@@ -171,6 +200,7 @@ void iconForKind(NSInteger kind, NSString **symbol, NSColor **color) {
 - (void)hide {
     [_panel.parentWindow removeChildWindow:_panel];
     [_panel orderOut:nil];
+    [self hideDocumentation];
     _prefix = @"";
 }
 
@@ -181,6 +211,7 @@ void iconForKind(NSInteger kind, NSString **symbol, NSColor **color) {
         [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
         [_table scrollRowToVisible:0];
     }
+    [self selectionMayHaveChanged];
     NSUInteger rows = std::min(_shownItems.count, kMaxVisibleRows);
     CGFloat height = rows * kRowHeight + 8;
     NSRect frame = NSMakeRect(NSMinX(_anchorRect) - 30, NSMinY(_anchorRect) - height - 2, kPopupWidth, height);
@@ -198,34 +229,16 @@ void iconForKind(NSInteger kind, NSString **symbol, NSColor **color) {
 - (void)filterWithPrefix:(NSString *)prefix {
     _prefix = [prefix copy];
     std::string query = prefix.UTF8String ?: "";
-    if (query.empty()) {
-        _shownItems = _allItems;
-    } else {
-        // Keep what matches the letters typed. Names that start with them come first; within
-        // each group the server's own order (its idea of relevance) is kept.
-        NSMutableArray<GWSuggestion *> *prefixMatches = [NSMutableArray array];
-        NSMutableArray<GWSuggestion *> *otherMatches = [NSMutableArray array];
-        for (GWSuggestion *item in _allItems) {
-            std::string candidate = item.filterText.UTF8String ?: "";
-            std::optional<int> score = gw::fuzzyScore(query, candidate);
-            if (!score) {
-                continue;
-            }
-            BOOL startsWithQuery = [item.filterText rangeOfString:prefix options:NSCaseInsensitiveSearch | NSAnchoredSearch].location != NSNotFound;
-            [(startsWithQuery ? prefixMatches : otherMatches) addObject:item];
-        }
-        NSComparator bySortText = ^NSComparisonResult(GWSuggestion *a, GWSuggestion *b) {
-            return [a.sortText compare:b.sortText];
-        };
-        [prefixMatches sortUsingComparator:bySortText];
-        [otherMatches sortUsingComparator:bySortText];
-        NSMutableArray<GWSuggestion *> *sorted = [NSMutableArray arrayWithArray:prefixMatches];
-        [sorted addObjectsFromArray:otherMatches];
-        if (sorted.count > 200) {
-            [sorted removeObjectsInRange:NSMakeRange(200, sorted.count - 200)];
-        }
-        _shownItems = sorted;
+
+    // Ranking lives in the core (CompletionRank): fuzzy match, start-of-name and case bonuses,
+    // recently used names and deprecation, with the server's sort text breaking ties.
+    std::vector<size_t> order = gw::rankCompletions(query, _candidates, _history);
+    NSMutableArray<GWSuggestion *> *sorted = [NSMutableArray arrayWithCapacity:order.size()];
+    for (size_t index : order) {
+        [sorted addObject:_allItems[index]];
     }
+    _shownItems = sorted;
+
     if (_shownItems.count == 0) {
         [self hide];
         return;
@@ -253,6 +266,110 @@ void iconForKind(NSInteger kind, NSString **symbol, NSColor **color) {
     }
     [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:static_cast<NSUInteger>(next)] byExtendingSelection:NO];
     [_table scrollRowToVisible:next];
+    [self selectionMayHaveChanged];
+}
+
+// ---- Documentation beside the list
+
+- (void)selectionMayHaveChanged {
+    GWSuggestion *item = self.selectedSuggestion;
+    if (item == nil) {
+        [self hideDocumentation];
+        return;
+    }
+    [self showDocumentationFor:item];
+    if (self.onSelectionChanged) {
+        self.onSelectionChanged(item);
+    }
+}
+
+- (void)documentationChangedForSuggestion:(GWSuggestion *)item {
+    if (item == self.selectedSuggestion) {
+        [self showDocumentationFor:item];
+    }
+}
+
+- (void)hideDocumentation {
+    [_docPanel.parentWindow removeChildWindow:_docPanel];
+    [_docPanel orderOut:nil];
+}
+
+/// A second panel to the right of the list (or the left, when there is no room): the item's
+/// signature, then its documentation. Hidden when the server has nothing to say about it.
+- (void)showDocumentationFor:(GWSuggestion *)item {
+    NSString *signature = item.detail ?: @"";
+    NSString *documentation = item.documentation ?: @"";
+    if (signature.length == 0 && documentation.length == 0) {
+        [self hideDocumentation];
+        return;
+    }
+    constexpr CGFloat kDocWidth = 380;
+    if (documentation.length > 3000) {
+        documentation = [[documentation substringToIndex:3000] stringByAppendingString:@"\n\n…"];
+    }
+
+    NSStackView *stack = [NSStackView stackViewWithViews:@[]];
+    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    stack.alignment = NSLayoutAttributeLeading;
+    stack.spacing = 8;
+    stack.edgeInsets = NSEdgeInsetsMake(12, 14, 12, 14);
+    if (signature.length > 0) {
+        NSTextField *label = [NSTextField wrappingLabelWithString:signature];
+        label.font = [NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular];
+        label.preferredMaxLayoutWidth = kDocWidth - 28;
+        [stack addArrangedSubview:label];
+    }
+    if (documentation.length > 0) {
+        GWMarkdownView *body = [GWMarkdownView new];
+        body.fontSize = 12.5;
+        [body setMarkdown:documentation];
+        body.translatesAutoresizingMaskIntoConstraints = NO;
+        [stack addArrangedSubview:body];
+        [body.widthAnchor constraintEqualToConstant:kDocWidth - 28].active = YES;
+    }
+    [stack layoutSubtreeIfNeeded];
+    NSSize fitting = stack.fittingSize;
+    NSSize size = NSMakeSize(kDocWidth, std::min<CGFloat>(std::max<CGFloat>(fitting.height, 40), 320));
+
+    if (_docPanel == nil) {
+        _docPanel = [[GWSuggestionPanel alloc] initWithContentRect:NSMakeRect(0, 0, kDocWidth, 100)
+                                                         styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+                                                           backing:NSBackingStoreBuffered
+                                                             defer:YES];
+        _docPanel.opaque = NO;
+        _docPanel.backgroundColor = NSColor.clearColor;
+        _docPanel.hasShadow = NO;
+        _docPanel.level = NSFloatingWindowLevel;
+        _docPanel.hidesOnDeactivate = YES;
+        _docPanel.releasedWhenClosed = NO;
+    }
+    GWShadowedGlass *container = [[GWShadowedGlass alloc] initWithCornerRadius:12];
+    NSScrollView *scroll = [NSScrollView new];
+    scroll.documentView = stack;
+    scroll.drawsBackground = NO;
+    scroll.hasVerticalScroller = YES;
+    scroll.autohidesScrollers = YES;
+    scroll.scrollerStyle = NSScrollerStyleOverlay;
+    container.glass.contentView = scroll;
+    _docPanel.contentView = container;
+
+    // Beside the list, level with its top.
+    CGFloat pad = GWShadowedGlass.padding;
+    NSRect listGlass = NSInsetRect(_panel.frame, pad, pad);
+    NSScreen *screen = _panel.parentWindow.screen ?: NSScreen.mainScreen;
+    NSRect visible = screen.visibleFrame;
+    CGFloat x = NSMaxX(listGlass) + 6;
+    if (x + size.width > NSMaxX(visible) - 8) {
+        x = NSMinX(listGlass) - 6 - size.width;
+    }
+    CGFloat y = NSMaxY(listGlass) - size.height;
+    NSRect frame = NSMakeRect(x, std::max(y, NSMinY(visible) + 8), size.width, size.height);
+    [_docPanel setFrame:NSInsetRect(frame, -pad, -pad) display:YES];
+    if (_docPanel.parentWindow != _panel.parentWindow) {
+        [_docPanel.parentWindow removeChildWindow:_docPanel];
+        [_panel.parentWindow addChildWindow:_docPanel ordered:NSWindowAbove];
+    }
+    [_docPanel orderFront:nil];
 }
 
 - (BOOL)handleSelector:(SEL)selector {
@@ -339,7 +456,13 @@ void iconForKind(NSInteger kind, NSString **symbol, NSColor **color) {
     NSImageSymbolConfiguration *configuration = [NSImageSymbolConfiguration configurationWithPointSize:13 weight:NSFontWeightMedium];
     cell.imageView.image = [[NSImage imageWithSystemSymbolName:symbol accessibilityDescription:nil] imageWithSymbolConfiguration:configuration];
     cell.imageView.contentTintColor = color;
-    cell.textField.stringValue = item.label;
+    if (item.deprecated) {
+        NSDictionary *struck = @{NSStrikethroughStyleAttributeName: @(NSUnderlineStyleSingle),
+                                 NSForegroundColorAttributeName: NSColor.secondaryLabelColor};
+        cell.textField.attributedStringValue = [[NSAttributedString alloc] initWithString:item.label attributes:struck];
+    } else {
+        cell.textField.stringValue = item.label;
+    }
     NSTextField *detail = objc_getAssociatedObject(cell, "detail");
     detail.stringValue = item.detail ?: @"";
     return cell;

@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <set>
 #include <sstream>
 
 NSNotificationName const GWThemeDidChangeNotification = @"GWThemeDidChange";
@@ -75,6 +76,9 @@ std::optional<std::string> readFile(NSURL *url) {
 @implementation GWServices {
     std::unique_ptr<gw::ExtensionManager> _extensions;
     std::unique_ptr<gw::GrammarRegistry> _grammars;
+    std::optional<gw::IconTheme> _iconTheme;
+    NSString *_iconThemeLabel;
+    std::vector<std::string> _appliedDisabledExtensions;  // what the extension manager was last given
     std::unique_ptr<gw::Theme> _theme;
     std::unique_ptr<gw::Stylist> _stylist;
     gw::EditorSettings _settings;
@@ -99,10 +103,16 @@ std::optional<std::string> readFile(NSURL *url) {
     NSURL *support = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory
                                                           inDomains:NSUserDomainMask].firstObject;
     NSURL *folder = [support URLByAppendingPathComponent:@"Glasswork" isDirectory:YES];
+    // For tests: keep settings and extensions in another folder, away from the real ones.
+    const char *overrideFolder = getenv("GLASSWORK_SUPPORT_DIR");
+    if (overrideFolder != nullptr) {
+        folder = [NSURL fileURLWithPath:@(overrideFolder) isDirectory:YES];
+    }
     [NSFileManager.defaultManager createDirectoryAtURL:folder withIntermediateDirectories:YES attributes:nil error:nil];
     _settingsURL = [folder URLByAppendingPathComponent:@"settings.json"];
 
     _extensions = std::make_unique<gw::ExtensionManager>(std::filesystem::path(folder.path.UTF8String) / "extensions");
+    _extensions->setUserSnippetsDirectory(std::filesystem::path(folder.path.UTF8String) / "snippets");
     _grammars = std::make_unique<gw::GrammarRegistry>(*_extensions);
     _theme = gw::Theme::parse(kFallbackTheme, true);
     _themeLabel = @"Glasswork Dark";
@@ -177,9 +187,16 @@ std::optional<std::string> readFile(NSURL *url) {
 }
 
 - (void)settingsDidChangeFromTheme:(const std::string &)previousTheme {
+    if (_settings.disabledExtensions != _appliedDisabledExtensions) {
+        // Extensions were switched on or off: read them again with the new list.
+        _appliedDisabledExtensions = _settings.disabledExtensions;
+        _extensions->setDisabled(std::set<std::string>(_appliedDisabledExtensions.begin(), _appliedDisabledExtensions.end()));
+        [self extensionsChanged];
+    }
     if (_settings.theme != previousTheme) {
         [self loadTheme:@(_settings.theme.c_str())];  // posts the theme notification itself
     }
+    [self reloadIconTheme];
     [self rebuildStylist];
     [NSNotificationCenter.defaultCenter postNotificationName:GWEditorSettingsDidChangeNotification object:self];
 }
@@ -220,8 +237,14 @@ std::optional<std::string> readFile(NSURL *url) {
 // MARK: Extensions
 
 - (void)bootstrap {
+    _appliedDisabledExtensions = _settings.disabledExtensions;
+    _extensions->setDisabled(std::set<std::string>(_appliedDisabledExtensions.begin(), _appliedDisabledExtensions.end()));
     _extensions->scan();
+    [self reloadIconTheme];
     [self applySavedTheme];
+    if (getenv("GLASSWORK_NO_DEFAULT_EXTENSIONS") != nullptr) {
+        return;  // tests choose which extensions exist
+    }
 
     NSMutableArray<NSString *> *missing = [NSMutableArray array];
     for (NSString *identifier in DefaultExtensions()) {
@@ -253,6 +276,7 @@ std::optional<std::string> readFile(NSURL *url) {
 - (void)extensionsChanged {
     _extensions->scan();
     _grammars->clear();
+    [self reloadIconTheme];
     [NSNotificationCenter.defaultCenter postNotificationName:GWExtensionsDidChangeNotification object:self];
 }
 
@@ -274,6 +298,70 @@ std::optional<std::string> readFile(NSURL *url) {
 - (void)uninstallExtension:(NSString *)identifier {
     _extensions->uninstall(identifier.UTF8String);
     [self extensionsChanged];
+}
+
+- (void)setExtension:(NSString *)identifier enabled:(BOOL)enabled {
+    std::string id = identifier.UTF8String;
+    [self updateSettings:^(gw::EditorSettings &settings) {
+        auto &list = settings.disabledExtensions;
+        list.erase(std::remove(list.begin(), list.end(), id), list.end());
+        if (!enabled) {
+            list.push_back(id);
+        }
+    }];
+}
+
+- (BOOL)isExtensionDisabled:(NSString *)identifier {
+    const auto &list = _settings.disabledExtensions;
+    return std::find(list.begin(), list.end(), std::string(identifier.UTF8String)) != list.end();
+}
+
+// MARK: File icon themes
+
+/// Loads the icon theme the settings name, if an installed extension provides it.
+- (void)reloadIconTheme {
+    _iconTheme.reset();
+    _iconThemeLabel = nil;
+    if (_settings.iconTheme.empty()) {
+        return;
+    }
+    for (const gw::IconThemeInfo &info : _extensions->iconThemes()) {
+        if (info.id == _settings.iconTheme || info.label == _settings.iconTheme) {
+            _iconTheme = gw::IconTheme::load(info.path);
+            if (_iconTheme) {
+                _iconThemeLabel = @(info.label.c_str());
+            }
+            return;
+        }
+    }
+}
+
+- (const gw::IconTheme *)iconTheme {
+    return _iconTheme ? &*_iconTheme : nullptr;
+}
+
+- (NSString *)iconThemeLabel {
+    return _iconThemeLabel;
+}
+
+- (NSArray<NSString *> *)iconThemeLabels {
+    NSMutableArray<NSString *> *labels = [NSMutableArray array];
+    for (const gw::IconThemeInfo &info : _extensions->iconThemes()) {
+        [labels addObject:@(info.label.c_str())];
+    }
+    return labels;
+}
+
+- (void)selectIconThemeLabel:(NSString *)label {
+    std::string chosen;
+    for (const gw::IconThemeInfo &info : _extensions->iconThemes()) {
+        if (label != nil && info.label == label.UTF8String) {
+            chosen = info.id;
+        }
+    }
+    [self updateSettings:^(gw::EditorSettings &settings) {
+        settings.iconTheme = chosen;
+    }];
 }
 
 // MARK: Themes

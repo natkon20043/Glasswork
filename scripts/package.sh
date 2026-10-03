@@ -23,12 +23,28 @@ echo "Running the tests..."
 cmake --build "$build_folder"
 ctest --test-dir "$build_folder" --output-on-failure
 
+app="$build_folder/app.noindex/Glasswork.app"
+
+# VS Code extensions run in a Node.js process. Ship one inside the app so extensions work on
+# a Mac without Node installed (the app prefers it to any Node on the PATH). Skip with
+# GLASSWORK_BUNDLE_NODE=0, or point GLASSWORK_NODE_BINARY at the Node to use.
+if [ "${GLASSWORK_BUNDLE_NODE:-1}" != "0" ]; then
+    node_binary="${GLASSWORK_NODE_BINARY:-$(command -v node || true)}"
+    if [ -n "$node_binary" ] && [ -x "$node_binary" ]; then
+        echo "Bundling Node.js from $node_binary ($("$node_binary" --version))..."
+        cp "$node_binary" "$app/Contents/Resources/node"
+        codesign --force --sign - "$app/Contents/Resources/node"
+    else
+        echo "No Node.js found to bundle: extensions will need Node installed on the Mac."
+    fi
+fi
+
 echo "Signing (ad hoc)..."
-codesign --force --deep --sign - "$build_folder/app.noindex/Glasswork.app"
+codesign --force --deep --sign - "$app"
 
 echo "Zipping..."
 mkdir -p "$dist_folder"
 rm -f "$dist_folder/Glasswork.zip"
-ditto -c -k --keepParent "$build_folder/app.noindex/Glasswork.app" "$dist_folder/Glasswork.zip"
+ditto -c -k --keepParent "$app" "$dist_folder/Glasswork.zip"
 
 echo "Done: $dist_folder/Glasswork.zip"

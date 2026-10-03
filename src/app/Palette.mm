@@ -48,6 +48,8 @@
 @end
 
 @implementation GWPalette {
+    void (^_dismissHandler)(void);
+    BOOL _itemWasRun;
     GWPalettePanel *_panel;
     NSTextField *_search;
     NSTableView *_table;
@@ -177,8 +179,29 @@ static const NSUInteger kVisibleRows = 10;
 }
 
 - (void)close {
+    BOOL wasShowing = self.isShowing;
     [_panel.parentWindow removeChildWindow:_panel];
     [_panel orderOut:nil];
+    void (^handler)(void) = _dismissHandler;
+    _dismissHandler = nil;
+    if (handler != nil && wasShowing && !_itemWasRun) {
+        dispatch_async(dispatch_get_main_queue(), handler);
+    }
+}
+
+- (void)showOverWindow:(NSWindow *)window
+           placeholder:(NSString *)placeholder
+              provider:(NSArray<GWPaletteItem *> * (^)(NSString *query))provider
+             onDismiss:(void (^)(void))onDismiss {
+    // A newer question replaces an older one that is still showing: the older one is dismissed.
+    void (^previous)(void) = _dismissHandler;
+    _dismissHandler = nil;
+    if (previous != nil && !_itemWasRun) {
+        dispatch_async(dispatch_get_main_queue(), previous);
+    }
+    [self showOverWindow:window placeholder:placeholder provider:provider];
+    _dismissHandler = [onDismiss copy];
+    _itemWasRun = NO;
 }
 
 - (void)refresh {
@@ -246,6 +269,7 @@ static const NSUInteger kVisibleRows = 10;
         return;
     }
     GWPaletteItem *item = _items[static_cast<NSUInteger>(row)];
+    _itemWasRun = YES;
     [self close];
     // Run once the palette is gone, so commands reach the editor window, not the palette.
     if (item.run) {
@@ -273,7 +297,9 @@ static const NSUInteger kVisibleRows = 10;
         cell.identifier = @"row";
         NSImageView *icon = [NSImageView new];
         NSTextField *text = [NSTextField labelWithString:@""];
-        text.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        text.lineBreakMode = NSLineBreakByTruncatingTail;
+        text.maximumNumberOfLines = 1;   // a long subtitle is cut off, never wrapped into the next row
+        text.usesSingleLineMode = YES;
         shortcut = [NSTextField labelWithString:@""];
         shortcut.identifier = @"shortcut";
         shortcut.textColor = NSColor.secondaryLabelColor;

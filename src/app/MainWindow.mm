@@ -13,6 +13,10 @@
 #import "SearchPanel.h"
 #import "Services.h"
 #import "LanguageService.h"
+#import "ExtensionHostService.h"
+#import "KeybindingService.h"
+
+#include "CssColor.hpp"
 #import "MarkdownView.h"
 #import "CompletionPopup.h"
 #import "DebugPanel.h"
@@ -77,6 +81,9 @@ struct Tab {
     Kind kind = Kind::Text;
     uint64_t sourceIdentifier = 0;  // the Markdown tab a preview follows
     std::string imagePath;
+
+    /// Looks extensions gave to stretches of this file (`setDecorations`), by decoration type.
+    std::map<std::string, std::vector<GWDecoration>> decorations;
 };
 
 /// Colours for the lines of a unified diff: green for added, red for removed.
@@ -442,6 +449,9 @@ bool looksBinary(const char *path) {
 
 // MARK: - Window controller
 
+@interface GWMainWindowController () <GWExtensionHostDelegate>
+@end
+
 @implementation GWMainWindowController {
     GWRootView *_root;
     GWEditorCard *_card;
@@ -475,9 +485,19 @@ bool looksBinary(const char *path) {
     GWMarkdownView *_previewMarkdown;
     NSImageView *_previewImage;
     GWLanguageService *_language;
+    GWExtensionHostService *_extensionHost;
+    NSString *_extensionStatusMessage;  // a line an extension (or the host) put in the status bar
+    NSMutableDictionary<NSString *, NSString *> *_serverProgress;  // what language servers are busy with
+    BOOL _editorStateScheduled;
+    GWKeybindingService *_keybindings;
+    id _keyMonitor;
+    NSMutableDictionary<NSString *, NSString *> *_extensionContextKeys;  // set by extensions with setContext
     GWSuggestionPopup *_suggestions;
     NSUInteger _hoverToken;
+    NSUInteger _highlightToken;
     NSUInteger _suggestionToken;
+    BOOL _suggestionsIncomplete;      // the server's list is partial: ask again as more is typed
+    NSUInteger _suggestionResolveToken;  // answers to older resolve requests are ignored
     gw::Position _suggestionWordStart;
 
     // Sidebar modes: files, source control, search.
@@ -927,7 +947,13 @@ bool looksBinary(const char *path) {
 
 // MARK: Theme
 
-- (void)themeChanged:(NSNotification *)notification { [self applyTheme]; }
+- (void)themeChanged:(NSNotification *)notification {
+    [_fileTree refreshIcons];  // the file icon theme may have changed
+    _tabBar.needsDisplay = YES;
+    [self applyTheme];
+    [_extensionHost settingsDidChange];
+    [_language settingsDidChange:[_extensionHost allSettings]];
+}
 
 - (void)applyTheme {
     GWServices *services = GWServices.shared;
@@ -976,6 +1002,11 @@ bool looksBinary(const char *path) {
 }
 
 - (void)extensionsChanged:(NSNotification *)notification {
+    // Extensions came or went: the host starts again, with the new set, the next time it is needed.
+    [_extensionHost extensionsDidChange];
+    [_extensionHost shutdown];
+    [_extensionHost startIfExtensionsWantToRun];
+    [_keybindings reload];  // they may have brought, or taken, keybindings
     // Grammars were reloaded, so every tab must pick up fresh grammar pointers now.
     for (auto &tab : _tabs) [self configureLanguageForTab:*tab];
     if (_selected >= 0) [self showTab:_selected];
@@ -1023,10 +1054,30 @@ bool looksBinary(const char *path) {
     tab->highlighter = std::make_unique<gw::Highlighter>();
     gw::Highlighter *highlighter = tab->highlighter.get();
     gw::Document *raw = tab->document.get();
+    Tab *tabPointer = tab.get();  // the tab lives exactly as long as its document, which owns this callback
     __weak GWEditorView *editor = _editorView;
-    tab->document->onChange = [highlighter, editor, raw](const gw::Change &change) {
+    __weak GWMainWindowController *weakSelf = self;
+    tab->document->onChange = [highlighter, editor, raw, tabPointer, weakSelf](const gw::Change &change) {
         highlighter->didChange(change);
         [editor document:raw changed:change];
+        // Extension decorations move with the lines they are on, until the extension sends fresh ones.
+        if (change.lineDelta != 0 && !tabPointer->decorations.empty()) {
+            auto shiftLine = [&](size_t line) {
+                if (line <= change.firstLine) return line;
+                long moved = static_cast<long>(line) + change.lineDelta;
+                return static_cast<size_t>(std::max(moved, static_cast<long>(change.firstLine)));
+            };
+            for (auto &[key, decorations] : tabPointer->decorations) {
+                for (GWDecoration &decoration : decorations) {
+                    decoration.range.start.line = shiftLine(decoration.range.start.line);
+                    decoration.range.end.line = shiftLine(decoration.range.end.line);
+                }
+            }
+            GWMainWindowController *strongSelf = weakSelf;
+            if (strongSelf != nil && [strongSelf currentTab] == tabPointer) {
+                [editor setDecorationGroups:tabPointer->decorations];
+            }
+        }
     };
     [self configureLanguageForTab:*tab];
     [self loadEditorConfigForTab:*tab];
@@ -1046,9 +1097,12 @@ bool looksBinary(const char *path) {
 - (void)showTab:(NSInteger)index {
     if (Tab *current = [self currentTab]) current->scroll = _card.scrollView.contentView.bounds.origin;
     _selected = index;
+    [self scheduleEditorStateForExtensions];
     Tab *tab = [self currentTab];
     if (tab) {
         [_editorView setDocument:tab->document.get() highlighter:tab->highlighter.get() configuration:tab->configuration];
+        [_editorView setDecorationGroups:tab->decorations];
+        [_editorView setInlayHints:[_language inlayHintsForDocument:tab->document.get()]];
         [self applyEditorConfigOfTab:*tab];
         [_editorView setLineChanges:tab->changes];
         [_editorView setLineTints:tab->lineTints];
@@ -1459,12 +1513,100 @@ static bool isImageExtension(NSString *extension) {
 
 - (void)caretMoved {
     [self dropSuggestionsIfCaretLeftWord];
+    [self scheduleEditorStateForExtensions];
     [self updateStatus];
     [self updateBreadcrumb];
+    [self scheduleDocumentHighlight];
     [GWColorInspector.shared refresh];
     if (_root.chatVisible) {
         [_chat contextDidChange];
     }
+}
+
+// MARK: Document highlight (other uses of the symbol under the caret)
+
+static NSString *const kHighlightGroup = @"gw.documentHighlight";
+
+/// Drops the marks (if any are showing) so stale ones never sit on the wrong symbol.
+- (void)clearDocumentHighlightInTab:(Tab *)tab {
+    if (tab->decorations.erase(kHighlightGroup.UTF8String) > 0 && tab == [self currentTab]) {
+        [_editorView setDecorationGroups:tab->decorations];
+    }
+}
+
+/// After the caret rests for a moment, asks the server where else the symbol at the caret is
+/// used and marks those places softly (writes a little stronger than reads).
+- (void)scheduleDocumentHighlight {
+    ++_highlightToken;
+    Tab *tab = [self currentTab];
+    if (tab == nullptr) {
+        return;
+    }
+    [self clearDocumentHighlightInTab:tab];
+    gw::Document *document = tab->document.get();
+    if (!document->path() || !document->selection.empty()
+        || ![_language serverSupports:@"documentHighlightProvider" forDocument:document]) {
+        return;
+    }
+    gw::Position caret = document->selection.caret;
+    std::string_view line = document->buffer().line(caret.line);
+    bool onWord = caret.column < line.size() && gw::isWordByte(static_cast<unsigned char>(line[caret.column]));
+    bool afterWord = caret.column > 0 && caret.column <= line.size() && gw::isWordByte(static_cast<unsigned char>(line[caret.column - 1]));
+    if (!onWord && !afterWord) {
+        return;
+    }
+    NSUInteger token = _highlightToken;
+    __weak GWMainWindowController *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil || token != strongSelf->_highlightToken) {
+            return;
+        }
+        [strongSelf requestDocumentHighlightAt:caret token:token];
+    });
+}
+
+- (void)requestDocumentHighlightAt:(gw::Position)caret token:(NSUInteger)token {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr) {
+        return;
+    }
+    gw::Document *document = tab->document.get();
+    Tab *tabPointer = tab;
+    __weak GWMainWindowController *weakSelf = self;
+    [_language request:@"textDocument/documentHighlight"
+                params:[_language positionParamsForDocument:document position:caret]
+              document:document
+    requireSameVersion:YES
+            completion:^(const gw::lsp::Json &result, NSString *error) {
+        GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil || token != strongSelf->_highlightToken || tabPointer != [strongSelf currentTab]
+            || error != nil || !result.is_array()) {
+            return;
+        }
+        const gw::TextBuffer &buffer = document->buffer();
+        std::vector<GWDecoration> marks;
+        for (const gw::lsp::Json &item : result) {
+            if (!item.is_object() || !item.contains("range")) {
+                continue;
+            }
+            GWDecoration mark;
+            try {
+                mark.range = {gw::lsp::position(buffer, item["range"].at("start")), gw::lsp::position(buffer, item["range"].at("end"))};
+            } catch (const std::exception &) {
+                continue;
+            }
+            bool isWrite = item.value("kind", 1) == 3;
+            mark.background = gw::parseCssColor(isWrite ? "rgba(255, 190, 90, 0.30)" : "rgba(140, 170, 255, 0.24)");
+            marks.push_back(std::move(mark));
+        }
+        // A single mark is just the word under the caret: nothing worth showing.
+        if (marks.size() < 2) {
+            return;
+        }
+        tabPointer->decorations[kHighlightGroup.UTF8String] = std::move(marks);
+        [strongSelf->_editorView setDecorationGroups:tabPointer->decorations];
+    }];
 }
 
 // MARK: Sections (Xcode-style jump bar)
@@ -1795,6 +1937,10 @@ static bool isImageExtension(NSString *extension) {
             scored.emplace_back(match->score, item);
         }
 
+        for (GWPaletteItem *item in [self->_extensionHost commandItemsForQuery:query]) {
+            scored.emplace_back(0, item);  // extension commands follow the editor's own
+        }
+
         std::stable_sort(scored.begin(), scored.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
         NSMutableArray<GWPaletteItem *> *items = [NSMutableArray array];
         for (const auto &[score, item] : scored) {
@@ -1869,16 +2015,694 @@ static bool isImageExtension(NSString *extension) {
     if (serverStatus.length > 0) {
         [left addObject:segment(@"bolt.horizontal.circle", muted, serverStatus)];
     }
+    for (GWExtensionStatusItem *item in _extensionHost.statusItems) {
+        if (item.alignment != 2 && item.text.length > 0) {
+            [left addObject:segment(@"puzzlepiece.extension", muted, item.text)];
+        }
+    }
+    if (_extensionStatusMessage.length > 0) {
+        [left addObject:segment(@"puzzlepiece.extension", NSColor.controlAccentColor, _extensionStatusMessage)];
+    }
+    for (NSString *token in [_serverProgress.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        [left addObject:segment(@"hourglass", NSColor.controlAccentColor, _serverProgress[token])];
+    }
     _statusLeft.attributedStringValue = join(left);
 
     NSString *name = document.path() ? @(document.path()->filename().c_str()) : @"untitled";
     NSString *language = @(services.extensions.languageName(document.languageId).c_str());
-    _statusRight.attributedStringValue = join(@[
-        segment(GWSymbolForFile(name), GWColorForFile(name), language),
-        segment(@"arrow.turn.down.left", muted, document.buffer().usesCRLF() ? @"CRLF" : @"LF"),
-        segment(@"textformat", muted, @"UTF-8"),
-        theme,
-    ]);
+    NSMutableArray<NSAttributedString *> *extensionItems = [NSMutableArray array];
+    for (GWExtensionStatusItem *item in _extensionHost.statusItems) {
+        if (item.alignment == 2 && item.text.length > 0) {
+            [extensionItems addObject:segment(@"puzzlepiece.extension", muted, item.text)];
+        }
+    }
+    NSMutableArray<NSAttributedString *> *right = [NSMutableArray array];
+    if (extensionItems.count > 0) {
+        [right addObject:join(extensionItems)];  // only when there is something: an empty piece still gets a separator
+    }
+    [right addObject:segment(GWSymbolForFile(name), GWColorForFile(name), language)];
+    [right addObject:segment(@"arrow.turn.down.left", muted, document.buffer().usesCRLF() ? @"CRLF" : @"LF")];
+    [right addObject:segment(@"textformat", muted, @"UTF-8")];
+    [right addObject:theme];
+    _statusRight.attributedStringValue = join(right);
+}
+
+// MARK: - Keybindings
+
+/// Shortcuts from extensions and keybindings.json, handled before the menu sees the key.
+- (void)setUpKeybindings {
+    __weak GWMainWindowController *weakSelf = self;
+    _keybindings = [GWKeybindingService new];
+    _keybindings.contextProvider = ^NSDictionary<NSString *, NSString *> *{
+        return [weakSelf keybindingContext];
+    };
+    _keybindings.runCommand = ^(NSString *command, id arguments) {
+        [weakSelf runCommandById:command arguments:arguments];
+    };
+    _keybindings.showStatus = ^(NSString *text) {
+        [weakSelf hostShowStatusMessage:text seconds:text.length > 0 ? 3 : 0];
+    };
+    [_keybindings reload];
+    _keyMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent *(NSEvent *event) {
+        GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil || event.window != strongSelf.window) {
+            return event;
+        }
+        return [strongSelf->_keybindings handleKeyDown:event] ? nil : event;
+    }];
+}
+
+/// What `when` clauses can ask about: where the focus is, and the file in front.
+- (NSDictionary<NSString *, NSString *> *)keybindingContext {
+    NSMutableDictionary<NSString *, NSString *> *context = [NSMutableDictionary dictionary];
+    NSResponder *responder = self.window.firstResponder;
+    BOOL inEditor = responder == _editorView;
+    BOOL inTerminal = [responder isKindOfClass:NSClassFromString(@"GWTerminalView")];
+    BOOL inTextInput = [responder isKindOfClass:NSTextView.class] && !inEditor;
+    context[@"isMac"] = @"true";
+    context[@"editorTextFocus"] = inEditor ? @"true" : @"false";
+    context[@"editorFocus"] = inEditor ? @"true" : @"false";
+    context[@"terminalFocus"] = inTerminal ? @"true" : @"false";
+    context[@"inputFocus"] = inTextInput ? @"true" : @"false";
+    context[@"textInputFocus"] = (inEditor || inTextInput) ? @"true" : @"false";
+    if (Tab *tab = [self currentTab]) {
+        context[@"editorLangId"] = @(tab->document->languageId.c_str());
+        context[@"editorReadonly"] = tab->document->readOnly ? @"true" : @"false";
+        context[@"editorHasSelection"] = tab->document->selection.empty() ? @"false" : @"true";
+        context[@"editorHasMultipleSelections"] = tab->document->extraSelections.empty() ? @"false" : @"true";
+        if (tab->document->path()) {
+            context[@"resourceExtname"] = @(tab->document->path()->extension().c_str());
+            context[@"resourceFilename"] = @(tab->document->path()->filename().c_str());
+        }
+    }
+    // Context keys that extensions set with the `setContext` command.
+    for (NSString *key in _extensionContextKeys) {
+        context[key] = _extensionContextKeys[key];
+    }
+    return context;
+}
+
+/// Runs a command by id: an editor action we have an equivalent for, else an extension's command.
+- (void)runCommandById:(NSString *)command arguments:(id)arguments {
+    NSString *actionName = [GWKeybindingService actionNameForCommand:command];
+    if (actionName != nil) {
+        [NSApp sendAction:NSSelectorFromString(actionName) to:nil from:self];
+        return;
+    }
+    NSArray *argumentList = arguments == nil ? nil : (arguments == NSNull.null ? nil : @[arguments]);
+    [_extensionHost executeCommand:command arguments:argumentList];
+}
+
+- (IBAction)openKeybindings:(id)sender {
+    [_keybindings createUserFileIfNeeded];
+    [self openURL:_keybindings.userFileURL];
+}
+
+// MARK: - Telling extensions about the editor
+
+/// Several things change at once (switching tabs moves the document, the caret and the status), so
+/// the report is made once, after they have settled.
+- (void)scheduleEditorStateForExtensions {
+    if (_editorStateScheduled) {
+        return;
+    }
+    _editorStateScheduled = YES;
+    __weak GWMainWindowController *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        strongSelf->_editorStateScheduled = NO;
+        [strongSelf sendEditorStateToExtensions];
+    });
+}
+
+/// The front text file and its cursors, in the units extensions use (UTF-16 columns).
+- (void)sendEditorStateToExtensions {
+    using Json = gw::lsp::Json;
+    Tab *tab = [self currentTab];
+    bool isTextFile = tab != nullptr && tab->kind == Tab::Kind::Text && !tab->isVirtual && tab->document->path().has_value();
+    if (!isTextFile) {
+        [_extensionHost setEditorState:Json()];
+        return;
+    }
+    const gw::Document &document = *tab->document;
+    const gw::TextBuffer &buffer = document.buffer();
+    auto selectionJson = [&](const gw::Selection &selection) {
+        return Json{{"anchor", gw::lsp::position(buffer, selection.anchor)}, {"active", gw::lsp::position(buffer, selection.caret)}};
+    };
+    Json selections = Json::array();
+    selections.push_back(selectionJson(document.selection));
+    for (const gw::Selection &extra : document.extraSelections) {
+        selections.push_back(selectionJson(extra));
+    }
+    Json state = {
+        {"uri", gw::lsp::fileURI(document.path()->string())},
+        {"selections", selections},
+        {"tabSize", GWServices.shared.settings.tabSize},
+        {"insertSpaces", true},
+    };
+    [_extensionHost setEditorState:state];
+}
+
+- (Tab *)tabForPath:(NSString *)path {
+    for (auto &tab : _tabs) {
+        if (tab->document->path() && tab->document->path()->string() == path.UTF8String) {
+            return tab.get();
+        }
+    }
+    return nullptr;
+}
+
+- (void)hostSetContextKey:(NSString *)key value:(NSString *)value {
+    if (_extensionContextKeys == nil) {
+        _extensionContextKeys = [NSMutableDictionary dictionary];
+    }
+    _extensionContextKeys[key] = value;
+}
+
+- (void)hostSetSelections:(const gw::lsp::Json &)selections forPath:(NSString *)path {
+    Tab *tab = [self tabForPath:path];
+    if (tab == nullptr || tab != [self currentTab] || !selections.is_array() || selections.empty()) {
+        return;
+    }
+    const gw::TextBuffer &buffer = tab->document->buffer();
+    std::vector<gw::Selection> parsed;
+    for (const gw::lsp::Json &item : selections) {
+        try {
+            parsed.push_back(gw::Selection{gw::lsp::position(buffer, item.at("anchor")), gw::lsp::position(buffer, item.at("active"))});
+        } catch (const std::exception &) {
+        }
+    }
+    if (parsed.empty()) {
+        return;
+    }
+    tab->document->selection = parsed.front();
+    tab->document->extraSelections.assign(parsed.begin() + 1, parsed.end());
+    [_editorView selectionDidChange];
+    [_editorView jumpToPosition:parsed.front().caret];
+}
+
+/// A colour from decoration options: CSS text, or a ThemeColor ({id}) looked up in the theme.
+- (std::optional<gw::Color>)decorationColorFrom:(const gw::lsp::Json &)value {
+    if (value.is_string()) {
+        return gw::parseCssColor(value.get<std::string>());
+    }
+    if (value.is_object() && value.contains("id") && value["id"].is_string()) {
+        NSColor *themed = [GWServices.shared color:@(value["id"].get<std::string>().c_str()) fallback:nil];
+        if (themed != nil) {
+            return GWColorFromNSColor(themed);
+        }
+    }
+    return std::nullopt;
+}
+
+/// `options` with the dark or light variant (and a range's own render options) laid over it.
+static gw::lsp::Json MergedDecorationOptions(const gw::lsp::Json &base, const gw::lsp::Json &override, bool dark) {
+    using Json = gw::lsp::Json;
+    Json merged = base.is_object() ? base : Json::object();
+    auto layer = [&](const Json &top) {
+        if (!top.is_object()) return;
+        for (const auto &[key, value] : top.items()) {
+            if (key == "light" || key == "dark") continue;
+            if (key == "after" && value.is_object() && merged.contains("after") && merged["after"].is_object()) {
+                for (const auto &[innerKey, innerValue] : value.items()) merged["after"][innerKey] = innerValue;
+            } else {
+                merged[key] = value;
+            }
+        }
+        const char *variant = dark ? "dark" : "light";
+        if (top.contains(variant) && top[variant].is_object()) {
+            for (const auto &[key, value] : top[variant].items()) merged[key] = value;
+        }
+    };
+    layer(base);
+    layer(override);
+    return merged;
+}
+
+- (void)hostSetDecorationsForPath:(NSString *)path key:(NSString *)key options:(const gw::lsp::Json &)options ranges:(const gw::lsp::Json &)ranges {
+    using Json = gw::lsp::Json;
+    Tab *tab = [self tabForPath:path];
+    if (tab == nullptr) {
+        return;
+    }
+    std::vector<GWDecoration> parsed;
+    bool dark = GWServices.shared.theme.isDark();
+    const gw::TextBuffer &buffer = tab->document->buffer();
+    for (const Json &item : ranges) {
+        if (!item.is_object() || !item.contains("range")) continue;
+        Json look = MergedDecorationOptions(options, item.value("renderOptions", Json::object()), dark);
+        GWDecoration decoration;
+        try {
+            decoration.range = {gw::lsp::position(buffer, item["range"].at("start")), gw::lsp::position(buffer, item["range"].at("end"))};
+        } catch (const std::exception &) {
+            continue;
+        }
+        if (look.contains("backgroundColor")) decoration.background = [self decorationColorFrom:look["backgroundColor"]];
+        if (look.contains("color")) decoration.foreground = [self decorationColorFrom:look["color"]];
+        decoration.wholeLine = look.value("isWholeLine", false);
+        // A border or outline: its colour is in "borderColor"/"outlineColor", or the last colour in "1px solid red".
+        for (const char *name : {"borderColor", "outlineColor"}) {
+            if (look.contains(name)) decoration.border = [self decorationColorFrom:look[name]];
+        }
+        for (const char *name : {"border", "outline"}) {
+            if (!decoration.border && look.contains(name) && look[name].is_string()) {
+                std::string text = look[name].get<std::string>();
+                size_t space = text.rfind(' ');
+                decoration.border = gw::parseCssColor(space == std::string::npos ? text : text.substr(space + 1));
+            }
+        }
+        std::string weight = look.contains("fontWeight") && look["fontWeight"].is_string() ? look["fontWeight"].get<std::string>() : "";
+        decoration.bold = weight == "bold" || weight == "bolder" || (weight.size() == 3 && weight[0] >= '6' && weight[0] <= '9');
+        decoration.italic = look.value("fontStyle", "") == "italic";
+        std::string textDecoration = look.value("textDecoration", "");
+        decoration.underline = textDecoration.find("underline") != std::string::npos;
+        decoration.strikethrough = textDecoration.find("line-through") != std::string::npos;
+        if (look.contains("after") && look["after"].is_object()) {
+            const Json &after = look["after"];
+            decoration.afterText = after.value("contentText", "");
+            if (after.contains("color")) decoration.afterColor = [self decorationColorFrom:after["color"]];
+        }
+        parsed.push_back(std::move(decoration));
+    }
+    std::string name = key.UTF8String;
+    if (parsed.empty()) {
+        tab->decorations.erase(name);
+    } else {
+        tab->decorations[name] = std::move(parsed);
+    }
+    if (tab == [self currentTab]) {
+        [_editorView setDecorationGroups:tab->decorations];
+    }
+}
+
+- (void)hostRevealRange:(const gw::lsp::Json &)range forPath:(NSString *)path {
+    Tab *tab = [self tabForPath:path];
+    if (tab == nullptr || tab != [self currentTab] || !range.is_object() || !range.contains("start")) {
+        return;
+    }
+    try {
+        [_editorView jumpToPosition:gw::lsp::position(tab->document->buffer(), range.at("start"))];
+    } catch (const std::exception &) {
+    }
+}
+
+- (BOOL)hostInsertSnippet:(NSString *)snippet atRanges:(const gw::lsp::Json &)ranges forPath:(NSString *)path {
+    Tab *tab = [self tabForPath:path];
+    if (tab == nullptr || tab != [self currentTab] || tab->document->readOnly) {
+        return NO;
+    }
+    gw::lsp::Json range = ranges.is_array() && !ranges.empty() ? ranges[0] : gw::lsp::Json();
+    if (range.is_null()) {
+        const gw::TextBuffer &buffer = tab->document->buffer();
+        gw::Range selected = tab->document->selection.range();
+        range = {{"start", gw::lsp::position(buffer, selected.start)}, {"end", gw::lsp::position(buffer, selected.end)}};
+    }
+    GWSuggestion *item = [GWSuggestion new];
+    item.resolved = YES;
+    item.kind = 15;
+    item.label = @"snippet";
+    item.raw = std::make_shared<gw::lsp::Json>(gw::lsp::Json{
+        {"label", "snippet"},
+        {"textEdit", {{"range", range}, {"newText", snippet.UTF8String}}},
+        {"insertTextFormat", 2},
+    });
+    [self acceptSuggestion:item];
+    return YES;
+}
+
+// MARK: - What language servers say
+
+/// `window/showMessage`: a line in the status bar, and in the server's log so it can be read again.
+- (void)serverSaid:(NSString *)message type:(int)type server:(NSString *)serverName {
+    NSString *prefix = type == 1 ? @"⛔ " : (type == 2 ? @"⚠️ " : @"");
+    [_extensionHost appendLog:[NSString stringWithFormat:@"[%d] %@\n", type, message] toChannel:serverName];
+    if (type <= 3) {
+        [self hostShowStatusMessage:[NSString stringWithFormat:@"%@%@: %@", prefix, serverName, message] seconds:10];
+    }
+}
+
+/// `$/progress`: "clangd: Indexing 30%" stays in the status bar while the work lasts.
+- (void)serverProgress:(NSString *)serverName token:(NSString *)token kind:(NSString *)kind
+                 title:(NSString *)title message:(NSString *)message percentage:(int)percentage {
+    NSString *key = [serverName stringByAppendingFormat:@"/%@", token];
+    if ([kind isEqualToString:@"end"]) {
+        [_serverProgress removeObjectForKey:key];
+    } else {
+        NSString *previous = _serverProgress[key];
+        // A report carries only what changed: keep the title from "begin".
+        NSString *heading = title.length > 0 ? title : [previous componentsSeparatedByString:@"  "].firstObject;
+        NSMutableString *line = [NSMutableString stringWithFormat:@"%@: %@", serverName, heading ?: @"Working"];
+        if (message.length > 0) [line appendFormat:@" %@", message];
+        if (percentage >= 0) [line appendFormat:@" %d%%", percentage];
+        _serverProgress[key] = [line copy];
+    }
+    [self updateStatus];
+}
+
+/// `window/showMessageRequest`: a question with buttons, as a sheet.
+- (void)serverAsked:(NSString *)message actions:(NSArray<NSString *> *)actions server:(NSString *)serverName reply:(void (^)(NSString *))reply {
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = serverName;
+    alert.informativeText = message;
+    for (NSString *action in actions) {
+        [alert addButtonWithTitle:action];
+    }
+    if (actions.count == 0) {
+        [alert addButtonWithTitle:@"OK"];
+    }
+    [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+        NSInteger index = response - NSAlertFirstButtonReturn;
+        reply(index >= 0 && index < static_cast<NSInteger>(actions.count) ? actions[static_cast<NSUInteger>(index)] : @"");
+    }];
+}
+
+// MARK: - Extension host
+
+- (NSWindow *)hostWindow {
+    return self.window;
+}
+
+- (BOOL)hostApplyWorkspaceEdit:(const gw::lsp::Json &)edit {
+    return [self applyWorkspaceEdit:edit];
+}
+
+- (void)hostOpenFileAtPath:(NSString *)path line:(NSInteger)line character:(NSInteger)character {
+    if (line >= 0) {
+        [self openPath:path atLine:line + 1];
+    } else {
+        [self openURL:[NSURL fileURLWithPath:path]];
+    }
+}
+
+- (BOOL)hostSaveFileAtPath:(NSString *)path {
+    for (auto &tab : _tabs) {
+        if (tab->document->path() && tab->document->path()->string() == path.UTF8String) {
+            return [self saveTab:*tab];
+        }
+    }
+    return NO;
+}
+
+- (void)hostSaveAll {
+    [self saveAllDocuments:nil];
+}
+
+- (void)hostShowStatusMessage:(NSString *)text seconds:(NSTimeInterval)seconds {
+    _extensionStatusMessage = text.length > 0 ? [text copy] : nil;
+    [self updateStatus];
+    if (seconds > 0 && text.length > 0) {
+        __weak GWMainWindowController *weakSelf = self;
+        NSString *shown = _extensionStatusMessage;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            GWMainWindowController *strongSelf = weakSelf;
+            if (strongSelf != nil && [strongSelf->_extensionStatusMessage isEqualToString:shown]) {
+                strongSelf->_extensionStatusMessage = nil;
+                [strongSelf updateStatus];
+            }
+        });
+    }
+}
+
+- (void)hostStatusItemsChanged {
+    [self updateStatus];
+}
+
+/// Editor commands that extensions ask for by their VS Code names.
+- (BOOL)hostRunBuiltinCommand:(NSString *)identifier arguments:(NSArray *)arguments {
+    if ([identifier isEqualToString:@"vscode.open"] && arguments.count > 0) {
+        id target = arguments[0];
+        NSString *text = [target isKindOfClass:NSString.class] ? target : (target[@"external"] ?: target[@"path"]);
+        NSURL *url = [text hasPrefix:@"/"] ? [NSURL fileURLWithPath:text] : [NSURL URLWithString:text];
+        if (url.isFileURL) {
+            [self openURL:url];
+        } else if (url != nil) {
+            [NSWorkspace.sharedWorkspace openURL:url];
+        }
+        return url != nil;
+    }
+    NSString *known = [GWKeybindingService actionNameForCommand:identifier];
+    if (known != nil) {
+        [NSApp sendAction:NSSelectorFromString(known) to:nil from:self];
+        return YES;
+    }
+    NSDictionary<NSString *, NSString *> *actions = @{
+        @"workbench.action.files.save": @"saveDocument:",
+        @"workbench.action.files.saveAll": @"saveAllDocuments:",
+        @"editor.action.formatDocument": @"formatDocument:",
+        @"workbench.action.showCommands": @"showCommandPalette:",
+        @"workbench.action.quickOpen": @"quickOpen:",
+        @"editor.action.triggerSuggest": @"completeCode:",
+        @"workbench.action.openSettings": @"openSettings:",
+        @"editor.action.quickFix": @"showQuickFixes:",
+    };
+    NSString *selectorName = actions[identifier];
+    if (selectorName != nil) {
+        [NSApp sendAction:NSSelectorFromString(selectorName) to:self from:nil];
+        return YES;
+    }
+    if ([identifier isEqualToString:@"workbench.action.reloadWindow"] || [identifier isEqualToString:@"workbench.action.restartExtensionHost"]) {
+        [_extensionHost shutdown];
+        [self hostProvidersChanged];
+        return YES;
+    }
+    return NO;
+}
+
+/// Extensions now provide features for other languages (or the host was restarted): open files get
+/// another look, so ones that now have extension support attach to it.
+- (void)hostProvidersChanged {
+    for (auto &tab : _tabs) {
+        if (tab->kind == Tab::Kind::Text && !tab->isVirtual) {
+            [_language trackDocument:tab->document.get()];
+        }
+    }
+    [self updateStatus];
+}
+
+/// "1234567" → "1.2M": download counts for the extension browser.
+static NSString *CompactCount(long count) {
+    if (count >= 1000000) return [NSString stringWithFormat:@"%.1fM", count / 1000000.0];
+    if (count >= 1000) return [NSString stringWithFormat:@"%.1fK", count / 1000.0];
+    return [NSString stringWithFormat:@"%ld", count];
+}
+
+/// Extensions ▸ Search Extensions…: type to search Open VSX (the most downloaded show first),
+/// Return installs. The palette lists what the last search found; searches run in the background
+/// a moment after typing stops, and the list refreshes when they come back.
+- (IBAction)searchExtensions:(id)sender {
+    struct SearchState {
+        NSString *lastQuery = nil;
+        NSUInteger token = 0;
+        NSArray<GWPaletteItem *> *results = @[];
+        NSString *message = @"Searching Open VSX…";
+    };
+    auto state = std::make_shared<SearchState>();
+    __weak GWMainWindowController *weakSelf = self;
+
+    void (^runSearch)(NSString *) = ^(NSString *query) {
+        NSUInteger token = ++state->token;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (token != state->token) {
+                return;  // typed more since
+            }
+            std::string wanted = query.UTF8String;
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                std::string error;
+                auto found = gw::ExtensionManager::searchOpenVSX(wanted, 30, &error);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    GWMainWindowController *strongSelf = weakSelf;
+                    if (strongSelf == nil || token != state->token) {
+                        return;
+                    }
+                    NSMutableArray<GWPaletteItem *> *items = [NSMutableArray array];
+                    for (const auto &entry : found) {
+                        BOOL installed = GWServices.shared.extensions.isInstalled(entry.id);
+                        GWPaletteItem *item = [GWPaletteItem new];
+                        item.title = entry.displayName.empty() ? @(entry.id.c_str()) : @(entry.displayName.c_str());
+                        NSMutableArray<NSString *> *facts = [NSMutableArray array];
+                        [facts addObject:@(entry.id.c_str())];
+                        [facts addObject:[@"↓ " stringByAppendingString:CompactCount(entry.downloads)]];
+                        if (entry.rating > 0) [facts addObject:[NSString stringWithFormat:@"★ %.1f", entry.rating]];
+                        if (installed) [facts addObject:@"Installed"];
+                        if (!entry.description.empty()) [facts addObject:@(entry.description.c_str())];
+                        item.subtitle = [facts componentsJoinedByString:@"  ·  "];
+                        item.symbol = installed ? @"checkmark.circle.fill" : @"arrow.down.circle";
+                        item.symbolColor = installed ? NSColor.systemGreenColor : NSColor.controlAccentColor;
+                        NSString *identifier = @(entry.id.c_str());
+                        item.run = ^{
+                            [weakSelf installFromSearch:identifier];
+                        };
+                        [items addObject:item];
+                    }
+                    state->results = items;
+                    state->message = !error.empty() ? @(error.c_str()) : (items.count == 0 ? @"Nothing matches." : @"");
+                    [GWPalette.shared refresh];
+                });
+            });
+        });
+    };
+
+    [GWPalette.shared showOverWindow:self.window placeholder:@"Search extensions on Open VSX…"
+                            provider:^NSArray<GWPaletteItem *> *(NSString *query) {
+        if (![query isEqualToString:state->lastQuery]) {
+            state->lastQuery = [query copy];
+            runSearch(query);
+        }
+        if (state->results.count == 0 && state->message.length > 0) {
+            GWPaletteItem *note = [GWPaletteItem new];
+            note.title = state->message;
+            note.symbol = @"magnifyingglass";
+            note.symbolColor = NSColor.secondaryLabelColor;
+            note.run = ^{};
+            return @[note];
+        }
+        return state->results;
+    }];
+}
+
+- (void)installFromSearch:(NSString *)identifier {
+    if (GWServices.shared.extensions.isInstalled(identifier.UTF8String)) {
+        [self hostShowStatusMessage:[identifier stringByAppendingString:@" is already installed."] seconds:4];
+        return;
+    }
+    [self hostShowStatusMessage:[NSString stringWithFormat:@"Installing %@…", identifier] seconds:0];
+    __weak GWMainWindowController *weakSelf = self;
+    [GWServices.shared installExtension:identifier completion:^(BOOL ok, NSString *message) {
+        [weakSelf hostShowStatusMessage:message seconds:8];
+    }];
+}
+
+/// Extension output channels are log files: this opens one in a tab.
+- (IBAction)showExtensionLogs:(id)sender {
+    NSArray<NSString *> *channels = _extensionHost.logChannels;
+    if (channels.count == 0) {
+        [self hostShowStatusMessage:@"No extension has written any output yet." seconds:4];
+        return;
+    }
+    NSMutableArray<GWPaletteItem *> *items = [NSMutableArray array];
+    __weak GWMainWindowController *weakSelf = self;
+    for (NSString *channel in channels) {
+        GWPaletteItem *item = [GWPaletteItem new];
+        item.title = channel;
+        item.subtitle = @"Extension output";
+        item.symbol = @"text.alignleft";
+        item.symbolColor = NSColor.systemPurpleColor;
+        item.run = ^{
+            GWMainWindowController *strongSelf = weakSelf;
+            NSURL *url = [strongSelf->_extensionHost logURLForChannel:channel];
+            if (url != nil) {
+                [strongSelf openURL:url];
+            }
+        };
+        [items addObject:item];
+    }
+    [self showPaletteWithItems:items placeholder:@"Extension output…"];
+}
+
+/// Extensions ▸ Manage Extensions…: everything installed, enabled or not; choosing one offers to
+/// switch it off or on, or to uninstall it.
+- (IBAction)manageExtensions:(id)sender {
+    GWServices *services = GWServices.shared;
+    struct Entry {
+        NSString *identifier;
+        NSString *name;
+        NSString *version;
+        BOOL disabled;
+        BOOL hasCode;
+    };
+    std::vector<Entry> entries;
+    for (const gw::Extension &extension : services.extensions.extensions()) {
+        entries.push_back({@(extension.id.c_str()), @(extension.displayName.c_str()), @(extension.version.c_str()), NO, extension.hasCode});
+    }
+    for (const gw::Extension &extension : services.extensions.disabledExtensions()) {
+        entries.push_back({@(extension.id.c_str()), @(extension.displayName.c_str()), @(extension.version.c_str()), YES, extension.hasCode});
+    }
+    std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
+        return [a.name caseInsensitiveCompare:b.name] == NSOrderedAscending;
+    });
+    if (entries.empty()) {
+        [self hostShowStatusMessage:@"No extensions installed. Extensions ▸ Search Extensions… finds some." seconds:6];
+        return;
+    }
+    NSMutableArray<GWPaletteItem *> *items = [NSMutableArray array];
+    __weak GWMainWindowController *weakSelf = self;
+    for (const Entry &entry : entries) {
+        GWPaletteItem *item = [GWPaletteItem new];
+        item.title = entry.name;
+        NSMutableArray<NSString *> *facts = [NSMutableArray arrayWithObjects:entry.identifier, [@"v" stringByAppendingString:entry.version], nil];
+        [facts addObject:entry.disabled ? @"Disabled" : (entry.hasCode ? @"Enabled · runs code" : @"Enabled")];
+        item.subtitle = [facts componentsJoinedByString:@"  ·  "];
+        item.symbol = entry.disabled ? @"slash.circle" : @"puzzlepiece.extension";
+        item.symbolColor = entry.disabled ? NSColor.tertiaryLabelColor : NSColor.systemPurpleColor;
+        NSString *identifier = entry.identifier;
+        NSString *name = entry.name;
+        BOOL disabled = entry.disabled;
+        item.run = ^{
+            [weakSelf chooseActionForExtension:identifier name:name disabled:disabled];
+        };
+        [items addObject:item];
+    }
+    [self showPaletteWithItems:items placeholder:@"Manage extensions…"];
+}
+
+- (void)chooseActionForExtension:(NSString *)identifier name:(NSString *)name disabled:(BOOL)disabled {
+    NSMutableArray<GWPaletteItem *> *items = [NSMutableArray array];
+    GWPaletteItem *toggle = [GWPaletteItem new];
+    toggle.title = disabled ? [@"Enable " stringByAppendingString:name] : [@"Disable " stringByAppendingString:name];
+    toggle.symbol = disabled ? @"checkmark.circle" : @"slash.circle";
+    toggle.symbolColor = disabled ? NSColor.systemGreenColor : NSColor.systemOrangeColor;
+    toggle.run = ^{
+        [GWServices.shared setExtension:identifier enabled:disabled];
+    };
+    [items addObject:toggle];
+    GWPaletteItem *remove = [GWPaletteItem new];
+    remove.title = [@"Uninstall " stringByAppendingString:name];
+    remove.symbol = @"trash";
+    remove.symbolColor = NSColor.systemRedColor;
+    remove.run = ^{
+        [GWServices.shared uninstallExtension:identifier];
+    };
+    [items addObject:remove];
+    [self showPaletteWithItems:items placeholder:name];
+}
+
+/// Extensions ▸ Select File Icon Theme…: the icon themes extensions provide, or the built-in icons.
+- (IBAction)selectIconTheme:(id)sender {
+    GWServices *services = GWServices.shared;
+    NSString *current = services.iconThemeLabel;
+    NSMutableArray<GWPaletteItem *> *items = [NSMutableArray array];
+    auto addItem = ^(NSString *title, NSString *subtitle, NSString *label) {
+        GWPaletteItem *item = [GWPaletteItem new];
+        item.title = title;
+        item.subtitle = subtitle;
+        BOOL isCurrent = (label == nil && current == nil) || [label isEqualToString:current];
+        item.symbol = isCurrent ? @"checkmark.circle.fill" : @"photo.on.rectangle";
+        item.symbolColor = isCurrent ? NSColor.systemGreenColor : NSColor.secondaryLabelColor;
+        item.run = ^{
+            [GWServices.shared selectIconThemeLabel:label];
+        };
+        [items addObject:item];
+    };
+    addItem(@"Default", @"Glasswork's own icons", nil);
+    for (NSString *label in services.iconThemeLabels) {
+        addItem(label, @"From an extension", label);
+    }
+    if (items.count == 1) {
+        [self hostShowStatusMessage:@"No file icon themes installed. Search Extensions… for \"icon theme\"." seconds:6];
+        return;
+    }
+    [self showPaletteWithItems:items placeholder:@"Select a file icon theme…"];
+}
+
+/// Restarts the extension host (stops it; the next language or command that needs it starts it again).
+- (IBAction)restartExtensionHost:(id)sender {
+    [_extensionHost shutdown];
+    [self hostShowStatusMessage:@"Extensions restarted." seconds:3];
+    [_extensionHost startIfExtensionsWantToRun];
+    [self hostProvidersChanged];
 }
 
 // MARK: - Terminal
@@ -2672,6 +3496,8 @@ static bool isImageExtension(NSString *extension) {
             [self checkExternalChangeForTab:tab.get()];
         }
     }
+    [_language filesDidChange:paths];
+    [_extensionHost filesDidChange:paths];
     [_git refresh];
 }
 
@@ -3712,11 +4538,41 @@ static double timed(void (^work)(void)) {
     __weak GWMainWindowController *weakSelf = self;
     _language = [GWLanguageService new];
     _language.enabled = GWServices.shared.settings.languageServers;
+    _extensionHost = [GWExtensionHostService new];
+    _extensionHost.delegate = self;
+    _language.extensionProvider = _extensionHost;
+    _serverProgress = [NSMutableDictionary dictionary];
+    [self setUpKeybindings];
+    __weak GWExtensionHostService *weakHost = _extensionHost;
+    [_language settingsDidChange:[_extensionHost allSettings]];  // what servers see from their first question
+    _language.onServerMessage = ^(NSString *serverName, int type, NSString *message) {
+        [weakSelf serverSaid:message type:type server:serverName];
+    };
+    _language.onServerLog = ^(NSString *serverName, NSString *message) {
+        [weakHost appendLog:[message stringByAppendingString:@"\n"] toChannel:serverName];
+    };
+    _language.onServerProgress = ^(NSString *serverName, NSString *token, NSString *kind, NSString *title, NSString *message, int percentage) {
+        [weakSelf serverProgress:serverName token:token kind:kind title:title message:message percentage:percentage];
+    };
+    _language.onServerQuestion = ^(NSString *serverName, NSString *message, NSArray<NSString *> *actions, void (^reply)(NSString *)) {
+        [weakSelf serverAsked:message actions:actions server:serverName reply:reply];
+    };
+    _language.onApplyEdit = ^(const gw::lsp::Json &edit, void (^reply)(BOOL)) {
+        reply([weakSelf applyWorkspaceEdit:edit]);
+    };
     _language.onDiagnosticsChanged = ^(gw::Document *document) {
         [weakSelf diagnosticsChangedForDocument:document];
     };
     _language.onStatusChanged = ^{
         [weakSelf updateStatus];
+        [weakSelf scheduleEditorStateForExtensions];  // the host may just have been given this file
+    };
+    _language.onInlayHintsChanged = ^(gw::Document *document) {
+        GWMainWindowController *strongSelf = weakSelf;
+        Tab *tab = [strongSelf currentTab];
+        if (tab != nullptr && tab->document.get() == document) {
+            [strongSelf->_editorView setInlayHints:[strongSelf->_language inlayHintsForDocument:document]];
+        }
     };
     _language.onSemanticTokensChanged = ^(gw::Document *document) {
         GWMainWindowController *strongSelf = weakSelf;
@@ -3729,6 +4585,9 @@ static double timed(void (^work)(void)) {
     _suggestions = [GWSuggestionPopup new];
     _suggestions.onAccept = ^(GWSuggestion *suggestion) {
         [weakSelf acceptSuggestion:suggestion];
+    };
+    _suggestions.onSelectionChanged = ^(GWSuggestion *suggestion) {
+        [weakSelf resolveSuggestionForDocumentation:suggestion];
     };
 
     _editorView.onBreakpointsChange = ^{
@@ -3897,8 +4756,28 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
     NSString *triggers = [_language completionTriggerCharactersForDocument:tab->document.get()];
     BOOL triggerCharacter = typed.length == 1 && [triggers containsString:typed];
 
+    // Typing a commit character (a "." or "(" after a name) accepts the highlighted item first.
+    GWSuggestion *highlighted = _suggestions.selectedSuggestion;
+    if (_suggestions.visible && !wordCharacter && highlighted != nil && typed.length == 1 &&
+        [highlighted.commitCharacters containsString:typed]) {
+        [self acceptSuggestion:highlighted afterTyping:typed];
+        return;
+    }
+
     if (_suggestions.visible && wordCharacter) {
         [_suggestions filterWithPrefix:[self typedPrefix]];
+        if (_suggestionsIncomplete) {
+            // The server only sent part of its list (a big project, say): ask again with the
+            // longer word. The current list stays up meanwhile.
+            NSUInteger token = _suggestionToken;
+            __weak GWMainWindowController *weakSelf = self;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                GWMainWindowController *strongSelf = weakSelf;
+                if (strongSelf != nil && token == strongSelf->_suggestionToken && strongSelf->_suggestions.visible) {
+                    [strongSelf requestSuggestionsExplicitly:NO];
+                }
+            });
+        }
         return;
     }
     [_suggestions hide];
@@ -3955,8 +4834,27 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
     gw::Position wordStart = [self wordStartBeforeCaret];
     NSUInteger token = _suggestionToken;
     __weak GWMainWindowController *weakSelf = self;
+    // Tell the server why it is being asked: a request by hand, a trigger character such as ".",
+    // or more typing in a list it said was incomplete.
+    gw::lsp::Json params = [_language positionParamsForDocument:document position:caret];
+    int triggerKind = 1;  // Invoked
+    std::string triggerCharacter;
+    if (!explicitly && caret.column > 0) {
+        std::string before = document->buffer().text({{caret.line, caret.column - 1}, caret});
+        NSString *triggers = [_language completionTriggerCharactersForDocument:document];
+        if (before.size() == 1 && [triggers containsString:@(before.c_str())]) {
+            triggerKind = 2;  // TriggerCharacter
+            triggerCharacter = before;
+        } else if (_suggestions.visible && _suggestionsIncomplete) {
+            triggerKind = 3;  // TriggerForIncompleteCompletions
+        }
+    }
+    params["context"] = {{"triggerKind", triggerKind}};
+    if (!triggerCharacter.empty()) {
+        params["context"]["triggerCharacter"] = triggerCharacter;
+    }
     [_language request:@"textDocument/completion"
-                params:[_language positionParamsForDocument:document position:caret]
+                params:params
               document:document
     requireSameVersion:YES
             completion:^(const gw::lsp::Json &result, NSString *error) {
@@ -3968,15 +4866,90 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
     }];
 }
 
+/// Snippets from extensions and the user's snippet files for the current file's language, as
+/// completion rows. Accepting one inserts it with Tab stops, like a snippet from a language server.
+- (NSArray<GWSuggestion *> *)snippetSuggestions {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr) {
+        return @[];
+    }
+    NSMutableArray<GWSuggestion *> *items = [NSMutableArray array];
+    for (const gw::SnippetDefinition &definition : GWServices.shared.extensions.snippets().forLanguage(tab->document->languageId)) {
+        GWSuggestion *item = [GWSuggestion new];
+        item.label = @(definition.prefix.c_str());
+        item.detail = @(definition.description.c_str());
+        item.filterText = item.label;
+        item.sortText = [@"9" stringByAppendingString:item.label];  // after what a language server offers
+        item.kind = 15;                                              // Snippet
+        item.documentation = [NSString stringWithFormat:@"```\n%s\n```", definition.body.c_str()];
+        item.raw = std::make_shared<gw::lsp::Json>(gw::lsp::Json{
+            {"label", definition.prefix},
+            {"detail", definition.description},
+            {"insertText", definition.body},
+            {"insertTextFormat", 2},
+            {"kind", 15},
+        });
+        item.resolved = YES;  // nothing to ask a server about
+        [items addObject:item];
+    }
+    return items;
+}
+
+/// Snippet variables: the file and the clock, plus what is selected, on the clipboard and on the line.
+- (gw::SnippetVariables)snippetVariablesForTab:(Tab &)tab {
+    std::string path = tab.document->path() ? tab.document->path()->string() : std::string();
+    std::string folder = _fileTree.rootURL.path ? std::string(_fileTree.rootURL.path.UTF8String) : std::string();
+    gw::SnippetVariables variables = gw::standardSnippetVariables(path, folder);
+    gw::Position caret = tab.document->selection.caret;
+    variables["TM_SELECTED_TEXT"] = tab.document->selection.empty() ? std::string() : tab.document->buffer().text(tab.document->selection.range());
+    variables["TM_CURRENT_LINE"] = std::string(tab.document->buffer().line(caret.line));
+    variables["TM_LINE_INDEX"] = std::to_string(caret.line);
+    variables["TM_LINE_NUMBER"] = std::to_string(caret.line + 1);
+    NSString *clipboard = [NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString];
+    if (clipboard != nil) {
+        variables["CLIPBOARD"] = clipboard.UTF8String;
+    }
+    const gw::LanguageConfiguration configuration = GWServices.shared.extensions.configuration(tab.document->languageId);
+    variables["LINE_COMMENT"] = configuration.lineComment;
+    variables["BLOCK_COMMENT_START"] = configuration.blockComment.first;
+    variables["BLOCK_COMMENT_END"] = configuration.blockComment.second;
+    return variables;
+}
+
+/// Text of an LSP documentation field: a plain string or MarkupContent {kind, value}.
+static NSString *markupText(const gw::lsp::Json &value) {
+    if (value.is_string()) {
+        return @(value.get<std::string>().c_str());
+    }
+    if (value.is_object() && value.contains("value") && value["value"].is_string()) {
+        return @(value["value"].get<std::string>().c_str());
+    }
+    return nil;
+}
+
+/// The characters that accept a suggestion when typed, as one string.
+static NSString *commitCharactersOf(const gw::lsp::Json &item) {
+    NSMutableString *characters = [NSMutableString string];
+    if (item.contains("commitCharacters") && item["commitCharacters"].is_array()) {
+        for (const gw::lsp::Json &character : item["commitCharacters"]) {
+            if (character.is_string()) {
+                [characters appendString:@(character.get<std::string>().c_str())];
+            }
+        }
+    }
+    return characters;
+}
+
 - (void)showSuggestionsFromResult:(const gw::lsp::Json &)result wordStart:(gw::Position)wordStart {
     using Json = gw::lsp::Json;
     Json rows = result;
+    _suggestionsIncomplete = result.is_object() && result.value("isIncomplete", false);
     if (result.is_object()) {
         rows = result.value("items", Json::array());
     }
     if (!rows.is_array() || rows.empty()) {
         [self showWordSuggestionsAtWordStart:wordStart explicitly:NO];
-        return;
+        return;  // (word suggestions bring the snippets along)
     }
     NSMutableArray<GWSuggestion *> *items = [NSMutableArray array];
     for (const Json &row : rows) {
@@ -3989,16 +4962,32 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
             continue;
         }
         item.label = @(label.c_str());
-        item.detail = @(row.value("detail", "").c_str());
+        std::string detail = row.value("detail", "");
+        if (detail.empty() && row.contains("labelDetails") && row["labelDetails"].is_object()) {
+            detail = row["labelDetails"].value("description", "");
+        }
+        item.detail = @(detail.c_str());
         item.filterText = @(row.value("filterText", label).c_str());
         item.sortText = @(row.value("sortText", label).c_str());
         item.kind = row.value("kind", 0);
+        item.preselect = row.value("preselect", false);
+        item.deprecated = row.value("deprecated", false);
+        if (row.contains("tags") && row["tags"].is_array()) {
+            for (const Json &tag : row["tags"]) {
+                if (tag.is_number_integer() && tag.get<int>() == 1) {
+                    item.deprecated = YES;  // CompletionItemTag.Deprecated
+                }
+            }
+        }
+        item.documentation = markupText(row.contains("documentation") ? row["documentation"] : Json());
+        item.commitCharacters = commitCharactersOf(row);
         item.raw = std::make_shared<Json>(row);
         [items addObject:item];
         if (items.count >= 400) {
             break;
         }
     }
+    [items addObjectsFromArray:[self snippetSuggestions]];
     if (items.count == 0) {
         [self showWordSuggestionsAtWordStart:wordStart explicitly:NO];
         return;
@@ -4024,15 +5013,26 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
     std::string prefix = std::string([[self typedPrefix] UTF8String]);
     // Automatic word suggestions wait for three letters, so ordinary prose isn't interrupted
     // (Return would accept a suggestion); ⌃Space asks for them at any point.
-    if (prefix.size() < 3 && !explicitly) {
+    BOOL snippetsMatch = NO;
+    if (!prefix.empty() && prefix.size() < 3 && !explicitly) {
+        // Short prefixes don't offer words (they'd interrupt prose), but a snippet may match.
+        for (GWSuggestion *snippet in [self snippetSuggestions]) {
+            if (gw::fuzzyScore(prefix, snippet.filterText.UTF8String)) {
+                snippetsMatch = YES;
+                break;
+            }
+        }
+    }
+    if (prefix.size() < 3 && !explicitly && !snippetsMatch) {
         return;
     }
     std::vector<std::string> words = gw::wordSuggestions(document->buffer(), prefix, document->selection.caret);
-    if (words.empty()) {
-        return;
-    }
     using Json = gw::lsp::Json;
     NSMutableArray<GWSuggestion *> *items = [NSMutableArray array];
+    [items addObjectsFromArray:[self snippetSuggestions]];
+    if (words.empty() && items.count == 0) {
+        return;
+    }
     for (size_t index = 0; index < words.size(); ++index) {
         GWSuggestion *item = [GWSuggestion new];
         item.label = @(words[index].c_str());
@@ -4062,7 +5062,102 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
     [self acceptSuggestion:suggestion];
 }
 
+/// Fetches the documentation of the highlighted item (many servers only send it on request),
+/// after a short pause so arrowing through the list doesn't send a request per row.
+- (void)resolveSuggestionForDocumentation:(GWSuggestion *)suggestion {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr || suggestion.resolved || suggestion.raw == nullptr) {
+        return;
+    }
+    gw::Document *document = tab->document.get();
+    if (![_language serverSupports:@"completionProvider.resolveProvider" forDocument:document]) {
+        return;
+    }
+    NSUInteger token = ++_suggestionResolveToken;
+    __weak GWMainWindowController *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(0.12 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil || token != strongSelf->_suggestionResolveToken || suggestion != strongSelf->_suggestions.selectedSuggestion) {
+            return;
+        }
+        [strongSelf resolveSuggestion:suggestion document:document then:^{
+            [strongSelf->_suggestions documentationChangedForSuggestion:suggestion];
+        }];
+    });
+}
+
+/// Asks the server to complete an item (documentation, details, extra edits such as an import)
+/// and merges the answer into it. `then` runs either way.
+- (void)resolveSuggestion:(GWSuggestion *)suggestion document:(gw::Document *)document then:(void (^)(void))then {
+    if (suggestion.resolved || suggestion.raw == nullptr ||
+        ![_language serverSupports:@"completionProvider.resolveProvider" forDocument:document]) {
+        then();
+        return;
+    }
+    suggestion.resolved = YES;  // one attempt only
+    [_language request:@"completionItem/resolve" params:*suggestion.raw document:document requireSameVersion:NO
+            completion:^(const gw::lsp::Json &result, NSString *error) {
+        if (error == nil && result.is_object()) {
+            auto merged = std::make_shared<gw::lsp::Json>(*suggestion.raw);
+            for (const auto &[key, value] : result.items()) {
+                (*merged)[key] = value;
+            }
+            suggestion.raw = merged;
+            NSString *documentation = markupText(result.contains("documentation") ? result["documentation"] : gw::lsp::Json());
+            if (documentation.length > 0) {
+                suggestion.documentation = documentation;
+            }
+            std::string detail = result.value("detail", "");
+            if (!detail.empty()) {
+                suggestion.detail = @(detail.c_str());
+            }
+        }
+        then();
+    }];
+}
+
 - (void)acceptSuggestion:(GWSuggestion *)suggestion {
+    [self acceptSuggestion:suggestion afterTyping:nil];
+}
+
+/// Inserts the suggestion. With `commitCharacter`, the user typed that character to accept it:
+/// it is taken back out first and typed again after the suggestion goes in.
+- (void)acceptSuggestion:(GWSuggestion *)suggestion afterTyping:(NSString *)commitCharacter {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr || suggestion.raw == nullptr) {
+        return;
+    }
+    [_suggestions recordAccepted:suggestion];
+    [_suggestions hide];
+    ++_suggestionToken;
+
+    if (commitCharacter != nil) {
+        gw::Position caret = tab->document->selection.caret;
+        if (caret.column > 0) {
+            [_editorView replaceRange:gw::Range{{caret.line, caret.column - 1}, caret} withText:""];
+        }
+    }
+
+    // Servers such as TypeScript's add the import only when the item is resolved: wait for that
+    // (a moment), then insert. If the user typed in the meantime the plain item goes in.
+    gw::Document *document = tab->document.get();
+    uint64_t versionBefore = document->version();
+    __weak GWMainWindowController *weakSelf = self;
+    [self resolveSuggestion:suggestion document:document then:^{
+        GWMainWindowController *strongSelf = weakSelf;
+        Tab *current = [strongSelf currentTab];
+        if (strongSelf == nil || current == nullptr || current->document.get() != document) {
+            return;
+        }
+        (void)versionBefore;
+        [strongSelf insertSuggestion:suggestion];
+        if (commitCharacter != nil) {
+            [strongSelf->_editorView insertText:commitCharacter replacementRange:NSMakeRange(NSNotFound, 0)];
+        }
+    }];
+}
+
+- (void)insertSuggestion:(GWSuggestion *)suggestion {
     Tab *tab = [self currentTab];
     if (tab == nullptr || suggestion.raw == nullptr) {
         return;
@@ -4094,7 +5189,8 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
         while (indentLength < caretLine.size() && (caretLine[indentLength] == ' ' || caretLine[indentLength] == '\t')) {
             ++indentLength;
         }
-        snippet = gw::parseSnippet(text, caretLine.substr(0, indentLength));
+        gw::SnippetVariables variables = [self snippetVariablesForTab:*tab];
+        snippet = gw::parseSnippet(text, caretLine.substr(0, indentLength), &variables);
         text = snippet.text;
     }
     // The range from the server can end before what was typed since; cover up to the caret.
@@ -4407,32 +5503,18 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
                 if (!action.is_object()) {
                     continue;
                 }
-                // The edit is either in the action itself, or (clangd's way) the first argument of
-                // the command it wants run. Other commands need the server to run them: not supported.
-                Json edit;
-                if (action.contains("edit") && action["edit"].is_object()) {
-                    edit = action["edit"];
-                } else {
-                    const Json *arguments = nullptr;
-                    if (action.contains("arguments")) {
-                        arguments = &action["arguments"];
-                    } else if (action.contains("command") && action["command"].is_object() && action["command"].contains("arguments")) {
-                        arguments = &action["command"]["arguments"];
-                    }
-                    if (arguments != nullptr && arguments->is_array() && !arguments->empty() && (*arguments)[0].is_object() &&
-                        ((*arguments)[0].contains("documentChanges") || (*arguments)[0].contains("changes"))) {
-                        edit = (*arguments)[0];
-                    }
-                }
-                if (edit.is_null()) {
+                if (![strongSelf codeActionCanRun:action document:document]) {
                     continue;
                 }
                 GWPaletteItem *item = [GWPaletteItem new];
                 item.title = @(action.value("title", "Fix").c_str());
-                item.symbol = action.value("isPreferred", false) ? @"lightbulb.fill" : @"lightbulb";
-                item.symbolColor = NSColor.systemYellowColor;
+                bool isRefactor = action.value("kind", "").rfind("refactor", 0) == 0;
+                bool isPreferred = action.value("isPreferred", false);
+                item.symbol = isRefactor ? @"wand.and.stars" : (isPreferred ? @"lightbulb.fill" : @"lightbulb");
+                item.symbolColor = isRefactor ? NSColor.systemPurpleColor : NSColor.systemYellowColor;
+                Json actionCopy = action;
                 item.run = ^{
-                    [weakSelf applyWorkspaceEdit:edit];
+                    [weakSelf runCodeAction:actionCopy document:document resolved:NO];
                 };
                 [items addObject:item];
             }
@@ -4853,9 +5935,121 @@ static std::vector<std::pair<gw::Range, std::string>> editsFromLsp(const gw::lsp
     }];
 }
 
+/// The command a code action wants run: its `command` object, or the action itself when the
+/// server answered with a bare Command. Null when there is none.
+static gw::lsp::Json commandOfCodeAction(const gw::lsp::Json &action) {
+    using Json = gw::lsp::Json;
+    if (action.contains("command") && action["command"].is_object() && action["command"].contains("command")) {
+        return action["command"];
+    }
+    if (action.contains("command") && action["command"].is_string()) {
+        return action;  // a Command: {title, command, arguments}
+    }
+    return Json();
+}
+
+/// clangd's way of offering a fix: the WorkspaceEdit is the first argument of its command.
+static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
+    using Json = gw::lsp::Json;
+    Json command = commandOfCodeAction(action);
+    if (command.is_object() && command.contains("arguments") && command["arguments"].is_array() &&
+        !command["arguments"].empty() && command["arguments"][0].is_object()) {
+        const Json &first = command["arguments"][0];
+        if (first.contains("documentChanges") || first.contains("changes")) {
+            return first;
+        }
+    }
+    return Json();
+}
+
+/// Whether choosing this action will do something: it carries an edit or a command, or the
+/// server can fill in the edit when asked (`codeAction/resolve`).
+- (BOOL)codeActionCanRun:(const gw::lsp::Json &)action document:(gw::Document *)document {
+    if (action.contains("edit") && action["edit"].is_object()) {
+        return YES;
+    }
+    if (!commandOfCodeAction(action).is_null()) {
+        return YES;
+    }
+    bool hasData = action.contains("data");
+    return hasData && [_language serverSupports:@"codeActionProvider.resolveProvider" forDocument:document];
+}
+
+/// Carries out a code action from the Quick Fix list: applies its edit, then runs its command if
+/// it has one (a refactoring the server performs itself, usually by asking us to apply edits).
+/// An action with neither is first sent back to the server to be completed.
+- (void)runCodeAction:(const gw::lsp::Json &)action document:(gw::Document *)document resolved:(BOOL)resolved {
+    using Json = gw::lsp::Json;
+    __weak GWMainWindowController *weakSelf = self;
+
+    bool hasEdit = action.contains("edit") && action["edit"].is_object();
+    Json command = commandOfCodeAction(action);
+    Json legacyEdit = editInCommandArguments(action);
+
+    if (hasEdit) {
+        [self applyWorkspaceEdit:action["edit"]];
+    } else if (!legacyEdit.is_null()) {
+        [self applyWorkspaceEdit:legacyEdit];
+        return;  // that command only carried the edit
+    }
+
+    if (!command.is_null()) {
+        if (action.contains("__gwServer") && !command.contains("__gwServer")) {
+            command["__gwServer"] = action["__gwServer"];
+        }
+        [self executeServerCommand:command document:document];
+        return;
+    }
+    if (hasEdit) {
+        return;
+    }
+    if (resolved) {
+        [self languageMessage:@"The language server had nothing to do for that."];
+        return;
+    }
+    _statusLeft.stringValue = @"Asking the language server…";
+    Json actionCopy = action;
+    [_language request:@"codeAction/resolve" params:actionCopy document:document requireSameVersion:YES
+            completion:^(const Json &result, NSString *error) {
+        GWMainWindowController *strongSelf = weakSelf;
+        [strongSelf updateStatus];
+        if (strongSelf == nil) {
+            return;
+        }
+        if (error != nil) {
+            [strongSelf languageMessage:error];
+            return;
+        }
+        [strongSelf runCodeAction:result document:document resolved:YES];
+    }];
+}
+
+/// Asks the server to run one of its own commands. Any files it wants changed arrive as
+/// `workspace/applyEdit` requests, which the language service passes to applyWorkspaceEdit.
+- (void)executeServerCommand:(const gw::lsp::Json &)command document:(gw::Document *)document {
+    using Json = gw::lsp::Json;
+    Json params = {
+        {"command", command.value("command", "")},
+        {"arguments", command.contains("arguments") ? command["arguments"] : Json::array()},
+    };
+    if (command.contains("__gwServer")) {
+        params["__gwServer"] = command["__gwServer"];  // the server that offered it runs it
+    }
+    __weak GWMainWindowController *weakSelf = self;
+    _statusLeft.stringValue = @"Running…";
+    [_language request:@"workspace/executeCommand" params:params document:document requireSameVersion:NO
+            completion:^(const Json &, NSString *error) {
+        GWMainWindowController *strongSelf = weakSelf;
+        [strongSelf updateStatus];
+        if (error != nil) {
+            [strongSelf languageMessage:error];
+        }
+    }];
+}
+
 /// Applies a WorkspaceEdit from a server: open files are edited in the editor (undoable),
 /// other files are changed on disk.
-- (void)applyWorkspaceEdit:(const gw::lsp::Json &)edit {
+- (BOOL)applyWorkspaceEdit:(const gw::lsp::Json &)edit {
     using Json = gw::lsp::Json;
     std::vector<std::pair<std::string, Json>> fileEdits;  // uri and its TextEdits
     if (edit.is_object() && edit.contains("documentChanges") && edit["documentChanges"].is_array()) {
@@ -4871,7 +6065,7 @@ static std::vector<std::pair<gw::Range, std::string>> editsFromLsp(const gw::lsp
     }
     if (fileEdits.empty()) {
         [self languageMessage:@"The language server found nothing to change."];
-        return;
+        return NO;
     }
     size_t changedFiles = 0;
     size_t totalEdits = 0;
@@ -4930,10 +6124,11 @@ static std::vector<std::pair<gw::Range, std::string>> editsFromLsp(const gw::lsp
     [_git refresh];
     if (failures.count > 0) {
         [self showErrorTitle:@"Some files couldn't be changed" message:[failures componentsJoinedByString:@"\n"]];
-    } else {
-        _statusLeft.stringValue = [NSString stringWithFormat:@"Changed %zu place%s in %zu file%s", totalEdits, totalEdits == 1 ? "" : "s",
-                                   changedFiles, changedFiles == 1 ? "" : "s"];
+        return NO;
     }
+    _statusLeft.stringValue = [NSString stringWithFormat:@"Changed %zu place%s in %zu file%s", totalEdits, totalEdits == 1 ? "" : "s",
+                               changedFiles, changedFiles == 1 ? "" : "s"];
+    return YES;
 }
 
 /// ⇧⌥F: lets the language server tidy the whole file.
@@ -5000,6 +6195,8 @@ static std::vector<std::pair<gw::Range, std::string>> editsFromLsp(const gw::lsp
         _chat.projectFolder = url.path;
         _search.rootFolder = url.path;
         _language.rootFolder = url.path;
+        _extensionHost.rootFolder = url.path;
+        [_extensionHost startIfExtensionsWantToRun];
         _terminal.projectFolder = url.path;
         [self loadBreakpointsForFolder:url.path];
         _sidebarTitle.stringValue = url.lastPathComponent;
@@ -5084,6 +6281,10 @@ static std::vector<std::pair<gw::Range, std::string>> editsFromLsp(const gw::lsp
         return NO;
     }
     [_language documentDidSave:tab.document.get()];
+    if (tab.document->path() && tab.document->path()->string() == _keybindings.userFileURL.path.UTF8String) {
+        [_keybindings reload];
+        [self hostShowStatusMessage:@"Keyboard shortcuts reloaded." seconds:3];
+    }
     [self refresh];
     [_git refresh];
     return YES;
@@ -5248,6 +6449,11 @@ static std::vector<std::pair<gw::Range, std::string>> editsFromLsp(const gw::lsp
     }
     [self saveSession];
     [_language shutdown];
+    [_extensionHost shutdown];
+    if (_keyMonitor != nil) {
+        [NSEvent removeMonitor:_keyMonitor];
+        _keyMonitor = nil;
+    }
     [_debugger stop];
     return YES;
 }

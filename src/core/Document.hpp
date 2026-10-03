@@ -31,6 +31,17 @@ struct Change {
     size_t lastLine;
 };
 
+/// One edit in the form language servers expect: the range that was replaced and the text that
+/// took its place. Columns are UTF-16 code units, as in the protocol, and are measured on the
+/// text as it was just before this edit (so after the edits recorded earlier).
+struct SyncEdit {
+    size_t startLine = 0;
+    size_t startUnits = 0;
+    size_t endLine = 0;
+    size_t endUnits = 0;
+    std::string text;
+};
+
 /// A text buffer plus everything that makes it editable: file path, selection, undo history
 /// and a dirty flag. Knows nothing about fonts or pixels.
 class Document {
@@ -106,6 +117,14 @@ public:
     void beginUndoGroup();
     void endUndoGroup();
 
+    /// Starts or stops keeping a list of edits for takeSyncEdits(). Starting clears the list.
+    /// Used to tell a language server about small changes instead of sending the whole file.
+    void recordSyncEdits(bool on);
+    /// The edits made since the last call (or since recording began), oldest first, and clears
+    /// the list. Undo, redo and every other kind of edit are included. Returns nothing when
+    /// too much happened to be worth replaying: send the whole text then.
+    std::optional<std::vector<SyncEdit>> takeSyncEdits();
+
     bool undo();
     bool redo();
     bool canUndo() const { return !undoStack_.empty(); }
@@ -153,7 +172,13 @@ private:
     };
 
     Position apply(Position at, const std::string& removed, const std::string& inserted);
+    void recordSyncEdit(Position at, Position removedEnd, const std::string& inserted);
     void notify(size_t firstLine, long lineDelta, size_t lastLine);
+
+    bool recordingSyncEdits_ = false;
+    bool syncEditsOverflowed_ = false;
+    std::vector<SyncEdit> syncEdits_;
+    size_t syncEditBytes_ = 0;
 
     /// Remembers what the file looked like when we last read or wrote it.
     void rememberDiskState();

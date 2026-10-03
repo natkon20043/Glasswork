@@ -40,6 +40,7 @@ add_library(glasswork_core STATIC
     src/core/SemanticTokens.cpp
     src/core/Tasks.cpp
     src/core/Snippet.cpp
+    src/core/SnippetLibrary.cpp
     src/core/NavigationHistory.cpp
     src/core/WordSuggestions.cpp
     src/core/TextTransforms.cpp
@@ -47,6 +48,7 @@ add_library(glasswork_core STATIC
     src/core/Dap.cpp
     src/core/Highlighter.cpp
     src/core/Jsonc.cpp
+    src/core/SettingsLookup.cpp
     src/core/textmate/Regex.cpp
     src/core/textmate/FirstBytes.cpp
     src/core/textmate/Grammar.cpp
@@ -56,8 +58,14 @@ add_library(glasswork_core STATIC
     src/core/EditorSettings.cpp
     src/core/Sections.cpp
     src/core/Fuzzy.cpp
+    src/core/CssColor.cpp
+    src/core/Glob.cpp
+    src/core/IconTheme.cpp
+    src/core/Keybindings.cpp
+    src/core/CompletionRank.cpp
     src/core/LanguageServer.cpp
     src/core/LspServer.cpp
+    src/core/ExtensionHost.cpp
     src/core/Process.cpp
     src/core/LineDiff.cpp
     src/core/Git.cpp
@@ -98,6 +106,16 @@ add_test(NAME git_and_diff COMMAND glasswork_git_tests)
 add_executable(glasswork_markdown_tests tests/markdown_tests.cpp)
 target_link_libraries(glasswork_markdown_tests PRIVATE glasswork_core)
 add_test(NAME markdown COMMAND glasswork_markdown_tests)
+add_executable(glasswork_extension_host_tests tests/extension_host_tests.cpp)
+target_link_libraries(glasswork_extension_host_tests PRIVATE glasswork_core)
+target_compile_definitions(glasswork_extension_host_tests PRIVATE TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+add_test(NAME extension_host COMMAND glasswork_extension_host_tests)
+# The JavaScript half of the host, run against the same sample extension (needs Node.js).
+file(GLOB GLASSWORK_NVM_NODES "$ENV{HOME}/.nvm/versions/node/*/bin")
+find_program(GLASSWORK_NODE node HINTS ${GLASSWORK_NVM_NODES})
+if(GLASSWORK_NODE)
+    add_test(NAME extension_host_js COMMAND ${GLASSWORK_NODE} ${CMAKE_SOURCE_DIR}/tests/host/run.js)
+endif()
 add_executable(glasswork_search_tests tests/search_tests.cpp)
 target_link_libraries(glasswork_search_tests PRIVATE glasswork_core)
 add_test(NAME search COMMAND glasswork_search_tests)
@@ -163,6 +181,8 @@ add_executable(Glasswork MACOSX_BUNDLE
     src/app/SidebarSwitcher.mm
     src/app/StartupTiming.mm
     src/app/SourceControlPanel.mm
+    src/app/ExtensionHostService.mm
+    src/app/KeybindingService.mm
     src/app/Services.mm)
 # The app is built into a folder ending in ".noindex", which Spotlight skips, so development
 # builds never show up next to the installed Glasswork.app.
@@ -171,5 +191,11 @@ set_target_properties(Glasswork PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/app.noindex
     OUTPUT_NAME Glasswork)
 target_compile_options(Glasswork PRIVATE -fobjc-arc -Wall -Wno-unused-parameter)
+# Development builds find the extension host next to the sources; the app bundle carries its own copy.
+target_compile_definitions(Glasswork PRIVATE GLASSWORK_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+add_custom_command(TARGET Glasswork POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E remove_directory $<TARGET_BUNDLE_CONTENT_DIR:Glasswork>/Resources/ExtensionHost
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/host $<TARGET_BUNDLE_CONTENT_DIR:Glasswork>/Resources/ExtensionHost
+    COMMAND ${CMAKE_COMMAND} -E remove_directory $<TARGET_BUNDLE_CONTENT_DIR:Glasswork>/Resources/ExtensionHost/tools)
 target_link_libraries(Glasswork PRIVATE glasswork_core
     "-framework AppKit" "-framework CoreText" "-framework QuartzCore" "-framework CoreServices")

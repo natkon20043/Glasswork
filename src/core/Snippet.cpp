@@ -1,7 +1,12 @@
 #include "Snippet.hpp"
 
 #include <cctype>
+#include <cstdio>
+#include <chrono>
+#include <ctime>
+#include <filesystem>
 #include <map>
+#include <random>
 
 namespace gw {
 
@@ -39,7 +44,7 @@ void appendText(std::vector<Node>& nodes, std::string_view text) {
 
 class Parser {
 public:
-    explicit Parser(std::string_view source) : source_(source) {}
+    Parser(std::string_view source, const SnippetVariables* variables) : source_(source), variables_(variables) {}
 
     std::vector<Node> parseAll() { return parseSequence(false); }
 
@@ -133,7 +138,10 @@ private:
         }
         if (isNameStart(next)) {
             ++position_;
-            readName();  // a variable we do not know: nothing to insert
+            std::string name = readName();
+            if (const std::string* value = lookup(name)) {
+                appendText(nodes, *value);  // a known variable: its value; an unknown one gives nothing
+            }
             return;
         }
         if (next != '{') {
@@ -152,17 +160,25 @@ private:
             return;
         }
         if (isNameStart(current())) {
-            readName();
+            std::string name = readName();
+            const std::string* value = lookup(name);
             if (!atEnd() && current() == ':') {
                 ++position_;
                 std::vector<Node> fallback = parseSequence(true);
                 skipClosingBrace();
+                if (value != nullptr) {
+                    appendText(nodes, *value);  // the variable is known: its value, not the default
+                    return;
+                }
                 for (Node& node : fallback) {
                     nodes.push_back(std::move(node));
                 }
                 return;
             }
-            skipToClosingBrace();  // ${name}, ${name/regex/format/}: nothing to insert
+            skipToClosingBrace();  // ${name} or ${name/regex/format/} (the transform is not applied)
+            if (value != nullptr) {
+                appendText(nodes, *value);
+            }
             return;
         }
         skipToClosingBrace();
@@ -211,7 +227,16 @@ private:
         addTabStop(nodes, number, {});
     }
 
+    const std::string* lookup(const std::string& name) const {
+        if (variables_ == nullptr) {
+            return nullptr;
+        }
+        auto found = variables_->find(name);
+        return found == variables_->end() ? nullptr : &found->second;
+    }
+
     std::string_view source_;
+    const SnippetVariables* variables_ = nullptr;
     size_t position_ = 0;
 };
 
@@ -313,8 +338,61 @@ bool ParsedSnippet::hasOnlyFinalStop() const {
            stops[0][0].offset == text.size();
 }
 
-ParsedSnippet parseSnippet(std::string_view snippet, std::string_view indent) {
-    Parser parser(snippet);
+SnippetVariables standardSnippetVariables(const std::string& filePath, const std::string& workspaceFolder) {
+    namespace fs = std::filesystem;
+    SnippetVariables variables;
+    if (!filePath.empty()) {
+        fs::path path(filePath);
+        variables["TM_FILENAME"] = path.filename().string();
+        variables["TM_FILENAME_BASE"] = path.stem().string();
+        variables["TM_DIRECTORY"] = path.parent_path().string();
+        variables["TM_FILEPATH"] = filePath;
+        std::string relative = filePath;
+        if (!workspaceFolder.empty() && filePath.rfind(workspaceFolder + "/", 0) == 0) {
+            relative = filePath.substr(workspaceFolder.size() + 1);
+        }
+        variables["RELATIVE_FILEPATH"] = relative;
+    }
+    if (!workspaceFolder.empty()) {
+        variables["WORKSPACE_FOLDER"] = workspaceFolder;
+        variables["WORKSPACE_NAME"] = fs::path(workspaceFolder).filename().string();
+    }
+
+    std::time_t now = std::time(nullptr);
+    std::tm local = *std::localtime(&now);
+    auto formatted = [&](const char* format) {
+        char buffer[64];
+        std::strftime(buffer, sizeof(buffer), format, &local);
+        return std::string(buffer);
+    };
+    variables["CURRENT_YEAR"] = formatted("%Y");
+    variables["CURRENT_YEAR_SHORT"] = formatted("%y");
+    variables["CURRENT_MONTH"] = formatted("%m");
+    variables["CURRENT_MONTH_NAME"] = formatted("%B");
+    variables["CURRENT_MONTH_NAME_SHORT"] = formatted("%b");
+    variables["CURRENT_DATE"] = formatted("%d");
+    variables["CURRENT_DAY_NAME"] = formatted("%A");
+    variables["CURRENT_DAY_NAME_SHORT"] = formatted("%a");
+    variables["CURRENT_HOUR"] = formatted("%H");
+    variables["CURRENT_MINUTE"] = formatted("%M");
+    variables["CURRENT_SECOND"] = formatted("%S");
+    variables["CURRENT_SECONDS_UNIX"] = std::to_string(static_cast<long long>(now));
+
+    // A random version-4 UUID.
+    static std::mt19937_64 generator{std::random_device{}()};
+    unsigned long long high = generator();
+    unsigned long long low = generator();
+    high = (high & 0xFFFFFFFFFFFF0FFFULL) | 0x0000000000004000ULL;
+    low = (low & 0x3FFFFFFFFFFFFFFFULL) | 0x8000000000000000ULL;
+    char uuid[40];
+    std::snprintf(uuid, sizeof(uuid), "%08llx-%04llx-%04llx-%04llx-%012llx", high >> 32, (high >> 16) & 0xFFFF, high & 0xFFFF,
+                  low >> 48, low & 0xFFFFFFFFFFFFULL);
+    variables["UUID"] = uuid;
+    return variables;
+}
+
+ParsedSnippet parseSnippet(std::string_view snippet, std::string_view indent, const SnippetVariables* variables) {
+    Parser parser(snippet, variables);
     std::vector<Node> nodes = parser.parseAll();
     Builder builder(indent);
     return builder.build(nodes);

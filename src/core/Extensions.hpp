@@ -1,5 +1,7 @@
 #pragma once
 
+#include "IconTheme.hpp"
+#include "SnippetLibrary.hpp"
 #include "textmate/Grammar.hpp"
 
 #include <filesystem>
@@ -36,6 +38,14 @@ struct ThemeInfo {
     bool dark() const { return uiTheme == "vs-dark" || uiTheme == "hc-black"; }
 };
 
+/// A file icon theme an extension contributes (`contributes.iconThemes`).
+struct IconThemeInfo {
+    std::string id;
+    std::string label;
+    std::filesystem::path path;
+    std::string extensionId;
+};
+
 /// Editing rules from a language's `language-configuration.json`.
 struct LanguageConfiguration {
     std::string lineComment;
@@ -51,19 +61,41 @@ struct Extension {
     std::string description;
     std::string version;
     std::filesystem::path root;
+    /// The extension's package.json with its "%key%" strings replaced from package.nls.json, as
+    /// JSON text. The extension host reads activation events, commands and settings from it.
+    std::string manifestJson;
+    /// True when the extension has code to run (a `main` entry), not only declarative contributions.
+    bool hasCode = false;
     std::vector<LanguageInfo> languages;
     std::vector<GrammarInfo> grammars;
     std::vector<ThemeInfo> themes;
+    std::vector<IconThemeInfo> iconThemes;
+    /// Its `contributes.keybindings` as JSON text (an array), empty when it has none.
+    std::string keybindingsJson;
+    /// Snippet files it contributes: language id and file.
+    std::vector<std::pair<std::string, std::filesystem::path>> snippets;
 };
 
 class ExtensionManager {
 public:
     explicit ExtensionManager(std::filesystem::path directory);
 
-    /// Re-reads every installed extension.
+    /// Re-reads every installed extension. Extensions named in `setDisabled` are listed (see
+    /// `disabledExtensions`) but contribute nothing: no grammars, themes, snippets or code.
     void scan();
+    void setDisabled(std::set<std::string> ids) { disabledIds_ = std::move(ids); }
+    /// The installed extensions that are switched off.
+    const std::vector<Extension>& disabledExtensions() const { return disabled_; }
 
     const std::filesystem::path& directory() const { return directory_; }
+
+    /// The folder holding the user's own snippets: `<language>.json` files for one language, and
+    /// `*.code-snippets` files that name their languages themselves. Set before scan().
+    void setUserSnippetsDirectory(std::filesystem::path directory) { userSnippets_ = std::move(directory); }
+    /// Every extension's `contributes.keybindings`, joined into one JSON array.
+    std::string contributedKeybindingsJson() const;
+    /// Snippets from extensions and the user's folder, read on demand.
+    SnippetLibrary& snippets() { return snippetLibrary_; }
     const std::vector<Extension>& extensions() const { return extensions_; }
     bool isInstalled(const std::string& id) const;
 
@@ -73,6 +105,7 @@ public:
     const GrammarInfo* grammarForLanguage(const std::string& language) const;
     const GrammarInfo* grammarForScope(const std::string& scopeName) const;
     std::vector<ThemeInfo> themes() const;
+    std::vector<IconThemeInfo> iconThemes() const;
     LanguageConfiguration configuration(const std::string& language) const;
 
     struct InstallResult {
@@ -85,11 +118,32 @@ public:
     /// into `directory`, replacing older versions. Blocks on the network: call it off the
     /// main thread, then `scan()`.
     static InstallResult installFromOpenVSX(const std::string& id, const std::filesystem::path& directory);
+
+    /// One extension found by a search of Open VSX.
+    struct MarketplaceEntry {
+        std::string id;           // "publisher.name"
+        std::string displayName;  // "YAML"
+        std::string description;
+        std::string version;
+        std::string publisher;
+        long downloads = 0;
+        double rating = 0;        // 0 when nobody has rated it
+        std::string iconURL;
+    };
+    /// Searches Open VSX (most downloaded first for an empty query). Blocks on the network: call it
+    /// off the main thread. On failure the list is empty and `error` says why.
+    static std::vector<MarketplaceEntry> searchOpenVSX(const std::string& query, size_t limit, std::string* error = nullptr);
+    /// Reads an Open VSX search answer; separated out so it can be tested without the network.
+    static std::vector<MarketplaceEntry> parseSearchResults(const std::string& json);
     bool uninstall(const std::string& id);
 
 private:
     std::filesystem::path directory_;
+    std::filesystem::path userSnippets_;
+    SnippetLibrary snippetLibrary_;
     std::vector<Extension> extensions_;
+    std::vector<Extension> disabled_;
+    std::set<std::string> disabledIds_;
     std::map<std::string, LanguageInfo> languages_;  // merged across extensions
     std::map<std::string, GrammarInfo> grammarsByScope_;
     std::map<std::string, std::string> scopeByLanguage_;

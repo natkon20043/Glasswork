@@ -51,6 +51,21 @@ extern NSNotificationName const GWEditorSettingsDidChangeNotification;
 - (NSArray<NSString *> *)themeLabels;
 - (void)selectThemeNamed:(NSString *)label;
 
+/// Switches an installed extension on or off (by "publisher.name"). Its grammars, themes, snippets,
+/// icons, keybindings and code stop (or start) at once.
+- (void)setExtension:(NSString *)identifier enabled:(BOOL)enabled;
+/// Whether an installed extension is switched off.
+- (BOOL)isExtensionDisabled:(NSString *)identifier;
+
+/// The file icon theme in use (from an extension), or null for the built-in symbols.
+- (const gw::IconTheme *)iconTheme;
+/// Labels of the file icon themes extensions provide.
+- (NSArray<NSString *> *)iconThemeLabels;
+/// The label of the theme in use, or nil for the built-in icons.
+@property (nonatomic, readonly, copy, nullable) NSString *iconThemeLabel;
+/// Chooses a file icon theme by label; nil goes back to the built-in icons.
+- (void)selectIconThemeLabel:(nullable NSString *)label;
+
 - (void)installExtension:(NSString *)identifier
               completion:(void (^)(BOOL ok, NSString *message))completion;
 - (void)uninstallExtension:(NSString *)identifier;

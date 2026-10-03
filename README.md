@@ -27,6 +27,7 @@ The first configuration downloads nlohmann/json and Oniguruma. A from-scratch bu
 - Edit ▸ Transform: upper, lower and title case, sort lines up or down, remove duplicate lines; Join Lines (⌃J).
 - Line commands: move (⌥↑/⌥↓), duplicate (⇧⌥↑/⇧⌥↓), delete (⇧⌘K), insert line below/above (⌘↩ / ⇧⌘↩), toggle comment (⌘/), indent/outdent. Brackets and quotes close themselves and wrap a selection.
 - Expand Selection (⌃⇧⌘→) grows the selection from the word to the brackets around it, the line, the next brackets out and finally the whole file; Shrink Selection (⌃⇧⌘←) steps back. Go to Matching Bracket (⇧⌘\\) jumps to the other end of the bracket at the caret.
+- Column selection: ⇧⌥-drag selects the same columns on every row you cross.
 - Multiple cursors: ⌥-click, ⌘D for the next occurrence, ⌃⌘G for every occurrence, ⌥⌘↑/⌥⌘↓ for cursors above and below. Typing, deleting, Return, cut, copy, paste and movement act at every cursor as one undo step; Esc goes back to one.
 - `.editorconfig` files set the indent style and size per file type, and `files.trimTrailingWhitespace` / `files.insertFinalNewline` (or the same keys in `.editorconfig`) clean up on save.
 - Markdown files open a live rendered preview beside the tab (⇧⌘V); images (png, jpg, gif, svg, pdf…) open in their own tab.
@@ -59,6 +60,10 @@ The first configuration downloads nlohmann/json and Oniguruma. A from-scratch bu
 
 **Terminal**
 - ⌃` toggles a real terminal (xterm-256color, true colour, mouse, alternate screen, scrollback, wide characters). Vim, htop, tmux and `claude` itself work in it.
+
+**Keyboard shortcuts**
+- Beyond the menus' shortcuts, Glasswork reads VS Code keybindings: the ones extensions declare (`contributes.keybindings`) and your own in `~/Library/Application Support/Glasswork/keybindings.json` (Glasswork ▸ Keyboard Shortcuts (JSON)…, in VS Code's format: `{ "key": "cmd+shift+u", "command": "editor.action.transformToUppercase", "when": "editorTextFocus" }`). Saving the file applies it.
+- Keys can be sequences (`cmd+k cmd+s`: the status bar says it is waiting for the next key), commands are VS Code's ids (about a hundred editor, file, search, debug and view commands are understood) or an extension's own, `args` are passed on, and a command starting with `-` removes a binding. `when` clauses support `&&`, `||`, `!`, `==`, `!=`, `=~` and the keys `editorTextFocus`, `terminalFocus`, `inputFocus`, `editorLangId`, `resourceExtname`, `resourceFilename`, `editorHasSelection`, `editorHasMultipleSelections`, `editorReadonly`, plus keys extensions set with `setContext`.
 
 **Settings**
 - ⌘, opens `~/Library/Application Support/Glasswork/settings.json` (JSON with comments). Changes apply as you save. Keys include `editor.fontSize`, `editor.fontFamily`, `editor.tabSize`, `editor.opacity`, `window.glassTint`, `window.frostedBackdrop`, `window.glassStyle`, `workbench.colorTheme`, `files.autoSave`, `files.formatOnSave`, `terminal.fontSize` and `terminal.shell`.
@@ -99,10 +104,13 @@ If a server isn't installed, the status bar says so and the menu commands tell y
 What you get:
 
 - **Problems** as you type: wavy underlines, a dot in the line numbers, the message at the end of the line (`editor.inlineDiagnostics`), and error and warning counts in the status bar. ⇧⌘M lists the problems in the file.
+- **Inlay hints**: parameter names before arguments (`add(left: 3, right: 4)`), inferred types after `auto` and `let` variables, and the like, drawn inline as small chips from any language server that offers them (clangd, rust-analyzer, gopls, TypeScript…). `editor.inlayHints.enabled` turns them off. Hints make room in the line without changing the text, so the caret, selections and clicks stay where they should.
+- **Snippets** from extensions (`contributes.snippets`: the language packs bring `for`, `class`, `log`…) and your own (`~/Library/Application Support/Glasswork/snippets/<language>.json`, or `*.code-snippets` files with a `scope`) join the completion list. They support VS Code's variables (`$TM_FILENAME`, `$CURRENT_YEAR`, `$CLIPBOARD`, `$UUID`…), tab stops, placeholders and mirrors.
+- **Server messages and settings**: a server's `showMessage` appears in the status bar (and its log under Extensions ▸ Show Extension Output…), progress such as "clangd: Indexing 30%" shows while it lasts, questions with buttons open a sheet, and your settings answer the server's `workspace/configuration` requests (`python.analysis.*`, `rust-analyzer.*`, `gopls.*`… in settings.json, flat or nested) and are re-sent when they change.
 - **Hover** (rest the pointer on a name): the declaration and documentation, plus any problems on it.
-- **Completion** as you type, fuzzy-filtered, with ↑↓, ↩ or ⇥ to accept and ⎋ to close. ⌃Space opens it on demand. Snippet completions (such as a function call with its arguments) select the first placeholder; ⇥ moves to the next one, ⇧⇥ back, and the same placeholder written twice is typed in both places at once. ⎋ or moving away ends it.
+- **Completion** as you type, ranked the way VS Code does it (names that start with what you typed, word starts and camelCase humps, the case you typed, recently accepted names first, deprecated ones struck through and last), with ↑↓, ↩ or ⇥ to accept and ⎋ to close. The highlighted item's signature and documentation show in a panel beside the list. Servers that add imports when an item is chosen are asked first (`completionItem/resolve`), typing a commit character such as `.` or `(` accepts the item, and partial lists are re-requested as you keep typing. ⌃Space opens it on demand. Snippet completions (such as a function call with its arguments) select the first placeholder; ⇥ moves to the next one, ⇧⇥ back, and the same placeholder written twice is typed in both places at once. ⎋ or moving away ends it.
 - **Signature help** while typing a call: the function's signature with the current argument in bold.
-- **Quick Fix** (⌘.) applies the fixes a server offers for the problems at the caret.
+- **Quick Fix** (⌘.) lists the fixes and refactorings a server offers at the caret (extract variable, inline, convert…) and applies them, including ones the server carries out itself by running a command.
 - **Go to Symbol in File** (⌘R) and **in Project** (⌘T).
 - **Go to Definition** (⌃⌘D), **Find References** (⌃⌘R), **Rename Symbol** (F2, across all files) and **Format Document** (⇧⌥F), all in the Go menu.
 
@@ -111,8 +119,37 @@ Open the project folder and provide a `compile_commands.json` for accurate C-fam
 Current boundaries:
 
 - Documents over 4 MB aren't sent to servers.
-- Files are sent whole after each pause in typing, not as incremental edits.
+- Edits are sent to the server as small ranges after each pause in typing (whole-file sync is the fallback for servers that ask for it and after very large bursts of edits).
 - The client does not run downloaded extension JavaScript.
+
+## VS Code extensions
+
+Glasswork runs real VS Code extensions. Install one from the Extensions menu (Open VSX), and it works the way it does in VS Code: its commands appear in the command palette, its language features (completion, hover, formatting, diagnostics, code actions, rename…) appear in the editor, and its status bar items and messages appear in the window.
+
+Extensions run in an **extension host**, a Node.js process Glasswork starts only when something needs it (a file in a language an installed extension serves, an extension that runs at startup, or one of its commands). It needs Node.js 18 or newer: the app made by `scripts/package.sh` carries its own copy (set `GLASSWORK_BUNDLE_NODE=0` to leave it out, or `GLASSWORK_NODE_BINARY` to choose which Node goes in); a development build uses the one on your PATH (`brew install node`). Each extension runs only when one of the events in its `package.json` fires (`onLanguage:…`, `onCommand:…`, `*`, `onStartupFinished`, `workspaceContains:…`), so installed extensions that aren't in use cost nothing.
+
+How it fits together:
+
+- `host/` is the host (JavaScript). `host/api/` implements the `vscode` module extensions `require` (or `import`): `commands`, `window`, `workspace`, `languages`, `env`, `extensions`, configuration, text documents, and the value types (`Position`, `Range`, `Uri`, `Diagnostic`, `CompletionItem`…). APIs without a Glasswork counterpart yet (webviews, tree views, notebooks, tests, debug adapters, terminals) exist but do nothing, so extensions that only touch them still activate; the first use of each is written to the Extension Host log.
+- The providers an extension registers are presented to the editor as a **virtual language server** (`host/virtualServer.js`): requests such as `textDocument/completion` are answered by calling the extension's provider and converting the result to protocol JSON. So every language feature that works with clangd works with an extension, and an extension's server (such as the one the Red Hat YAML extension starts) is reached through its own language client, running unmodified.
+- A file can follow several servers at once. Completion, hover, code actions, definitions and the like ask every server that supports them and merge the answers; formatting asks the extension first, so Prettier and similar formatters take over; everything else goes to the first server that supports it.
+- `core/ExtensionHost.*` starts and supervises the host and gives each language a transport, `app/ExtensionHostService.*` connects it to the window.
+
+**File icon themes**: install one such as Material Icon Theme, then Extensions ▸ Select File Icon Theme… (or `"workbench.iconTheme"` in settings.json). The file tree and the tabs draw the theme's SVG icons, chosen the way VS Code chooses them (exact file name, then the longest matching extension, then the language, then the default; folders by name, open or closed; separate icons for light colour themes).
+
+**Managing extensions**: Extensions ▸ Manage Extensions… lists everything installed; choose one to disable it (`extensions.disabled` in settings.json: its grammars, themes, snippets, icons, keybindings and code all stop), enable it again, or uninstall it.
+
+**Finding extensions**: Extensions ▸ Search Extensions… (⇧⌘X) searches Open VSX live as you type (the most downloaded show first) and Return installs; Install by ID… takes a `publisher.name`.
+
+Extensions can decorate text (`createTextEditorDecorationType` and `setDecorations`): background and border colours, text colour, bold, italic, underline and strikethrough, whole-line highlights, theme colours, light and dark variants, and a note drawn after the end of the line (the way Error Lens shows messages). Decorations belong to the extension that made them and go away when it disposes the type.
+
+Extensions can read and change the file in front (`window.activeTextEditor`: its document, selections and options, `edit`, `insertSnippet`, moving the cursors, and the active-editor and selection events), react to documents opening, changing and saving, and watch files on disk (`createFileSystemWatcher` gets real create, change and delete events). The same file events go to language servers that asked for them (`workspace/didChangeWatchedFiles`), so a new source file or an edited build file is noticed without reopening anything.
+
+Extension output channels are plain log files (`~/Library/Application Support/Glasswork/extension-logs/`), opened from Extensions ▸ Show Extension Output…. Extensions ▸ Restart Extensions restarts the host. Settings an extension saves go to `extension-settings.json` next to `settings.json`, which is never rewritten.
+
+Tried against the real extensions: Red Hat YAML (its language server runs and reports schema errors), Prettier (an ES module), Even Better TOML (WASM server), ESLint, Go and Vim activate; extensions that depend on features not listed above (Vim's key handling, webview-based UIs) load but those parts do nothing yet.
+
+`node host/tools/try-extension.js publisher.name onLanguage:xyz` downloads an extension, activates it in a host of its own and prints what happened, which is the quickest way to see what an extension needs.
 
 ## Developer hooks
 
@@ -127,11 +164,11 @@ Environment variables for checking the interface without clicking:
 
 ## Next milestones
 
-1. Refactoring code actions that need the server to run commands, and semantic-token colours.
-2. Incremental document sync, column selection and split editors.
-3. Debugging other languages through their own adapters, conditional breakpoints and watch expressions.
+1. Split editors.
+2. Conditional breakpoints and watch expressions.
+3. Debugging other languages through their own adapters.
 
-VS Code extension compatibility currently means themes, grammars and declarative language configuration. Running its general JavaScript extension ecosystem requires an extension host/API compatibility project; it is not provided by LSP alone.
+VS Code extension compatibility covers themes, grammars, language configuration and, through the extension host above, extensions' code. The parts of the `vscode` API that need new interface (webviews, tree views, terminals, notebooks, the test and debug UIs) are the remaining work.
 
 ## License
 

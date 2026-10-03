@@ -28,6 +28,14 @@ NS_ASSUME_NONNULL_BEGIN
            placeholder:(NSString *)placeholder
               provider:(NSArray<GWPaletteItem *> * (^)(NSString *query))provider;
 
+/// Like showOverWindow:placeholder:provider:, and `onDismiss` runs if the palette is closed
+/// without a row being chosen (Esc, or clicking elsewhere). Used where something is waiting
+/// for an answer.
+- (void)showOverWindow:(NSWindow *)window
+           placeholder:(NSString *)placeholder
+              provider:(NSArray<GWPaletteItem *> * (^)(NSString *query))provider
+             onDismiss:(void (^)(void))onDismiss;
+
 /// Runs the provider again with the text now in the search field. For lists that fill in
 /// later (results that arrive from a language server).
 - (void)refresh;

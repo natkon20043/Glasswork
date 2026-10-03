@@ -1,0 +1,19 @@
+{
+  "name": "sample",
+  "publisher": "glasswork-tests",
+  "version": "1.0.0",
+  "engines": { "vscode": "^1.80.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:fake"],
+  "contributes": {
+    "commands": [{ "command": "sample.hello", "title": "Say Hello", "category": "Sample" }, { "command": "sample.shout", "title": "Shout" }, { "command": "sample.snippet", "title": "Snippet" }, { "command": "sample.editorEvents", "title": "Events" }, { "command": "sample.fileEvents", "title": "File events" }, { "command": "sample.decorate", "title": "Decorate" }, { "command": "sample.crash", "title": "Crash" }, { "command": "sample.undecorate", "title": "Undecorate" }],
+    "languages": [{ "id": "fake", "extensions": [".fake"] }],
+    "configuration": {
+      "title": "Sample",
+      "properties": {
+        "sample.greeting": { "type": "string", "default": "Hello" },
+        "sample.shout": { "type": "boolean", "default": false }
+      }
+    }
+  }
+}

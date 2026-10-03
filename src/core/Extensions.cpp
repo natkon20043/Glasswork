@@ -62,6 +62,24 @@ std::vector<std::string> stringList(const json& value) {
     return list;
 }
 
+/// Replaces every "%key%" string anywhere in the manifest with its translation.
+json localizeAll(const json& value, const json& strings) {
+    if (value.is_string()) {
+        return json(localize(value, strings));
+    }
+    if (value.is_array()) {
+        json result = json::array();
+        for (const auto& item : value) result.push_back(localizeAll(item, strings));
+        return result;
+    }
+    if (value.is_object()) {
+        json result = json::object();
+        for (const auto& [key, item] : value.items()) result[key] = localizeAll(item, strings);
+        return result;
+    }
+    return value;
+}
+
 std::optional<Extension> readExtension(const fs::path& root) {
     json manifest = readJson(root / "package.json");
     if (!manifest.is_object()) return std::nullopt;
@@ -73,6 +91,11 @@ std::optional<Extension> readExtension(const fs::path& root) {
     extension.version = manifest.value("version", "");
     extension.displayName = manifest.contains("displayName") ? localize(manifest["displayName"], strings) : extension.id;
     extension.description = manifest.contains("description") ? localize(manifest["description"], strings) : "";
+    extension.hasCode = manifest.contains("main") && manifest["main"].is_string();
+    if (extension.hasCode) {
+        // Only extensions with code are handed to the extension host; keep the manifest for them.
+        extension.manifestJson = localizeAll(manifest, strings).dump();
+    }
 
     const json contributes = manifest.value("contributes", json::object());
     for (const auto& language : contributes.value("languages", json::array())) {
@@ -94,6 +117,23 @@ std::optional<Extension> readExtension(const fs::path& root) {
         info.scopeName = grammar["scopeName"].get<std::string>();
         info.path = root / grammar["path"].get<std::string>();
         extension.grammars.push_back(std::move(info));
+    }
+    if (contributes.contains("keybindings") && contributes["keybindings"].is_array()) {
+        extension.keybindingsJson = contributes["keybindings"].dump();
+    }
+    for (const auto& snippet : contributes.value("snippets", json::array())) {
+        if (!snippet.is_object() || !snippet.contains("language") || !snippet.contains("path")) continue;
+        if (!snippet["language"].is_string() || !snippet["path"].is_string()) continue;
+        extension.snippets.emplace_back(snippet["language"].get<std::string>(), root / snippet["path"].get<std::string>());
+    }
+    for (const auto& theme : contributes.value("iconThemes", json::array())) {
+        if (!theme.is_object() || !theme.contains("path") || !theme["path"].is_string()) continue;
+        IconThemeInfo info;
+        info.id = theme.value("id", "");
+        info.label = theme.contains("label") ? localize(theme["label"], strings) : info.id;
+        info.path = root / theme["path"].get<std::string>();
+        info.extensionId = extension.id;
+        if (!info.id.empty()) extension.iconThemes.push_back(std::move(info));
     }
     for (const auto& theme : contributes.value("themes", json::array())) {
         if (!theme.is_object() || !theme.contains("path")) continue;
@@ -173,8 +213,21 @@ ExtensionManager::ExtensionManager(fs::path directory) : directory_(std::move(di
     fs::create_directories(directory_, ignored);
 }
 
+std::string ExtensionManager::contributedKeybindingsJson() const {
+    json all = json::array();
+    for (const Extension& extension : extensions_) {
+        if (extension.keybindingsJson.empty()) continue;
+        json entries = json::parse(extension.keybindingsJson, nullptr, false);
+        if (!entries.is_array()) continue;
+        for (const json& entry : entries) all.push_back(entry);
+    }
+    return all.dump();
+}
+
 void ExtensionManager::scan() {
+    snippetLibrary_.clear();
     extensions_.clear();
+    disabled_.clear();
     languages_.clear();
     grammarsByScope_.clear();
     scopeByLanguage_.clear();
@@ -188,6 +241,10 @@ void ExtensionManager::scan() {
     for (const auto& root : roots) {
         auto extension = readExtension(root);
         if (!extension) continue;
+        if (disabledIds_.count(extension->id) > 0) {
+            disabled_.push_back(std::move(*extension));  // known, but contributing nothing
+            continue;
+        }
         for (const auto& language : extension->languages) {
             // Several extensions may describe one language; merge what they add.
             LanguageInfo& merged = languages_[language.id];
@@ -201,7 +258,26 @@ void ExtensionManager::scan() {
             grammarsByScope_[grammar.scopeName] = grammar;
             if (!grammar.language.empty()) scopeByLanguage_[grammar.language] = grammar.scopeName;
         }
+        for (const auto& [language, file] : extension->snippets) {
+            snippetLibrary_.addSource(language, file);
+        }
         extensions_.push_back(std::move(*extension));
+    }
+
+    // The user's own snippets come after the extensions', so they sort last among equals.
+    if (!userSnippets_.empty()) {
+        std::vector<fs::path> files;
+        for (const auto& entry : fs::directory_iterator(userSnippets_, code)) {
+            if (entry.is_regular_file()) files.push_back(entry.path());
+        }
+        std::sort(files.begin(), files.end());
+        for (const auto& file : files) {
+            if (file.extension() == ".code-snippets") {
+                snippetLibrary_.addSource("", file);
+            } else if (file.extension() == ".json") {
+                snippetLibrary_.addSource(file.stem().string(), file);
+            }
+        }
     }
 }
 
@@ -255,6 +331,12 @@ std::vector<ThemeInfo> ExtensionManager::themes() const {
     return themes;
 }
 
+std::vector<IconThemeInfo> ExtensionManager::iconThemes() const {
+    std::vector<IconThemeInfo> themes;
+    for (const auto& extension : extensions_) themes.insert(themes.end(), extension.iconThemes.begin(), extension.iconThemes.end());
+    return themes;
+}
+
 LanguageConfiguration ExtensionManager::configuration(const std::string& language) const {
     LanguageConfiguration configuration;
     auto found = languages_.find(language);
@@ -280,6 +362,66 @@ LanguageConfiguration ExtensionManager::configuration(const std::string& languag
         }
     }
     return configuration;
+}
+
+namespace {
+
+std::string urlEncode(const std::string& text) {
+    static const char* hex = "0123456789ABCDEF";
+    std::string encoded;
+    for (unsigned char character : text) {
+        bool plain = (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+                     (character >= '0' && character <= '9') || character == '-' || character == '_' || character == '.' || character == '~';
+        if (plain) {
+            encoded += static_cast<char>(character);
+        } else {
+            encoded += '%';
+            encoded += hex[character >> 4];
+            encoded += hex[character & 15];
+        }
+    }
+    return encoded;
+}
+
+}  // namespace
+
+std::vector<ExtensionManager::MarketplaceEntry> ExtensionManager::parseSearchResults(const std::string& jsonText) {
+    std::vector<MarketplaceEntry> entries;
+    json answer = json::parse(jsonText, nullptr, false);
+    if (!answer.is_object() || !answer.contains("extensions") || !answer["extensions"].is_array()) {
+        return entries;
+    }
+    for (const auto& item : answer["extensions"]) {
+        if (!item.is_object() || !item.contains("name") || !item.contains("namespace")) continue;
+        MarketplaceEntry entry;
+        entry.publisher = item.value("namespace", "");
+        entry.id = entry.publisher + "." + item.value("name", "");
+        entry.displayName = item.contains("displayName") && item["displayName"].is_string() ? item["displayName"].get<std::string>() : item.value("name", "");
+        entry.description = item.contains("description") && item["description"].is_string() ? item["description"].get<std::string>() : "";
+        entry.version = item.value("version", "");
+        entry.downloads = item.contains("downloadCount") && item["downloadCount"].is_number() ? item["downloadCount"].get<long>() : 0;
+        entry.rating = item.contains("averageRating") && item["averageRating"].is_number() ? item["averageRating"].get<double>() : 0;
+        if (item.contains("files") && item["files"].is_object() && item["files"].contains("icon") && item["files"]["icon"].is_string()) {
+            entry.iconURL = item["files"]["icon"].get<std::string>();
+        }
+        entries.push_back(std::move(entry));
+    }
+    return entries;
+}
+
+std::vector<ExtensionManager::MarketplaceEntry> ExtensionManager::searchOpenVSX(const std::string& query, size_t limit, std::string* error) {
+    std::string url = "https://open-vsx.org/api/-/search?size=" + std::to_string(limit) + "&sortBy=" +
+                      std::string(query.empty() ? "downloadCount" : "relevance") + "&sortOrder=desc";
+    if (!query.empty()) {
+        url += "&query=" + urlEncode(query);
+    }
+    std::string problem;
+    auto body = httpGet(url, nullptr, &problem);
+    if (!body) {
+        if (error) *error = "Couldn't reach Open VSX (" + problem + ").";
+        return {};
+    }
+    return parseSearchResults(*body);
 }
 
 ExtensionManager::InstallResult ExtensionManager::installFromOpenVSX(const std::string& id, const fs::path& directory) {

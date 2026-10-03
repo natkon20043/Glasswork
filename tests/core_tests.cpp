@@ -1,12 +1,20 @@
 // Unit tests for Glasswork's core. A tiny harness keeps the build dependency-free.
 
+#include "CompletionRank.hpp"
+#include "CssColor.hpp"
 #include "Document.hpp"
 #include "EditorSettings.hpp"
+#include "Extensions.hpp"
 #include "Fuzzy.hpp"
+#include "Glob.hpp"
+#include "IconTheme.hpp"
+#include "Keybindings.hpp"
 #include "NavigationHistory.hpp"
 #include "Sections.hpp"
 #include "SelectionExpand.hpp"
+#include "SettingsLookup.hpp"
 #include "Snippet.hpp"
+#include "SnippetLibrary.hpp"
 #include "Styling.hpp"
 #include "TextTransforms.hpp"
 #include "WordSuggestions.hpp"
@@ -1045,6 +1053,578 @@ TEST(reloadFromDiskAlwaysEndsWithTheDiskText) {
         CHECK_EQ(opened->buffer().text(), expected.text());
     }
     std::filesystem::remove(path);
+}
+
+
+/// What a language server does with an incremental change: find the range by line and UTF-16
+/// column in its own copy of the text and splice the new text in.
+std::string replaySyncEdits(std::string text, const std::vector<gw::SyncEdit>& edits) {
+    auto offsetOf = [](const std::string& source, size_t line, size_t units) {
+        size_t offset = 0;
+        for (size_t skipped = 0; skipped < line; ++skipped) {
+            offset = source.find('\n', offset) + 1;
+        }
+        size_t counted = 0;
+        while (counted < units) {
+            unsigned char first = static_cast<unsigned char>(source[offset]);
+            size_t width = first >= 0xF0 ? 4 : first >= 0xE0 ? 3 : first >= 0xC0 ? 2 : 1;
+            counted += width == 4 ? 2 : 1;
+            offset += width;
+        }
+        return offset;
+    };
+    for (const gw::SyncEdit& edit : edits) {
+        size_t start = offsetOf(text, edit.startLine, edit.startUnits);
+        size_t end = offsetOf(text, edit.endLine, edit.endUnits);
+        text.replace(start, end - start, edit.text);
+    }
+    return text;
+}
+
+TEST(syncEditsDescribeEditsInUtf16Columns) {
+    gw::Document document;
+    document.replace({{0, 0}, {0, 0}}, "a\xF0\x9F\x98\x80" "b\xE6\x97\xA5" "c\nsecond line");
+    document.recordSyncEdits(true);
+
+    // Insert after the emoji (4 UTF-8 bytes, 2 UTF-16 units) and the CJK character (3 bytes, 1 unit).
+    document.replace({{0, 5}, {0, 5}}, "X");
+    document.replace({{0, 10}, {0, 10}}, "Y");  // after "a😀Xb日"
+    auto edits = document.takeSyncEdits();
+    CHECK(edits.has_value());
+    CHECK_EQ(edits->size(), size_t(2));
+    CHECK_EQ((*edits)[0].startUnits, size_t(3));  // a + emoji (2 units)
+    CHECK_EQ((*edits)[0].endUnits, size_t(3));
+    CHECK_EQ((*edits)[0].text, std::string("X"));
+    CHECK_EQ((*edits)[1].startUnits, size_t(6));  // a(1) + emoji(2) + X(1) + b(1) + CJK(1), measured after the first edit
+    // Taking the list empties it.
+    CHECK(document.takeSyncEdits()->empty());
+}
+
+TEST(syncEditsReplayToTheSameText) {
+    gw::Document document;
+    document.replace({{0, 0}, {0, 0}}, "one\ntwo \xF0\x9F\x98\x80 emoji\nthree \xE6\x97\xA5\xE6\x9C\xAC\nfour");
+    document.recordSyncEdits(true);
+    std::string server = document.buffer().text();
+
+    auto sync = [&]() {
+        auto edits = document.takeSyncEdits();
+        CHECK(edits.has_value());
+        server = replaySyncEdits(server, *edits);
+        CHECK_EQ(server, document.buffer().text());
+    };
+
+    document.replace({{1, 4}, {1, 8}}, "");                       // delete the emoji
+    sync();
+    document.replace({{0, 1}, {2, 3}}, "-\n-");                    // replace across three lines
+    sync();
+    document.replace({{0, 0}, {0, 0}}, "\xF0\x9F\x98\x80 start\n");  // insert with a line break at the top
+    sync();
+    document.beginUndoGroup();
+    document.replace({{0, 0}, {0, 2}}, "A");
+    document.replace({{1, 0}, {1, 1}}, "BB");
+    document.endUndoGroup();
+    sync();
+    CHECK(document.undo());                                        // undo and redo are edits too
+    sync();
+    CHECK(document.redo());
+    sync();
+    CHECK(document.undo());
+    CHECK(document.undo());
+    sync();
+}
+
+TEST(syncEditsSurviveRandomEditing) {
+    std::mt19937 random(12345);
+    const char* pieces[] = {"x", "hello", "\n", "\xF0\x9F\x98\x80", "\xE6\x97\xA5", " ", "ab\ncd", ""};
+    gw::Document document;
+    document.replace({{0, 0}, {0, 0}}, "start\nmiddle \xF0\x9F\x98\x80 line\nend");
+    document.recordSyncEdits(true);
+    std::string server = document.buffer().text();
+
+    for (int round = 0; round < 300; ++round) {
+        int edits = 1 + static_cast<int>(random() % 4);
+        for (int index = 0; index < edits; ++index) {
+            const gw::TextBuffer& buffer = document.buffer();
+            size_t line = random() % buffer.lineCount();
+            // Pick whole-character boundaries so the text stays valid UTF-8.
+            std::string_view text = buffer.line(line);
+            std::vector<size_t> boundaries;
+            for (size_t byte = 0; byte <= text.size(); ++byte) {
+                bool isContinuation = byte < text.size() && (static_cast<unsigned char>(text[byte]) & 0xC0) == 0x80;
+                if (!isContinuation) boundaries.push_back(byte);
+            }
+            size_t startColumn = boundaries[random() % boundaries.size()];
+            size_t endColumn = boundaries[random() % boundaries.size()];
+            size_t endLine = line;
+            if (random() % 5 == 0 && line + 1 < buffer.lineCount()) {
+                endLine = line + 1;
+                endColumn = 0;
+            }
+            document.replace({{line, startColumn}, {endLine, endColumn}}, pieces[random() % 8]);
+        }
+        if (random() % 6 == 0) document.undo();
+        if (random() % 9 == 0) document.redo();
+
+        auto list = document.takeSyncEdits();
+        CHECK(list.has_value());
+        server = replaySyncEdits(server, *list);
+        if (server != document.buffer().text()) {
+            CHECK_EQ(server, document.buffer().text());
+            break;
+        }
+    }
+}
+
+TEST(syncEditsGiveUpWhenTooMuchChanged) {
+    gw::Document document;
+    document.recordSyncEdits(true);
+    for (int index = 0; index < 1200; ++index) {
+        document.replace({{0, 0}, {0, 0}}, "x");
+    }
+    CHECK(!document.takeSyncEdits().has_value());  // caller must send the whole text
+
+    // And it recovers: the next batch is small again.
+    document.replace({{0, 0}, {0, 0}}, "y");
+    auto small = document.takeSyncEdits();
+    CHECK(small.has_value());
+    CHECK_EQ(small->size(), size_t(1));
+
+    document.recordSyncEdits(false);
+    document.replace({{0, 0}, {0, 0}}, "z");
+    CHECK(document.takeSyncEdits()->empty());
+}
+
+
+gw::CompletionCandidate suggestion(const std::string& label, const std::string& sortText = "", int kind = 6) {
+    gw::CompletionCandidate candidate;
+    candidate.label = label;
+    candidate.filterText = label;
+    candidate.sortText = sortText.empty() ? label : sortText;
+    candidate.kind = kind;
+    return candidate;
+}
+
+std::vector<std::string> rankedLabels(std::string_view query, const std::vector<gw::CompletionCandidate>& candidates,
+                                      const gw::CompletionHistory& history = gw::CompletionHistory()) {
+    std::vector<std::string> labels;
+    for (size_t index : gw::rankCompletions(query, candidates, history)) {
+        labels.push_back(candidates[index].label);
+    }
+    return labels;
+}
+
+TEST(completionRankingPrefersStartsOfNamesAndWordHumps) {
+    std::vector<gw::CompletionCandidate> candidates = {suggestion("agwx"), suggestion("glassWork"), suggestion("gwen"),
+                                                       suggestion("nothing")};
+    auto labels = rankedLabels("gw", candidates);
+    CHECK_EQ(labels.size(), size_t(3));  // "nothing" doesn't match
+    CHECK_EQ(labels[0], std::string("gwen"));       // starts with it
+    CHECK_EQ(labels[1], std::string("glassWork"));  // word starts beat a mid-word hit
+    CHECK_EQ(labels[2], std::string("agwx"));
+}
+
+TEST(completionRankingFavoursTheCaseTyped) {
+    std::vector<gw::CompletionCandidate> candidates = {suggestion("vector"), suggestion("Vector"), suggestion("VECTOR_MAX")};
+    CHECK_EQ(rankedLabels("Vec", candidates)[0], std::string("Vector"));
+    CHECK_EQ(rankedLabels("vec", candidates)[0], std::string("vector"));
+}
+
+TEST(completionRankingUsesRecentChoicesWithoutBeatingBetterMatches) {
+    std::vector<gw::CompletionCandidate> candidates = {suggestion("print_all"), suggestion("print_line"), suggestion("sprint")};
+    gw::CompletionHistory history;
+    history.accepted("print_line", 6);
+    auto labels = rankedLabels("pr", candidates, history);
+    CHECK_EQ(labels[0], std::string("print_line"));  // same kind of match, but used lately
+    CHECK_EQ(labels[1], std::string("print_all"));
+    CHECK_EQ(labels[2], std::string("sprint"));
+
+    // A used name that matches worse still doesn't jump over a name that starts with the query.
+    gw::CompletionHistory sprintHistory;
+    sprintHistory.accepted("sprint", 6);
+    CHECK_EQ(rankedLabels("pr", candidates, sprintHistory)[2], std::string("sprint"));
+}
+
+TEST(completionRankingDemotesDeprecatedNames) {
+    std::vector<gw::CompletionCandidate> candidates = {suggestion("oldName"), suggestion("olderName")};
+    candidates[0].deprecated = true;
+    CHECK_EQ(rankedLabels("old", candidates)[0], std::string("olderName"));
+}
+
+TEST(completionRankingWithNothingTypedFollowsServerHints) {
+    std::vector<gw::CompletionCandidate> candidates = {suggestion("zeta", "1"), suggestion("alpha", "2"), suggestion("beta", "3")};
+    CHECK_EQ(rankedLabels("", candidates)[0], std::string("zeta"));  // the server's sort text
+
+    candidates[2].preselect = true;
+    CHECK_EQ(rankedLabels("", candidates)[0], std::string("beta"));  // its preselected pick wins
+
+    gw::CompletionHistory history;
+    history.accepted("alpha", 6);
+    candidates[2].preselect = false;
+    CHECK_EQ(rankedLabels("", candidates, history)[0], std::string("alpha"));
+}
+
+TEST(completionRankingHonoursFilterTextAndLimit) {
+    gw::CompletionCandidate item = suggestion("this->value");
+    item.filterText = "value";  // typed letters match this, not the label
+    CHECK_EQ(rankedLabels("val", {item}).size(), size_t(1));
+    CHECK_EQ(rankedLabels("this", {item}).size(), size_t(0));
+
+    std::vector<gw::CompletionCandidate> many;
+    for (int index = 0; index < 500; ++index) {
+        many.push_back(suggestion("item" + std::to_string(index)));
+    }
+    CHECK_EQ(gw::rankCompletions("it", many, gw::CompletionHistory(), 50).size(), size_t(50));
+}
+
+
+TEST(openVsxSearchResultsAreParsed) {
+    const char* answer = R"json({
+      "offset": 0, "totalSize": 2,
+      "extensions": [
+        {"namespace": "redhat", "name": "vscode-yaml", "displayName": "YAML", "version": "1.25.0",
+         "description": "YAML Language Support by Red Hat", "downloadCount": 12345678, "averageRating": 4.5,
+         "files": {"icon": "https://open-vsx.org/icon.png", "download": "https://open-vsx.org/x.vsix"}},
+        {"namespace": "someone", "name": "tiny", "version": "0.0.1", "downloadCount": 3}
+      ]})json";
+    auto entries = gw::ExtensionManager::parseSearchResults(answer);
+    CHECK_EQ(entries.size(), size_t(2));
+    CHECK_EQ(entries[0].id, std::string("redhat.vscode-yaml"));
+    CHECK_EQ(entries[0].displayName, std::string("YAML"));
+    CHECK_EQ(entries[0].downloads, 12345678L);
+    CHECK(entries[0].rating > 4.4 && entries[0].rating < 4.6);
+    CHECK_EQ(entries[0].iconURL, std::string("https://open-vsx.org/icon.png"));
+    CHECK_EQ(entries[1].id, std::string("someone.tiny"));
+    CHECK_EQ(entries[1].displayName, std::string("tiny"));  // no display name: the short name
+    CHECK_EQ(entries[1].description, std::string(""));
+
+    CHECK_EQ(gw::ExtensionManager::parseSearchResults("not json").size(), size_t(0));
+    CHECK_EQ(gw::ExtensionManager::parseSearchResults("{\"error\": \"nope\"}").size(), size_t(0));
+}
+
+
+TEST(snippetVariablesAreFilledIn) {
+    gw::SnippetVariables variables = gw::standardSnippetVariables("/work/app/src/main.cpp", "/work/app");
+    CHECK_EQ(variables["TM_FILENAME"], std::string("main.cpp"));
+    CHECK_EQ(variables["TM_FILENAME_BASE"], std::string("main"));
+    CHECK_EQ(variables["TM_DIRECTORY"], std::string("/work/app/src"));
+    CHECK_EQ(variables["RELATIVE_FILEPATH"], std::string("src/main.cpp"));
+    CHECK_EQ(variables["WORKSPACE_NAME"], std::string("app"));
+    CHECK_EQ(variables["CURRENT_YEAR"].size(), size_t(4));
+    CHECK_EQ(variables["UUID"].size(), size_t(36));
+    CHECK_EQ(variables["UUID"][14], '4');  // a version 4 UUID
+
+    gw::ParsedSnippet header = gw::parseSnippet("// $TM_FILENAME_BASE ${CURRENT_YEAR}\n#pragma once ${NOPE:fallback} $NOTHING$0", {}, &variables);
+    CHECK_EQ(header.text, std::string("// main ") + variables["CURRENT_YEAR"] + "\n#pragma once fallback ");
+
+    // A known variable beats its default; without a table, variables give their default or nothing.
+    CHECK_EQ(gw::parseSnippet("${TM_FILENAME:x}", {}, &variables).text, std::string("main.cpp"));
+    CHECK_EQ(gw::parseSnippet("${TM_FILENAME:x}").text, std::string("x"));
+}
+
+TEST(snippetFilesAreReadLikeVsCodeDoes) {
+    const char* file = R"json({
+      // comments and trailing commas are allowed
+      "For Loop": {"prefix": ["for", "fori"], "body": ["for (int ${1:i} = 0; ${1:i} < ${2:n}; ++${1:i}) {", "\t$0", "}"], "description": "A for loop",},
+      "Log": {"prefix": "log", "body": "console.log($1);", "scope": "javascript, typescript"},
+      "No prefix": {"body": "x"},
+      "No body": {"prefix": "nb"}
+    })json";
+    auto definitions = gw::parseSnippetFile(file);
+    CHECK_EQ(definitions.size(), size_t(3));  // for, fori and log
+    CHECK_EQ(definitions[0].prefix, std::string("for"));
+    CHECK_EQ(definitions[1].prefix, std::string("fori"));
+    CHECK_EQ(definitions[0].body, std::string("for (int ${1:i} = 0; ${1:i} < ${2:n}; ++${1:i}) {\n\t$0\n}"));
+    CHECK_EQ(definitions[0].description, std::string("A for loop"));
+    CHECK_EQ(definitions[2].scopes.size(), size_t(2));
+    CHECK_EQ(definitions[2].description, std::string("Log"));  // no description: the name
+
+    CHECK_EQ(gw::parseSnippetFile("garbage").size(), size_t(0));
+}
+
+TEST(snippetLibraryPicksSnippetsForALanguage) {
+    std::filesystem::path folder = std::filesystem::temp_directory_path() / ("gw-snippets-" + std::to_string(getpid()));
+    std::filesystem::create_directories(folder);
+    {
+        std::ofstream(folder / "cpp.json") << R"json({"Main": {"prefix": "main", "body": "int main() {}"}})json";
+        std::ofstream(folder / "global.code-snippets") << R"json({
+          "Todo": {"prefix": "todo", "body": "// TODO: $0"},
+          "Log": {"prefix": "log", "body": "console.log($0)", "scope": "javascript"}})json";
+    }
+    gw::SnippetLibrary library;
+    library.addSource("cpp", folder / "cpp.json");
+    library.addSource("", folder / "global.code-snippets");
+
+    auto prefixes = [&](const std::string& language) {
+        std::vector<std::string> names;
+        for (const auto& definition : library.forLanguage(language)) names.push_back(definition.prefix);
+        return names;
+    };
+    CHECK_EQ(prefixes("cpp").size(), size_t(2));         // main + todo
+    CHECK_EQ(prefixes("javascript").size(), size_t(2));  // todo + log
+    CHECK_EQ(prefixes("python").size(), size_t(1));      // todo only
+    CHECK_EQ(prefixes("python")[0], std::string("todo"));
+    std::filesystem::remove_all(folder);
+}
+
+
+TEST(extensionManifestsContributeSnippets) {
+    namespace fs = std::filesystem;
+    fs::path folder = fs::temp_directory_path() / ("gw-ext-snippets-" + std::to_string(getpid()));
+    fs::path extension = folder / "extensions" / "demo.snips-1.0.0";
+    fs::create_directories(extension / "snippets");
+    fs::create_directories(folder / "user-snippets");
+    std::ofstream(extension / "package.json") << R"json({
+      "name": "snips", "publisher": "demo", "version": "1.0.0",
+      "contributes": {"snippets": [{"language": "fake", "path": "./snippets/fake.json"}]}})json";
+    std::ofstream(extension / "snippets" / "fake.json") << R"json({"Greet": {"prefix": "greet", "body": ["hello ${1:name}", "$0"]}})json";
+    std::ofstream(folder / "user-snippets" / "fake.json") << R"json({"Mine": {"prefix": "mine", "body": "mine"}})json";
+
+    gw::ExtensionManager manager(folder / "extensions");
+    manager.setUserSnippetsDirectory(folder / "user-snippets");
+    manager.scan();
+    auto fake = manager.snippets().forLanguage("fake");
+    CHECK_EQ(fake.size(), size_t(2));  // the extension's, then the user's
+    CHECK_EQ(fake[0].prefix, std::string("greet"));
+    CHECK_EQ(fake[0].body, std::string("hello ${1:name}\n$0"));
+    CHECK_EQ(fake[1].prefix, std::string("mine"));
+    CHECK_EQ(manager.snippets().forLanguage("cpp").size(), size_t(0));
+
+    manager.scan();  // scanning again doesn't double the list
+    CHECK_EQ(manager.snippets().forLanguage("fake").size(), size_t(2));
+    fs::remove_all(folder);
+}
+
+
+TEST(settingsAreFoundWhetherWrittenFlatOrNested) {
+    nlohmann::json settings = nlohmann::json::parse(R"json({
+      "editor.fontSize": 14,
+      "python": {"analysis": {"typeCheckingMode": "strict", "extraPaths": ["a"]}},
+      "rust-analyzer.check.command": "clippy",
+      "rust-analyzer.cargo": {"features": "all"}
+    })json");
+    CHECK_EQ(gw::settingsSection(settings, "editor.fontSize").get<int>(), 14);                 // flat
+    CHECK_EQ(gw::settingsSection(settings, "python.analysis.typeCheckingMode").get<std::string>(), std::string("strict"));  // nested
+    CHECK_EQ(gw::settingsSection(settings, "python.analysis")["extraPaths"][0].get<std::string>(), std::string("a"));        // a section
+    CHECK_EQ(gw::settingsSection(settings, "python")["analysis"]["typeCheckingMode"].get<std::string>(), std::string("strict"));
+    // A section of flat keys becomes one object; flat and nested mix in one section.
+    nlohmann::json analyzer = gw::settingsSection(settings, "rust-analyzer");
+    CHECK_EQ(analyzer["check.command"].get<std::string>(), std::string("clippy"));
+    CHECK_EQ(analyzer["cargo"]["features"].get<std::string>(), std::string("all"));
+    CHECK_EQ(gw::settingsSection(settings, "rust-analyzer.cargo.features").get<std::string>(), std::string("all"));
+    CHECK(gw::settingsSection(settings, "nothing.here").is_null());
+    CHECK(gw::settingsSection(settings, "python.nothing").is_null());
+    CHECK(gw::settingsSection(nlohmann::json(), "a").is_null());
+}
+
+
+TEST(globsMatchPathsTheWayEditorsExpect) {
+    CHECK(gw::GlobPattern("**/*.cpp").matches("src/core/a.cpp"));
+    CHECK(gw::GlobPattern("**/*.cpp").matches("a.cpp"));            // "**/" may be nothing
+    CHECK(!gw::GlobPattern("**/*.cpp").matches("src/a.hpp"));
+    CHECK(gw::GlobPattern("*.cpp").matches("src/deep/a.cpp"));      // no slash: the name anywhere
+    CHECK(!gw::GlobPattern("src/*.cpp").matches("src/deep/a.cpp")); // * stays in one segment
+    CHECK(gw::GlobPattern("src/**").matches("src/deep/a.cpp"));
+    CHECK(gw::GlobPattern("**/*.{cpp,h,hpp}").matches("x/y/z.hpp"));
+    CHECK(!gw::GlobPattern("**/*.{cpp,h,hpp}").matches("x/y/z.py"));
+    CHECK(gw::GlobPattern("**/Cargo.toml").matches("Cargo.toml"));
+    CHECK(gw::GlobPattern("**/Cargo.toml").matches("crates/a/Cargo.toml"));
+    CHECK(gw::GlobPattern("file?.txt").matches("file1.txt"));
+    CHECK(!gw::GlobPattern("file?.txt").matches("file12.txt"));
+    CHECK(gw::GlobPattern("[ab]*.c").matches("alpha.c"));
+    CHECK(!gw::GlobPattern("[!ab]*.c").matches("alpha.c"));
+    CHECK(gw::GlobPattern("a.b+c").matches("a.b+c"));               // regex characters are literal
+    CHECK(!gw::GlobPattern("a.b").matches("axb"));
+    CHECK(!gw::GlobPattern("[unclosed").matches("x"));
+}
+
+
+TEST(keyChordsAreParsedLikeVsCodeWritesThem) {
+    auto one = gw::parseKeyChords("cmd+shift+P");
+    CHECK(one.has_value());
+    CHECK_EQ((*one)[0].key, std::string("p"));
+    CHECK((*one)[0].command && (*one)[0].shift && !(*one)[0].control && !(*one)[0].option);
+
+    auto sequence = gw::parseKeyChords("cmd+k cmd+s");
+    CHECK_EQ(sequence->size(), size_t(2));
+    CHECK_EQ((*sequence)[1].key, std::string("s"));
+
+    auto modifiers = gw::parseKeyChords("ctrl+alt+Win+Return");
+    CHECK((*modifiers)[0].control && (*modifiers)[0].option && (*modifiers)[0].command);
+    CHECK_EQ((*modifiers)[0].key, std::string("enter"));      // aliases are normalised
+    CHECK_EQ((*gw::parseKeyChords("esc"))[0].key, std::string("escape"));
+    CHECK_EQ((*gw::parseKeyChords("cmd+/"))[0].key, std::string("/"));
+    CHECK_EQ((*gw::parseKeyChords("cmd++"))[0].key, std::string("+"));
+    CHECK_EQ((*gw::parseKeyChords("f12"))[0].key, std::string("f12"));
+
+    CHECK(!gw::parseKeyChords("").has_value());
+    CHECK(!gw::parseKeyChords("hyper+x").has_value());        // not a modifier
+}
+
+TEST(whenClausesAreEvaluatedAgainstTheContext) {
+    std::map<std::string, std::string> context = {
+        {"editorTextFocus", "true"}, {"editorLangId", "cpp"}, {"resourceExtname", ".cpp"},
+        {"terminalFocus", "false"}, {"editorHasSelection", ""},
+    };
+    auto when = [&](const std::string& clause) { return gw::evaluateWhenClause(clause, context); };
+    CHECK(when(""));
+    CHECK(when("editorTextFocus"));
+    CHECK(!when("terminalFocus"));                              // "false" is false
+    CHECK(!when("editorHasSelection"));                         // empty is false
+    CHECK(!when("neverHeardOf"));
+    CHECK(when("!terminalFocus"));
+    CHECK(when("editorTextFocus && editorLangId == 'cpp'"));
+    CHECK(!when("editorTextFocus && editorLangId == 'python'"));
+    CHECK(when("editorLangId == python || editorLangId == cpp"));
+    CHECK(when("editorLangId != 'python'"));
+    CHECK(when("!(terminalFocus || editorHasSelection)"));
+    CHECK(when("resourceExtname =~ /\\.(cpp|hpp)$/"));
+    CHECK(!when("resourceExtname =~ /\\.py$/"));
+    CHECK(when("editorTextFocus && !terminalFocus && editorLangId == cpp"));
+    CHECK(!when("(("));                                         // nonsense never hangs and never matches
+}
+
+TEST(keybindingTableMatchesChordsAndSequences) {
+    nlohmann::json fromExtension = nlohmann::json::parse(R"json([
+      {"command": "ext.shout", "key": "ctrl+shift+u", "mac": "cmd+shift+u", "when": "editorTextFocus"},
+      {"command": "ext.settings", "key": "cmd+k cmd+s"},
+      {"command": "ext.cppOnly", "key": "cmd+j", "when": "editorLangId == cpp"},
+      {"command": "ext.old", "key": "cmd+9"}
+    ])json");
+    nlohmann::json fromUser = nlohmann::json::parse(R"json([
+      {"command": "user.shout", "key": "cmd+shift+u", "args": {"loud": true}},
+      {"command": "-ext.old", "key": "cmd+9"},
+      {"command": "ext.old", "key": "cmd+8"}
+    ])json");
+    gw::KeybindingTable table;
+    table.add(fromExtension, false);
+    table.add(fromUser, true);
+
+    std::map<std::string, std::string> editor = {{"editorTextFocus", "true"}, {"editorLangId", "cpp"}};
+    std::map<std::string, std::string> terminal = {{"terminalFocus", "true"}};
+    auto press = [&](const std::string& keys, const std::map<std::string, std::string>& context) {
+        return table.match(*gw::parseKeyChords(keys), context);
+    };
+
+    // The mac key is used, and the user's binding of the same keys wins.
+    auto shout = press("cmd+shift+u", editor);
+    CHECK(shout.kind == gw::KeybindingTable::MatchKind::Complete);
+    CHECK_EQ(shout.binding->command, std::string("user.shout"));
+    CHECK(shout.binding->arguments["loud"].get<bool>());
+
+    // A sequence: the first chord is a prefix, the second completes it.
+    CHECK(press("cmd+k", editor).kind == gw::KeybindingTable::MatchKind::Prefix);
+    auto settings = press("cmd+k cmd+s", editor);
+    CHECK(settings.kind == gw::KeybindingTable::MatchKind::Complete);
+    CHECK_EQ(settings.binding->command, std::string("ext.settings"));
+    CHECK(press("cmd+k cmd+x", editor).kind == gw::KeybindingTable::MatchKind::None);
+
+    // `when` decides; the same keys do nothing where the clause fails.
+    CHECK(press("cmd+j", editor).kind == gw::KeybindingTable::MatchKind::Complete);
+    CHECK(press("cmd+j", terminal).kind == gw::KeybindingTable::MatchKind::None);
+
+    // The user took cmd+9 away from the extension's command and gave it cmd+8.
+    CHECK(press("cmd+9", editor).kind == gw::KeybindingTable::MatchKind::None);
+    CHECK_EQ(press("cmd+8", editor).binding->command, std::string("ext.old"));
+    CHECK(press("cmd+q", editor).kind == gw::KeybindingTable::MatchKind::None);
+}
+
+
+TEST(cssColorsAreReadAsExtensionsWriteThem) {
+    CHECK_EQ(*gw::parseCssColor("#ff0000"), uint32_t(0xFF0000FF));
+    CHECK_EQ(*gw::parseCssColor("#FF000080"), uint32_t(0xFF000080));
+    CHECK_EQ(*gw::parseCssColor("#f80"), uint32_t(0xFF8800FF));        // shorthand doubles each digit
+    CHECK_EQ(*gw::parseCssColor("#f808"), uint32_t(0xFF880088));
+    CHECK_EQ(*gw::parseCssColor("rgb(255, 128, 0)"), uint32_t(0xFF8000FF));
+    CHECK_EQ(*gw::parseCssColor("rgba(255, 0, 0, 0.5)"), uint32_t(0xFF000080));
+    CHECK_EQ(*gw::parseCssColor("  RGBA(0 0 255 / 100%)  "), uint32_t(0x0000FFFF));
+    CHECK_EQ(*gw::parseCssColor("hsl(0, 100%, 50%)"), uint32_t(0xFF0000FF));
+    CHECK_EQ(*gw::parseCssColor("hsl(120, 100%, 50%)"), uint32_t(0x00FF00FF));
+    CHECK_EQ(*gw::parseCssColor("hsla(240, 100%, 50%, 0.5)"), uint32_t(0x0000FF80));
+    CHECK_EQ(*gw::parseCssColor("Orange"), uint32_t(0xFFA500FF));
+    CHECK_EQ(*gw::parseCssColor("transparent"), uint32_t(0));
+    CHECK(!gw::parseCssColor("").has_value());
+    CHECK(!gw::parseCssColor("#12").has_value());
+    CHECK(!gw::parseCssColor("#gg0000").has_value());
+    CHECK(!gw::parseCssColor("rgb(1, 2)").has_value());
+    CHECK(!gw::parseCssColor("notacolour").has_value());
+}
+
+
+TEST(iconThemesChooseTheMostSpecificIcon) {
+    namespace fs = std::filesystem;
+    fs::path folder = fs::temp_directory_path() / ("gw-icons-" + std::to_string(getpid()));
+    fs::create_directories(folder / "dist");
+    std::ofstream(folder / "dist" / "theme.json") << R"json({
+      "iconDefinitions": {
+        "file": {"iconPath": "./../icons/file.svg"}, "js": {"iconPath": "./../icons/js.svg"},
+        "test": {"iconPath": "./../icons/test.svg"}, "npm": {"iconPath": "./../icons/npm.svg"},
+        "py": {"iconPath": "./../icons/py.svg"}, "folder": {"iconPath": "./../icons/folder.svg"},
+        "folderOpen": {"iconPath": "./../icons/folder-open.svg"}, "src": {"iconPath": "./../icons/src.svg"},
+        "jsLight": {"iconPath": "./../icons/js-light.svg"}, "font": {"fontCharacter": "\\E001"}
+      },
+      "file": "file", "folder": "folder", "folderExpanded": "folderOpen",
+      "fileExtensions": {"js": "js", "test.js": "test"},
+      "fileNames": {"package.json": "npm"},
+      "languageIds": {"python": "py"},
+      "folderNames": {"src": "src"},
+      "light": {"fileExtensions": {"js": "jsLight"}},
+      "hidesExplorerArrows": true
+    })json";
+    auto theme = gw::IconTheme::load(folder / "dist" / "theme.json");
+    CHECK(theme.has_value());
+    auto name = [&](const fs::path& icon) { return icon.filename().string(); };
+
+    CHECK_EQ(name(theme->iconForFile("main.js", "", false)), std::string("js.svg"));
+    CHECK_EQ(name(theme->iconForFile("MAIN.JS", "", false)), std::string("js.svg"));              // case does not matter
+    CHECK_EQ(name(theme->iconForFile("a.test.js", "", false)), std::string("test.svg"));          // the longest extension wins
+    CHECK_EQ(name(theme->iconForFile("package.json", "", false)), std::string("npm.svg"));        // an exact name beats the extension
+    CHECK_EQ(name(theme->iconForFile("script", "python", false)), std::string("py.svg"));         // by language when nothing else matches
+    CHECK_EQ(name(theme->iconForFile("notes.xyz", "plaintext", false)), std::string("file.svg")); // the default
+    CHECK_EQ(name(theme->iconForFile("main.js", "", true)), std::string("js-light.svg"));         // the light section overrides
+    CHECK_EQ(name(theme->iconForFile("a.test.js", "", true)), std::string("test.svg"));           // and falls back to the dark tables
+    CHECK((folder / "icons" / "js.svg").lexically_normal() == theme->iconForFile("main.js", "", false));  // paths are relative to the theme file
+
+    CHECK_EQ(name(theme->iconForFolder("src", false, false, false)), std::string("src.svg"));
+    CHECK_EQ(name(theme->iconForFolder("docs", false, false, false)), std::string("folder.svg"));
+    CHECK_EQ(name(theme->iconForFolder("docs", true, false, false)), std::string("folder-open.svg"));
+    CHECK_EQ(name(theme->iconForFolder("project", true, true, false)), std::string("folder-open.svg"));  // no root icon: the folder's
+    CHECK(theme->hidesExplorerArrows());
+
+    CHECK(!gw::IconTheme::load(folder / "missing.json").has_value());
+    fs::remove_all(folder);
+}
+
+
+TEST(disabledExtensionsAreListedButContributeNothing) {
+    namespace fs = std::filesystem;
+    fs::path folder = fs::temp_directory_path() / ("gw-ext-disabled-" + std::to_string(getpid()));
+    for (const char* name : {"keep", "mute"}) {
+        fs::path extension = folder / "extensions" / (std::string("demo.") + name + "-1.0.0");
+        fs::create_directories(extension / "snippets");
+        std::ofstream(extension / "package.json") << R"json({"name": ")json" << name << R"json(", "publisher": "demo", "version": "1.0.0",
+          "main": "./x.js",
+          "contributes": {"snippets": [{"language": "fake", "path": "./snippets/s.json"}],
+                          "keybindings": [{"command": ")json" << name << R"json(.run", "key": "cmd+j"}]}})json";
+        std::ofstream(extension / "snippets" / "s.json") << R"json({"S": {"prefix": ")json" << name << R"json(", "body": "x"}})json";
+    }
+    gw::ExtensionManager manager(folder / "extensions");
+    manager.setDisabled({"demo.mute"});
+    manager.scan();
+    CHECK_EQ(manager.extensions().size(), size_t(1));
+    CHECK_EQ(manager.extensions()[0].id, std::string("demo.keep"));
+    CHECK_EQ(manager.disabledExtensions().size(), size_t(1));
+    CHECK_EQ(manager.disabledExtensions()[0].id, std::string("demo.mute"));
+    auto snippets = manager.snippets().forLanguage("fake");
+    CHECK_EQ(snippets.size(), size_t(1));                       // only the enabled extension's
+    CHECK_EQ(snippets[0].prefix, std::string("keep"));
+    CHECK(manager.contributedKeybindingsJson().find("mute.run") == std::string::npos);
+    CHECK(manager.contributedKeybindingsJson().find("keep.run") != std::string::npos);
+
+    manager.setDisabled({});                                    // switch it back on
+    manager.scan();
+    CHECK_EQ(manager.extensions().size(), size_t(2));
+    CHECK_EQ(manager.disabledExtensions().size(), size_t(0));
+    fs::remove_all(folder);
 }
 
 }  // namespace
