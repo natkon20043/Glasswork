@@ -6,22 +6,25 @@
 
 namespace gw {
 
-/// Something the project can be asked to do: a build, a test run, a script.
+/// A build, test run or script the project can be asked to do.
 struct Task {
-    std::string label;    // "Build (CMake)"
-    std::string command;  // typed into the terminal, run from the project folder
-    enum class Kind { Build, Run, Test, Other } kind = Kind::Other;
+    // Build file or script detected -> what the task does.
+    enum class Kind { Build, Run, Test, Other };
+
+    /// "Build (CMake)"
+    std::string label;
+    /// Typed into the terminal and run from the project folder.
+    std::string command;
+    Kind kind = Kind::Other;
 };
 
-/// Looks at the project folder for the usual build files (CMake, Swift packages, Cargo, Go
-/// modules, npm scripts, Makefiles) and lists what can be run. Builds come first.
+/// Reads CMake, Swift packages, Cargo, Go modules, npm scripts and Makefiles. Builds come first.
 std::vector<Task> detectTasks(const std::filesystem::path& folder);
 
-/// A command that runs one source file by itself (a script, or a single C/C++/Rust file that is
-/// compiled first), or an empty string for kinds of file that can't be run this way.
+/// Runs one file alone (a script, or a single C/C++/Rust file compiled first). Empty for files that can't.
 std::string commandToRunFile(const std::filesystem::path& file, const std::string& languageId);
 
-/// Wraps a string in single quotes for a POSIX shell.
+/// Single-quotes a string for a POSIX shell.
 std::string shellQuote(const std::string& text);
 
 }  // namespace gw

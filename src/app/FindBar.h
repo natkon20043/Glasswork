@@ -6,32 +6,32 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// The find and replace bar that floats over the top of the editor. It searches the open
-/// document as you type, marks every match (the current one stronger), and steps through
-/// them. Handles case, whole word and regular expression options.
+/// Find and replace bar floating over the editor. Searches as you type, marks every match (current
+/// stronger), and supports case, whole word and regex options.
 @interface GWFindBar : NSView
 
-@property (nonatomic, weak, nullable) GWEditorView *editor;
-
-/// Called when the bar closes itself (Escape or the close button).
-@property (nonatomic, copy, nullable) void (^onClose)(void);
-/// Called when the bar's height changes (the replace row opened or closed).
-@property (nonatomic, copy, nullable) void (^onResize)(void);
-
-/// The height needed right now.
-@property (nonatomic, readonly) CGFloat preferredHeight;
-
-/// Shows the bar. With `text` the search field is filled with it (the selected word).
+// ---- Showing
+/// With `text`, the search field is filled with it (the selected word).
 - (void)showWithText:(nullable NSString *)text replace:(BOOL)showReplace;
 - (void)close;
 
+// ---- Searching
 - (void)findNext;
 - (void)findPrevious;
-/// Use the given text as the search without showing the bar (⌘E).
+/// Sets the search without showing the bar (Cmd-E).
 - (void)setSearchText:(NSString *)text;
-
-/// The open document was edited or switched: recompute the matches.
+/// The document was edited or switched: recompute matches.
 - (void)documentChanged;
+
+// ---- Properties
+@property (nonatomic, weak, nullable) GWEditorView *editor;
+@property (nonatomic, readonly) CGFloat preferredHeight;
+
+// ---- Callbacks
+/// The bar closed itself (Escape or the close button).
+@property (nonatomic, copy, nullable) void (^onClose)(void);
+/// Height changed (the replace row opened or closed).
+@property (nonatomic, copy, nullable) void (^onResize)(void);
 
 @end
 

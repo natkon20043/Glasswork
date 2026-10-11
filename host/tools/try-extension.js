@@ -68,6 +68,10 @@ async function main() {
     const child = spawn(process.execPath, [path.join(__dirname, '..', 'main.js')], { stdio: ['pipe', 'pipe', 'inherit'] });
     const connection = new Connection(child.stdout, child.stdin);
     const registered = [];
+    const treeViews = [];
+    connection.onNotification('view/registered', (p) => { console.log('view registered:', p.id, p.kind); if (p.kind === 'tree') treeViews.push(p.id); });
+    connection.onNotification('webview/create', (p) => console.log('webview panel:', p.viewType, p.title));
+    connection.onNotification('webview/html', (p) => console.log('webview html:', p.handle, String(p.html).length, 'bytes'));
     connection.onNotification('ui/log', (p) => process.stdout.write(`[${p.channel}] ${p.text}`));
     connection.onNotification('commands/registered', (p) => registered.push(p.id));
     connection.onNotification('host/extensionState', (p) => console.log('state:', p.id, p.state, p.error ? '\n' + p.error : ''));
@@ -96,6 +100,16 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 1500));
     const status = await connection.sendRequest('host/status', {});
     console.log('status:', JSON.stringify(status.extensions), 'providers:', status.providers, 'commands:', status.commands.length, registered.slice(0, 8).join(' '));
+    // Tree views: ask for the top level, like the sidebar does, and one level down.
+    for (const viewId of treeViews) {
+        const top = await connection.sendRequest('tree/children', { id: viewId });
+        console.log(`tree ${viewId}: ${top.nodes.length} top-level nodes`, top.nodes.slice(0, 4).map((n) => n.label).join(' | '), top.error || '');
+        const expandable = top.nodes.find((n) => n.collapsible);
+        if (expandable) {
+            const below = await connection.sendRequest('tree/children', { id: viewId, handle: expandable.handle });
+            console.log(`  under "${expandable.label}": ${below.nodes.length}`, below.nodes.slice(0, 3).map((n) => n.label).join(' | '));
+        }
+    }
     await connection.sendRequest('shutdown', {});
     connection.sendNotification('exit', {});
 }

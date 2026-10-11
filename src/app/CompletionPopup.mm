@@ -22,7 +22,7 @@ constexpr CGFloat kRowHeight = 24;
 constexpr NSUInteger kMaxVisibleRows = 10;
 constexpr CGFloat kPopupWidth = 400;
 
-/// SF Symbol and colour for a CompletionItemKind.
+/// SF Symbol and color for a CompletionItemKind.
 void iconForKind(NSInteger kind, NSString **symbol, NSColor **color) {
     switch (kind) {
         case 2: case 3: case 4:

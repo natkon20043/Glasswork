@@ -4,18 +4,23 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// A row of icon buttons that switches the sidebar between Files, Source Control and Search.
-/// The selected one sits in a soft pill; a badge can show a count (changed files).
+/// Icon buttons switching the sidebar between Files, Source Control and Search. The selected one sits
+/// in a soft pill; a badge can show a count.
 @interface GWSidebarSwitcher : NSView
 
-/// SF Symbol names, one per mode, and tooltips.
+// ---- Constructors
+/// One SF Symbol name and tooltip per mode.
 - (instancetype)initWithSymbols:(NSArray<NSString *> *)symbols tooltips:(NSArray<NSString *> *)tooltips;
 
-@property (nonatomic) NSInteger selectedIndex;
-@property (nonatomic, copy, nullable) void (^onSelect)(NSInteger index);
-
-/// Shows a count on one mode's icon; zero hides it.
+// ---- Setters
+/// Zero hides it.
 - (void)setBadge:(NSInteger)count forIndex:(NSInteger)index;
+
+// ---- Properties
+@property (nonatomic) NSInteger selectedIndex;
+
+// ---- Callbacks
+@property (nonatomic, copy, nullable) void (^onSelect)(NSInteger index);
 
 @end
 

@@ -307,7 +307,7 @@ class VirtualServer {
                 break;
             case 'signatureHelp':
                 registerOptions = {
-                    triggerCharacters: (options.triggerCharacters || options.metadata && options.metadata.triggerCharacters) || [],
+                    triggerCharacters: options.triggerCharacters || (options.metadata && options.metadata.triggerCharacters) || [],
                     retriggerCharacters: (options.metadata && options.metadata.retriggerCharacters) || [],
                 };
                 break;

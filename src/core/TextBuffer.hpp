@@ -10,10 +10,9 @@
 
 namespace gw {
 
-/// A place in the text. `column` is a UTF-8 byte offset within the line, which is what the
-/// TextMate engine and the buffer work in; the UI converts to UTF-16 for display.
 struct Position {
     size_t line = 0;
+    /// UTF-8 byte offset within the line; the UI converts to UTF-16 for display.
     size_t column = 0;
     auto operator<=>(const Position&) const = default;
 };
@@ -26,49 +25,48 @@ struct Range {
     Range normalized() const { return start <= end ? *this : Range{end, start}; }
 };
 
-/// The document's text as a list of lines (without their line endings). Line-based storage
-/// matches how syntax highlighting and rendering work and keeps edits local. The lines live in a
-/// LineStore, which keeps the file's bytes in one block and copies a line out only when it is edited.
+/// The text as a list of lines without their endings, stored in a LineStore.
 class TextBuffer {
 public:
+    // ---- Constructors
     TextBuffer();
     explicit TextBuffer(std::string_view text);
     explicit TextBuffer(const char* text) : TextBuffer(std::string_view(text)) {}
-    /// Takes the text over without copying it (what opening a file uses).
+    /// Takes the text over without copying (used when opening a file).
     explicit TextBuffer(std::string&& text);
 
+    // ---- Getters
     size_t lineCount() const { return lines_.size(); }
-    /// A line without its ending. The view stays valid until the buffer is next changed.
+    /// Valid until the buffer next changes.
     std::string_view line(size_t index) const { return lines_.view(index); }
     Position end() const { return {lines_.size() - 1, lines_.view(lines_.size() - 1).size()}; }
-    /// The text's size in bytes (about what `text().size()` would be) without building the text.
+    /// About `text().size()` without building the text.
     size_t byteSize() const { return lines_.totalBytes() + lines_.size(); }
-    /// Bytes of memory the text takes, for measuring.
     size_t memoryBytes() const { return lines_.memoryBytes(); }
-
-    /// Whole text, joined with the file's original line ending.
+    bool usesCRLF() const { return crlf_; }
+    /// Joined with the file's original line ending.
     std::string text() const;
     std::string text(Range range) const;
-    bool usesCRLF() const { return crlf_; }
 
-    /// Inserts `text` (which may contain newlines) and returns the position just after it.
+    // ---- Editing
+    /// Returns the position just after the inserted text.
     Position insert(Position at, std::string_view text);
     void erase(Range range);
 
-    /// Snaps a position into the buffer and onto a UTF-8 character boundary.
+    // ---- Navigation (UTF-8 aware, crossing lines)
+    /// Snaps into the buffer and onto a character boundary.
     Position clamp(Position position) const;
-
-    // Navigation, all UTF-8 aware and crossing line boundaries.
     Position nextCharacter(Position position) const;
     Position previousCharacter(Position position) const;
     Position nextWordEnd(Position position) const;
     Position previousWordStart(Position position) const;
-    /// The word (identifier) around a position, for double-click selection.
+    /// The identifier around a position (double-click selection).
     Range wordAt(Position position) const;
-    /// Column of the first non-whitespace character on the line.
+    /// Column of the first non-whitespace character.
     size_t indentEnd(size_t line) const;
 
 private:
+    // ---- Private variables
     LineStore lines_;
     bool crlf_ = false;
 };

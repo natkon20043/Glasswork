@@ -1,6 +1,7 @@
 #include "SnippetLibrary.hpp"
 
 #include "Jsonc.hpp"
+#include "JsonText.hpp"
 
 #include <fstream>
 #include <sstream>
@@ -67,7 +68,7 @@ std::vector<SnippetDefinition> parseSnippetFile(std::string_view text) {
                 if (prefix.is_string()) prefixes.push_back(prefix.get<std::string>());
             }
         }
-        std::string description = entry.contains("description") && entry["description"].is_string() ? entry["description"].get<std::string>() : name;
+        std::string description = stringOr(entry, "description", name);
         std::vector<std::string> scopes;
         if (entry.contains("scope") && entry["scope"].is_string()) {
             scopes = splitScopes(entry["scope"].get<std::string>());

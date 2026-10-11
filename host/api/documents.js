@@ -137,7 +137,10 @@ class TextDocument {
 
     getWordRangeAtPosition(position, regex) {
         const line = this.lineAt(position.line).text;
-        const pattern = new RegExp((regex || DEFAULT_WORD_PATTERN).source, (regex && regex.flags.includes('g')) ? regex.flags : (regex ? regex.flags + 'g' : 'g'));
+        // The search walks the line match by match, so the pattern must be global.
+        const wanted = regex || DEFAULT_WORD_PATTERN;
+        const flags = wanted.flags.includes('g') ? wanted.flags : wanted.flags + 'g';
+        const pattern = new RegExp(wanted.source, flags);
         let match;
         while ((match = pattern.exec(line)) !== null) {
             if (match[0].length === 0) {

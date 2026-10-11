@@ -6,44 +6,46 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// One running terminal: a shell (or other program) in a pseudo-terminal, and the screen that
-/// shows what it prints. Output arrives on a background thread and is fed to the screen on the
-/// main thread in small slices, so a program that prints a lot never freezes the interface.
+/// A shell (or other program) in a pseudo-terminal plus the screen showing its output. Output arrives
+/// on a background thread and reaches the screen on main in small slices, so heavy output never freezes the UI.
 @interface GWTerminalSession : NSObject
 
+// ---- Constructors
 - (instancetype)initWithFolder:(nullable NSString *)folder
                        command:(nullable NSString *)command
                        columns:(int)columns
                           rows:(int)rows;
 
-@property (nonatomic, readonly) gw::term::Screen &screen;
-@property (nonatomic, readonly) BOOL isRunning;
-/// What to call this terminal: the title the program set, else the program's name.
-@property (nonatomic, readonly, copy) NSString *displayTitle;
-/// Called on the main thread (at most a few dozen times a second) when the screen changed.
-@property (nonatomic, copy, nullable) void (^onChange)(void);
-/// Called when the title or running program changed.
-@property (nonatomic, copy, nullable) void (^onTitleChange)(void);
-/// Called when the program ended, with its exit code.
-@property (nonatomic, copy, nullable) void (^onExit)(int code);
-/// Called for the terminal bell.
-@property (nonatomic, copy, nullable) void (^onBell)(void);
-
-/// Sends keystrokes or pasted text to the program.
+// ---- Input
 - (void)sendBytes:(const std::string &)bytes;
 - (void)sendText:(NSString *)text;
-/// Pastes text, marked as a paste if the program asked for that.
+/// Marked as a paste if the program asked for that.
 - (void)pasteText:(NSString *)text;
 
+// ---- Lifecycle
 - (void)resizeToColumns:(int)columns rows:(int)rows pixelWidth:(int)width pixelHeight:(int)height;
 - (void)terminate;
 
-/// The folder the shell is in now, if it can be found.
+// ---- Getters
+/// Nil if it can't be found.
 - (nullable NSString *)currentDirectory;
-/// Re-reads the running program's name (for the tab title).
+/// Re-reads the running program's name for the tab title.
 - (void)refreshProcessName;
-/// True when the shell is waiting for a command (nothing is running in front of it).
+/// The shell is waiting for a command.
 - (BOOL)isIdleAtShellPrompt;
+
+// ---- Properties
+@property (nonatomic, readonly) gw::term::Screen &screen;
+@property (nonatomic, readonly) BOOL isRunning;
+/// The title the program set, else its name.
+@property (nonatomic, readonly, copy) NSString *displayTitle;
+
+// ---- Callbacks
+/// Main thread, at most a few dozen times a second.
+@property (nonatomic, copy, nullable) void (^onChange)(void);
+@property (nonatomic, copy, nullable) void (^onTitleChange)(void);
+@property (nonatomic, copy, nullable) void (^onExit)(int code);
+@property (nonatomic, copy, nullable) void (^onBell)(void);
 
 @end
 

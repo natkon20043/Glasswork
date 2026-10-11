@@ -103,7 +103,7 @@ TEST(colorsAndAttributes) {
     Cell reset = screen.cellAt(0, 5);
     CHECK(reset.foreground.isDefault() && reset.background.isDefault());
 
-    // Bright colours, inverse, underline, italic, and turning them off again.
+    // Bright colors, inverse, underline, italic, and turning them off again.
     Screen more(20, 3);
     more.write("\x1b[91;7;4;3mX\x1b[27;24;23mY");
     Cell first = more.cellAt(0, 0);
@@ -394,7 +394,7 @@ TEST(randomBytesNeverBreakTheScreen) {
 }
 
 TEST(realisticColoredOutput) {
-    // A few lines of what `ls --color` and a coloured git status print.
+    // A few lines of what `ls --color` and a colored git status print.
     Screen screen(60, 10);
     screen.write("\x1b[?2004h\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m                                    \r \r");
     screen.write("\x1b[34mdocs\x1b[0m  \x1b[32mrun.sh\x1b[0m  README.md\r\n");

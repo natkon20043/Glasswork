@@ -22,6 +22,8 @@
 #import "DebugPanel.h"
 #import "Debugger.h"
 #import "SidebarSwitcher.h"
+#import <WebKit/WebKit.h>
+#import "ExtensionViews.h"
 #import "SourceControlPanel.h"
 #import "StartupTiming.h"
 #import "TabBar.h"
@@ -42,6 +44,7 @@
 #include "LineDiff.hpp"
 #include "Sections.hpp"
 #include "WordSuggestions.hpp"
+#include "JsonText.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -77,16 +80,17 @@ struct Tab {
     gw::EditorConfigResult editorConfig;
 
     /// Most tabs show text. A preview tab shows a Markdown file rendered; an image tab shows a picture.
-    enum class Kind { Text, MarkdownPreview, Image };
+    enum class Kind { Text, MarkdownPreview, Image, Webview };
     Kind kind = Kind::Text;
     uint64_t sourceIdentifier = 0;  // the Markdown tab a preview follows
     std::string imagePath;
+    std::string webviewHandle;  // the extension webview a Webview tab shows
 
     /// Looks extensions gave to stretches of this file (`setDecorations`), by decoration type.
     std::map<std::string, std::vector<GWDecoration>> decorations;
 };
 
-/// Colours for the lines of a unified diff: green for added, red for removed.
+/// Colors for the lines of a unified diff: green for added, red for removed.
 std::vector<gw::Color> tintsForDiff(const std::string &text) {
     std::vector<gw::Color> tints;
     const gw::Color added = 0x3FB95030;
@@ -148,7 +152,7 @@ bool looksBinary(const char *path) {
 
 // MARK: - Aurora
 
-/// Soft washes of the theme's accent colours behind all the glass, so colour and light
+/// Soft washes of the theme's accent colors behind all the glass, so color and light
 /// come through the panels. Static layers: they cost nothing once drawn.
 @interface GWAuroraView : NSView
 - (void)setColors:(NSArray<NSColor *> *)colors strength:(CGFloat)strength;
@@ -225,6 +229,9 @@ bool looksBinary(const char *path) {
 /// Shows a rendered Markdown file or an image instead of the code.
 @property (nonatomic, strong) NSScrollView *previewScroll;
 @property (nonatomic) BOOL previewMode;
+/// Holds an extension's webview; shown (instead of the scroll view above) for a webview tab.
+@property (nonatomic, strong) NSView *webviewHolder;
+@property (nonatomic) BOOL webviewMode;
 @end
 
 @implementation GWEditorCard
@@ -265,13 +272,15 @@ bool looksBinary(const char *path) {
     self.scrollView.frame = NSMakeRect(gutter, top, width - minimapWidth - gutter, height - top);
     self.minimap.frame = NSMakeRect(width - kMinimapWidth, top + 4, kMinimapWidth - 6, height - top - 8);
     self.previewScroll.frame = NSMakeRect(0, top, width, height - top);
+    self.webviewHolder.frame = self.previewScroll.frame;
     // The text area is sized from the visible area, which has just changed.
     [self.editor updateFrameSize];
     CGFloat stickyHeight = self.editor.stickyHeight;
     self.editor.stickyView.frame = NSMakeRect(0, top, width - minimapWidth, stickyHeight);
     self.editor.stickyView.hidden = stickyHeight <= 0 || self.previewMode;
     BOOL preview = self.previewMode;
-    self.previewScroll.hidden = !preview;
+    self.previewScroll.hidden = !preview || self.webviewMode;
+    self.webviewHolder.hidden = !preview || !self.webviewMode;
     self.scrollView.hidden = preview;
     self.editor.gutterView.hidden = preview;
     if (preview) {
@@ -486,6 +495,8 @@ bool looksBinary(const char *path) {
     NSImageView *_previewImage;
     GWLanguageService *_language;
     GWExtensionHostService *_extensionHost;
+    GWExtensionViews *_extensionViews;
+    NSMutableDictionary<NSString *, WKWebView *> *_webviewTabViews;  // webview panels extensions opened, by handle
     NSString *_extensionStatusMessage;  // a line an extension (or the host) put in the status bar
     NSMutableDictionary<NSString *, NSString *> *_serverProgress;  // what language servers are busy with
     BOOL _editorStateScheduled;
@@ -513,6 +524,7 @@ bool looksBinary(const char *path) {
     GWFolderWatcher *_watcher;
     GWChatPanel *_chat;
     NSButton *_claudeChip;
+    NSButton *_themeChip;  // the theme name in the status bar; click it to pick another
     GWSearchPanel *_search;
     GWFindBar *_findBar;
     GWTerminalPanel *_terminal;
@@ -617,6 +629,25 @@ bool looksBinary(const char *path) {
     [_root addSubview:_root.aurora];
 
     GWStartupMark(@"  built: backdrop and aurora");
+    [self buildEditorCard];
+    GWStartupMark(@"  built: editor card");
+    [self buildWelcome];
+
+    GWStartupMark(@"  built: welcome card");
+    [self buildSidebar];
+    GWStartupMark(@"  built: sidebar glass");
+    [self buildTabBar];
+    GWStartupMark(@"  built: tabs");
+    [self buildStatusBar];
+    GWStartupMark(@"  built: status bar");
+    [self buildResizeHandles];
+
+    self.window.contentView = _root;
+}
+
+/// The editor card: breadcrumb bar, the code in its scroll view, the previews, the minimap and the find bar, on a glass backdrop.
+- (void)buildEditorCard {
+    __weak GWMainWindowController *weakSelf = self;
     // Editor card: breadcrumbs, code and minimap on glass.
     _card = [GWEditorCard new];
     _card.wantsLayer = YES;
@@ -661,6 +692,9 @@ bool looksBinary(const char *path) {
     previewScroll.hidden = YES;
     _card.previewScroll = previewScroll;
     [_card addSubview:previewScroll];
+    _card.webviewHolder = [NSView new];
+    _card.webviewHolder.hidden = YES;
+    [_card addSubview:_card.webviewHolder];
     _card.minimap = _editorView.minimapView;
     [_card addSubview:_card.minimap];
     _card.editor = _editorView;
@@ -678,6 +712,22 @@ bool looksBinary(const char *path) {
     };
     _card.findBar = _findBar;
     [_card addSubview:_findBar];
+    [self connectEditorCallbacks];
+    NSClickGestureRecognizer *breadcrumbClick = [[NSClickGestureRecognizer alloc] initWithTarget:self
+                                                                                        action:@selector(breadcrumbClicked:)];
+    [breadcrumbBar addGestureRecognizer:breadcrumbClick];
+
+    // The glass is only the card's backdrop: the editor sits on top of it rather than inside
+    // it, because glass blends its own content, which dulled the syntax colors.
+    _root.editorCard = [self glassWithCornerRadius:20 content:nil];
+    [_root addSubview:_root.editorCard];
+    _root.editorContent = _card;
+    [_root addSubview:_card];
+}
+
+/// What the editor tells the window: edits, caret moves, section changes and clicks in the margins.
+- (void)connectEditorCallbacks {
+    __weak GWMainWindowController *weakSelf = self;
     _editorView.onEdit = ^{
         [weakSelf documentEdited];
     };
@@ -693,27 +743,17 @@ bool looksBinary(const char *path) {
     _editorView.onChangeMarkerClick = ^(size_t line, NSRect rect) {
         [weakSelf showChangeAtLine:line rect:rect];
     };
-    NSClickGestureRecognizer *breadcrumbClick = [[NSClickGestureRecognizer alloc] initWithTarget:self
-                                                                                        action:@selector(breadcrumbClicked:)];
-    [breadcrumbBar addGestureRecognizer:breadcrumbClick];
+}
 
-    // The glass is only the card's backdrop: the editor sits on top of it rather than inside
-    // it, because glass blends its own content, which dulled the syntax colours.
-    _root.editorCard = [self glassWithCornerRadius:20 content:nil];
-    [_root addSubview:_root.editorCard];
-    _root.editorContent = _card;
-    [_root addSubview:_card];
-
-    GWStartupMark(@"  built: editor card");
-    [self buildWelcome];
-
-    GWStartupMark(@"  built: welcome card");
+/// The sidebar: the switcher on top, and below it the panel of the chosen mode (files first).
+- (void)buildSidebar {
+    __weak GWMainWindowController *weakSelf = self;
     // Sidebar: a switcher on top and one panel below it (files, source control or search).
     // The top clears the window buttons.
     NSView *sidebarContent = [NSView new];
 
-    _switcher = [[GWSidebarSwitcher alloc] initWithSymbols:@[@"folder", @"arrow.triangle.branch", @"magnifyingglass", @"ladybug"]
-                                                  tooltips:@[@"Files  ⇧⌘E", @"Source Control  ⌃⇧G", @"Search  ⇧⌘F", @"Run and Debug  ⇧⌘D"]];
+    _switcher = [[GWSidebarSwitcher alloc] initWithSymbols:@[@"folder", @"arrow.triangle.branch", @"magnifyingglass", @"ladybug", @"puzzlepiece.extension"]
+                                                  tooltips:@[@"Files  ⇧⌘E", @"Source Control  ⌃⇧G", @"Search  ⇧⌘F", @"Run and Debug  ⇧⌘D", @"Extension Views"]];
     _switcher.onSelect = ^(NSInteger index) {
         [weakSelf setSidebarMode:index];
     };
@@ -780,16 +820,22 @@ bool looksBinary(const char *path) {
 
     _root.sidebar = [self glassWithCornerRadius:22 content:sidebarContent];
     [_root addSubview:_root.sidebar];
+}
 
-    GWStartupMark(@"  built: sidebar glass");
+/// The tabs in a glass capsule.
+- (void)buildTabBar {
+    __weak GWMainWindowController *weakSelf = self;
     // Tabs in a glass capsule.
     _tabBar = [GWTabBar new];
     _tabBar.onSelect = ^(NSInteger index) { [weakSelf selectTab:index]; };
     _tabBar.onClose = ^(NSInteger index) { [weakSelf closeTabAtIndex:index]; };
     _root.tabs = [self glassWithCornerRadius:kTabBarHeight / 2 content:_tabBar];
     [_root addSubview:_root.tabs];
+}
 
-    GWStartupMark(@"  built: tabs");
+/// The status bar capsule: branch, problems and position on the left, language and Claude on the right.
+- (void)buildStatusBar {
+    __weak GWMainWindowController *weakSelf = self;
     // Status bar capsule.
     NSView *statusContent = [NSView new];
     _statusLeft = [self label:@"" size:11.5 weight:NSFontWeightMedium secondary:YES];
@@ -804,7 +850,10 @@ bool looksBinary(const char *path) {
     _claudeChip = [NSButton buttonWithTitle:@"" target:self action:@selector(toggleChat:)];
     _claudeChip.bordered = NO;
     _claudeChip.toolTip = @"Chat with Claude  ⌘L";
-    NSStackView *statusRightStack = [NSStackView stackViewWithViews:@[_statusRight, _claudeChip]];
+    _themeChip = [NSButton buttonWithTitle:@"" target:self action:@selector(themeChipClicked:)];
+    _themeChip.bordered = NO;
+    _themeChip.toolTip = @"Change the color theme";
+    NSStackView *statusRightStack = [NSStackView stackViewWithViews:@[_statusRight, _themeChip, _claudeChip]];
     statusRightStack.spacing = 14;
 
     for (NSView *view in @[statusLeftStack, statusRightStack]) {
@@ -821,8 +870,11 @@ bool looksBinary(const char *path) {
     [self updateClaudeChip];
     _root.status = [self glassWithCornerRadius:kStatusHeight / 2 content:statusContent];
     [_root addSubview:_root.status];
+}
 
-    GWStartupMark(@"  built: status bar");
+/// The drag handles for resizing the chat (on the right) and the terminal (underneath), and the sizes saved last time.
+- (void)buildResizeHandles {
+    __weak GWMainWindowController *weakSelf = self;
     // Resize handles for the chat and the terminal.
     GWSplitHandle *chatHandle = [GWSplitHandle new];
     chatHandle.horizontal = YES;
@@ -858,8 +910,6 @@ bool looksBinary(const char *path) {
     _root.bottomHeight = savedBottomHeight >= 120 ? savedBottomHeight : 260;
     _root.chatVisible = [NSUserDefaults.standardUserDefaults boolForKey:@"chatVisible"];
     _root.bottomVisible = NO;  // the terminal is restored after the window appears
-
-    self.window.contentView = _root;
 }
 
 /// The welcome card shown when no file is open: title, quick actions and recent folders.
@@ -988,7 +1038,7 @@ bool looksBinary(const char *path) {
     // sharp to bend.
     _root.backdrop.hidden = !services.settings.frostedBackdrop;
 
-    // Aurora colours from the theme's own accents, with vivid fallbacks.
+    // Aurora colors from the theme's own accents, with vivid fallbacks.
     NSArray *aurora = @[
         [services color:@"terminal.ansiBlue" fallback:GWColor(0x3B82F6FF)],
         [services color:@"terminal.ansiMagenta" fallback:GWColor(0xA855F7FF)],
@@ -1005,6 +1055,8 @@ bool looksBinary(const char *path) {
     // Extensions came or went: the host starts again, with the new set, the next time it is needed.
     [_extensionHost extensionsDidChange];
     [_extensionHost shutdown];
+    [_extensionViews hostViewsDidReset];  // the old host's panels and views are gone
+    [_extensionViews reload];
     [_extensionHost startIfExtensionsWantToRun];
     [_keybindings reload];  // they may have brought, or taken, keybindings
     // Grammars were reloaded, so every tab must pick up fresh grammar pointers now.
@@ -1120,6 +1172,7 @@ bool looksBinary(const char *path) {
         [_card.scrollView.contentView scrollToPoint:tab->scroll];
         [_card.scrollView reflectScrolledClipView:_card.scrollView.contentView];
         BOOL isPreview = tab->kind != Tab::Kind::Text;
+        _card.webviewMode = tab->kind == Tab::Kind::Webview;
         _card.previewMode = isPreview;
         _card.needsLayout = YES;
         if (isPreview) {
@@ -1129,8 +1182,10 @@ bool looksBinary(const char *path) {
         }
     } else {
         _card.previewMode = NO;
+        _card.webviewMode = NO;
         [_editorView setDocument:nullptr highlighter:nullptr configuration:{}];
     }
+    [self tellExtensionsWhichWebviewIsInFront];
     [self refresh];
 }
 
@@ -1152,6 +1207,11 @@ bool looksBinary(const char *path) {
     }
     if (index == _selected) [_editorView setDocument:nullptr highlighter:nullptr configuration:{}];
     [_language untrackDocument:tab.document.get()];
+    if (tab.kind == Tab::Kind::Webview) {
+        NSString *handle = @(tab.webviewHandle.c_str());
+        [_webviewTabViews removeObjectForKey:handle];
+        [_extensionViews panelTabClosed:handle];
+    }
     _tabs.erase(_tabs.begin() + index);
     NSInteger next = _tabs.empty() ? -1 : std::min(index, static_cast<NSInteger>(_tabs.size()) - 1);
     _selected = -1;  // the closed tab's scroll position doesn't need saving
@@ -1258,6 +1318,19 @@ static bool isImageExtension(NSString *extension) {
 /// Fills the preview area for the selected preview or image tab.
 - (void)showPreviewContentForTab:(Tab &)tab {
     NSScrollView *scroll = _card.previewScroll;
+    if (tab.kind == Tab::Kind::Webview) {
+        WKWebView *webView = _webviewTabViews[@(tab.webviewHandle.c_str())];
+        for (NSView *old in [_card.webviewHolder.subviews copy]) {
+            [old removeFromSuperview];
+        }
+        if (webView != nil) {
+            webView.frame = _card.webviewHolder.bounds;
+            webView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+            [_card.webviewHolder addSubview:webView];
+            [self.window makeFirstResponder:webView];
+        }
+        return;
+    }
     if (tab.kind == Tab::Kind::Image) {
         NSImage *image = [[NSImage alloc] initWithContentsOfFile:@(tab.imagePath.c_str())];
         if (_previewImage == nil) {
@@ -1869,7 +1942,9 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
     return text;
 }
 
-- (void)collectCommandsFrom:(NSMenu *)menu path:(NSString *)path into:(NSMutableArray<NSMenuItem *> *)items
+- (void)collectCommandsFrom:(NSMenu *)menu
+                       path:(NSString *)path
+                       into:(NSMutableArray<NSMenuItem *> *)items
                      titles:(NSMutableArray<NSString *> *)titles {
     for (NSMenuItem *item in menu.itemArray) {
         if (item.separatorItem || item.hidden) {
@@ -1979,20 +2054,22 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
         return joined;
     };
     NSColor *muted = NSColor.secondaryLabelColor;
-    NSAttributedString *theme = segment(@"paintpalette.fill", muted, services.themeLabel);
+    _themeChip.attributedTitle = segment(@"paintpalette.fill", muted, services.themeLabel);
 
     if (!tab) {
         NSString *message = services.installingDefaults ? @"Installing language support from Open VSX…" : @"Ready";
         _statusLeft.attributedStringValue = segment(services.installingDefaults ? @"arrow.down.circle.fill" : @"checkmark.circle.fill",
                                                     NSColor.controlAccentColor, message);
-        _statusRight.attributedStringValue = theme;
+        _statusRight.hidden = YES;  // nothing to show beside the theme name without a file
         return;
     }
     const gw::Document &document = *tab->document;
     gw::Position caret = document.selection.caret;
     // Columns count characters (not bytes), from 1, like other editors.
     std::string_view line = document.buffer().line(caret.line);
-    NSString *prefix = [[NSString alloc] initWithBytes:line.data() length:std::min(caret.column, line.size()) encoding:NSUTF8StringEncoding];
+    NSString *prefix = [[NSString alloc] initWithBytes:line.data()
+                                                length:std::min(caret.column, line.size())
+                                              encoding:NSUTF8StringEncoding];
     NSMutableArray<NSAttributedString *> *left = [NSMutableArray array];
     [left addObject:segment(@"text.cursor", NSColor.controlAccentColor,
                             [NSString stringWithFormat:@"Ln %zu, Col %lu", caret.line + 1, (unsigned long)prefix.length + 1])];
@@ -2043,7 +2120,7 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
     [right addObject:segment(GWSymbolForFile(name), GWColorForFile(name), language)];
     [right addObject:segment(@"arrow.turn.down.left", muted, document.buffer().usesCRLF() ? @"CRLF" : @"LF")];
     [right addObject:segment(@"textformat", muted, @"UTF-8")];
-    [right addObject:theme];
+    _statusRight.hidden = NO;
     _statusRight.attributedStringValue = join(right);
 }
 
@@ -2204,7 +2281,7 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
     [_editorView jumpToPosition:parsed.front().caret];
 }
 
-/// A colour from decoration options: CSS text, or a ThemeColor ({id}) looked up in the theme.
+/// A color from decoration options: CSS text, or a ThemeColor ({id}) looked up in the theme.
 - (std::optional<gw::Color>)decorationColorFrom:(const gw::lsp::Json &)value {
     if (value.is_string()) {
         return gw::parseCssColor(value.get<std::string>());
@@ -2242,7 +2319,10 @@ static gw::lsp::Json MergedDecorationOptions(const gw::lsp::Json &base, const gw
     return merged;
 }
 
-- (void)hostSetDecorationsForPath:(NSString *)path key:(NSString *)key options:(const gw::lsp::Json &)options ranges:(const gw::lsp::Json &)ranges {
+- (void)hostSetDecorationsForPath:(NSString *)path
+                              key:(NSString *)key
+                          options:(const gw::lsp::Json &)options
+                           ranges:(const gw::lsp::Json &)ranges {
     using Json = gw::lsp::Json;
     Tab *tab = [self tabForPath:path];
     if (tab == nullptr) {
@@ -2263,7 +2343,7 @@ static gw::lsp::Json MergedDecorationOptions(const gw::lsp::Json &base, const gw
         if (look.contains("backgroundColor")) decoration.background = [self decorationColorFrom:look["backgroundColor"]];
         if (look.contains("color")) decoration.foreground = [self decorationColorFrom:look["color"]];
         decoration.wholeLine = look.value("isWholeLine", false);
-        // A border or outline: its colour is in "borderColor"/"outlineColor", or the last colour in "1px solid red".
+        // A border or outline: its color is in "borderColor"/"outlineColor", or the last color in "1px solid red".
         for (const char *name : {"borderColor", "outlineColor"}) {
             if (look.contains(name)) decoration.border = [self decorationColorFrom:look[name]];
         }
@@ -2274,7 +2354,7 @@ static gw::lsp::Json MergedDecorationOptions(const gw::lsp::Json &base, const gw
                 decoration.border = gw::parseCssColor(space == std::string::npos ? text : text.substr(space + 1));
             }
         }
-        std::string weight = look.contains("fontWeight") && look["fontWeight"].is_string() ? look["fontWeight"].get<std::string>() : "";
+        std::string weight = gw::stringOr(look, "fontWeight");
         decoration.bold = weight == "bold" || weight == "bolder" || (weight.size() == 3 && weight[0] >= '6' && weight[0] <= '9');
         decoration.italic = look.value("fontStyle", "") == "italic";
         std::string textDecoration = look.value("textDecoration", "");
@@ -2345,8 +2425,12 @@ static gw::lsp::Json MergedDecorationOptions(const gw::lsp::Json &base, const gw
 }
 
 /// `$/progress`: "clangd: Indexing 30%" stays in the status bar while the work lasts.
-- (void)serverProgress:(NSString *)serverName token:(NSString *)token kind:(NSString *)kind
-                 title:(NSString *)title message:(NSString *)message percentage:(int)percentage {
+- (void)serverProgress:(NSString *)serverName
+                 token:(NSString *)token
+                  kind:(NSString *)kind
+                 title:(NSString *)title
+               message:(NSString *)message
+            percentage:(int)percentage {
     NSString *key = [serverName stringByAppendingFormat:@"/%@", token];
     if ([kind isEqualToString:@"end"]) {
         [_serverProgress removeObjectForKey:key];
@@ -2363,7 +2447,10 @@ static gw::lsp::Json MergedDecorationOptions(const gw::lsp::Json &base, const gw
 }
 
 /// `window/showMessageRequest`: a question with buttons, as a sheet.
-- (void)serverAsked:(NSString *)message actions:(NSArray<NSString *> *)actions server:(NSString *)serverName reply:(void (^)(NSString *))reply {
+- (void)serverAsked:(NSString *)message
+            actions:(NSArray<NSString *> *)actions
+             server:(NSString *)serverName
+              reply:(void (^)(NSString *))reply {
     NSAlert *alert = [NSAlert new];
     alert.messageText = serverName;
     alert.informativeText = message;
@@ -2669,6 +2756,42 @@ static NSString *CompactCount(long count) {
     [self showPaletteWithItems:items placeholder:name];
 }
 
+/// The theme name in the status bar: a menu of every installed theme, right above the name.
+- (void)themeChipClicked:(NSButton *)chip {
+    GWServices *services = GWServices.shared;
+    NSMenu *menu = [NSMenu new];
+    for (NSString *label in services.themeLabels) {
+        NSMenuItem *item = [menu addItemWithTitle:label action:@selector(themeMenuItemChosen:) keyEquivalent:@""];
+        item.target = self;
+        item.state = [label isEqualToString:services.themeLabel] ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+    // Open upward from the chip: the status bar is at the bottom of the window.
+    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, 0) inView:chip];
+}
+
+- (void)themeMenuItemChosen:(NSMenuItem *)item {
+    [GWServices.shared selectThemeNamed:item.title];
+}
+
+/// Extensions ▸ Select Color Theme…: every installed color theme in one list; Return applies it.
+- (IBAction)selectColorTheme:(id)sender {
+    GWServices *services = GWServices.shared;
+    NSString *current = services.themeLabel;
+    NSMutableArray<GWPaletteItem *> *items = [NSMutableArray array];
+    for (NSString *label in services.themeLabels) {
+        BOOL isCurrent = [label isEqualToString:current];
+        GWPaletteItem *item = [GWPaletteItem new];
+        item.title = label;
+        item.symbol = isCurrent ? @"checkmark.circle.fill" : @"paintpalette.fill";
+        item.symbolColor = isCurrent ? NSColor.systemGreenColor : NSColor.systemPinkColor;
+        item.run = ^{
+            [GWServices.shared selectThemeNamed:label];
+        };
+        [items addObject:item];
+    }
+    [self showPaletteWithItems:items placeholder:@"Select a color theme…"];
+}
+
 /// Extensions ▸ Select File Icon Theme…: the icon themes extensions provide, or the built-in icons.
 - (IBAction)selectIconTheme:(id)sender {
     GWServices *services = GWServices.shared;
@@ -2798,7 +2921,8 @@ static NSString *CompactCount(long count) {
     }
     std::vector<gw::Task> tasks = gw::detectTasks(folder.UTF8String);
     if (tasks.empty()) {
-        [self showErrorTitle:@"No tasks found" message:@"Glasswork looks for CMakeLists.txt, Package.swift, Cargo.toml, go.mod, package.json and Makefiles in the project folder."];
+        [self showErrorTitle:@"No tasks found" message:@"Glasswork looks for CMakeLists.txt, Package.swift, Cargo.toml, "
+                                                       @"go.mod, package.json and Makefiles in the project folder."];
         return;
     }
     NSMutableArray<GWPaletteItem *> *items = [NSMutableArray array];
@@ -2847,7 +2971,8 @@ static NSString *CompactCount(long count) {
     }
     std::string command = gw::commandToRunFile(*tab->document->path(), tab->document->languageId);
     if (command.empty()) {
-        [self showErrorTitle:@"Can't run this file" message:@"Glasswork can run scripts (Python, JavaScript, Swift, shell, Ruby, Go…) and single C, C++ and Rust files."];
+        [self showErrorTitle:@"Can't run this file" message:@"Glasswork can run scripts (Python, JavaScript, Swift, shell, "
+                                                            @"Ruby, Go…) and single C, C++ and Rust files."];
         return;
     }
     if (tab->document->isDirty()) {
@@ -3042,7 +3167,7 @@ static NSString *CompactCount(long count) {
     }
     // A program chosen before wins; otherwise the file in front is built and run.
     NSString *folder = _fileTree.rootURL.path;
-    NSString *remembered = folder.length > 0 ? [NSUserDefaults.standardUserDefaults stringForKey:[@"debugProgram:" stringByAppendingString:folder]] : nil;
+    NSString *remembered = [self rememberedDebugSetting:@"debugProgram:" forFolder:folder];
     if (remembered.length > 0 && [NSFileManager.defaultManager isExecutableFileAtPath:remembered]) {
         [_debugPanel clearConsole];
         [self launchDebugProgram:remembered arguments:[self rememberedDebugArguments]];
@@ -3056,9 +3181,17 @@ static NSString *CompactCount(long count) {
     [self debugExecutable:sender];
 }
 
+/// A debugging choice remembered for the open folder (the program, or its arguments), if any.
+- (NSString *)rememberedDebugSetting:(NSString *)keyPrefix forFolder:(NSString *)folder {
+    if (folder.length == 0) {
+        return nil;
+    }
+    return [NSUserDefaults.standardUserDefaults stringForKey:[keyPrefix stringByAppendingString:folder]];
+}
+
 - (NSArray<NSString *> *)rememberedDebugArguments {
     NSString *folder = _fileTree.rootURL.path;
-    NSString *text = folder.length > 0 ? [NSUserDefaults.standardUserDefaults stringForKey:[@"debugArguments:" stringByAppendingString:folder]] : nil;
+    NSString *text = [self rememberedDebugSetting:@"debugArguments:" forFolder:folder];
     if (text.length == 0) {
         return @[];
     }
@@ -3082,7 +3215,8 @@ static NSString *CompactCount(long count) {
 - (IBAction)debugCurrentFile:(id)sender {
     Tab *tab = [self currentTab];
     if (tab == nullptr || !tab->document->path() || ![self canCompileForDebugging:*tab]) {
-        [self showErrorTitle:@"Can't debug this file" message:@"Glasswork can build a single C or C++ file for debugging. For other projects, build them first and use Debug Executable…"];
+        [self showErrorTitle:@"Can't debug this file" message:@"Glasswork can build a single C or C++ file for debugging. For "
+                                                              @"other projects, build them first and use Debug Executable…"];
         return;
     }
     [self buildSecondaryPanels];
@@ -3098,7 +3232,8 @@ static NSString *CompactCount(long count) {
         command.push_back("-std=c++20");
     }
     command.insert(command.end(), {"-g", "-O0", "-Wall", source, "-o", output.UTF8String});
-    [_debugPanel appendConsole:[NSString stringWithFormat:@"Building %s…\n", tab->document->path()->filename().c_str()] category:@"console"];
+    [_debugPanel appendConsole:[NSString stringWithFormat:@"Building %s…\n", tab->document->path()->filename().c_str()]
+                      category:@"console"];
     __weak GWMainWindowController *weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         gw::ProcessResult result = gw::runProcess(command);
@@ -3131,7 +3266,8 @@ static NSString *CompactCount(long count) {
     if (folder.length > 0) {
         NSString *build = [folder stringByAppendingPathComponent:@"build"];
         BOOL isDirectory = NO;
-        panel.directoryURL = [NSURL fileURLWithPath:([NSFileManager.defaultManager fileExistsAtPath:build isDirectory:&isDirectory] && isDirectory) ? build : folder];
+        BOOL hasBuildFolder = [NSFileManager.defaultManager fileExistsAtPath:build isDirectory:&isDirectory] && isDirectory;
+        panel.directoryURL = [NSURL fileURLWithPath:hasBuildFolder ? build : folder];
     }
     if ([panel runModal] != NSModalResponseOK) {
         return;
@@ -3142,7 +3278,7 @@ static NSString *CompactCount(long count) {
     alert.messageText = @"Arguments";
     alert.informativeText = [NSString stringWithFormat:@"Command-line arguments for %@ (leave empty for none).", program.lastPathComponent];
     NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 320, 24)];
-    field.stringValue = folder.length > 0 ? ([NSUserDefaults.standardUserDefaults stringForKey:[@"debugArguments:" stringByAppendingString:folder]] ?: @"") : @"";
+    field.stringValue = [self rememberedDebugSetting:@"debugArguments:" forFolder:folder] ?: @"";
     alert.accessoryView = field;
     [alert addButtonWithTitle:@"Debug"];
     [alert addButtonWithTitle:@"Cancel"];
@@ -3172,9 +3308,11 @@ static NSString *CompactCount(long count) {
 // MARK: - Claude
 
 - (void)updateClaudeChip {
+    // Lit up in the accent color while the chat is open.
+    NSColor *color = _root.chatVisible ? NSColor.controlAccentColor : NSColor.secondaryLabelColor;
     NSDictionary *attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold],
-                                 NSForegroundColorAttributeName: _root.chatVisible ? NSColor.controlAccentColor : NSColor.secondaryLabelColor};
-    NSMutableAttributedString *title = [GWSymbolString(@"sparkles", _root.chatVisible ? NSColor.controlAccentColor : NSColor.secondaryLabelColor, 11) mutableCopy];
+                                 NSForegroundColorAttributeName: color};
+    NSMutableAttributedString *title = [GWSymbolString(@"sparkles", color, 11) mutableCopy];
     [title appendAttributedString:[[NSAttributedString alloc] initWithString:@" Claude" attributes:attributes]];
     _claudeChip.attributedTitle = title;
 }
@@ -3204,6 +3342,10 @@ static NSString *CompactCount(long count) {
     } else {
         [_chat focusComposer];
     }
+}
+
+- (void)debugRunExtensionCommand:(NSString *)identifier {
+    [_extensionHost executeCommand:identifier arguments:nil];
 }
 
 - (void)debugSendChatPrompt:(NSString *)prompt {
@@ -3262,7 +3404,8 @@ static NSString *CompactCount(long count) {
         [self languageMessage:onlyLine >= 0 ? @"There are no problems on this line." : @"The language server reports no problems in this file."];
         return;
     }
-    NSString *prompt = [NSString stringWithFormat:@"Fix these problems in %@:\n%@\nMake the smallest changes that fix them, then tell me what you changed.", relative, list];
+    NSString *prompt = [NSString stringWithFormat:@"Fix these problems in %@:\n%@\nMake the smallest changes that fix them, "
+                                                  @"then tell me what you changed.", relative, list];
     [self showChat];
     [_chat sendPrompt:prompt includeSelection:NO];
 }
@@ -3578,7 +3721,11 @@ static NSString *CompactCount(long count) {
     [self buildDebugger];
     [self addSidebarPanel:_debugPanel.view];
 
+    // Views extensions add.
+    [self addSidebarPanel:_extensionViews.sidebarView];
+
     // Now that they exist, they can be shown, and told about the open folder.
+    _extensionViews.sidebarView.hidden = _sidebarMode != 4;
     _sourceControl.view.hidden = _sidebarMode != 1;
     _search.view.hidden = _sidebarMode != 2;
     _debugPanel.view.hidden = _sidebarMode != 3;
@@ -3618,6 +3765,8 @@ static NSString *CompactCount(long count) {
     _sourceControl.view.hidden = mode != 1;
     _search.view.hidden = mode != 2;
     _debugPanel.view.hidden = mode != 3;
+    _extensionViews.sidebarView.hidden = mode != 4;
+    [_extensionViews sidebarVisibilityChanged:mode == 4 && _root.sidebarVisible];
     if (mode == 1) {
         [_git refresh];
     }
@@ -3632,6 +3781,7 @@ static NSString *CompactCount(long count) {
 
 - (IBAction)showExplorer:(id)sender { [self revealSidebarMode:0]; }
 - (IBAction)showSourceControl:(id)sender { [self revealSidebarMode:1]; }
+- (IBAction)showExtensionViews:(id)sender { [self revealSidebarMode:4]; }
 
 /// ⇧⌘F: search the whole project, starting from the selected word.
 - (IBAction)findInFiles:(id)sender {
@@ -3813,7 +3963,11 @@ static NSString *CompactCount(long count) {
 
 /// Shows text that isn't a file in a read-only tab. A tab with the same `key` is replaced,
 /// so clicking the same change twice doesn't pile up tabs.
-- (void)showVirtualText:(NSString *)text title:(NSString *)title language:(std::string)language key:(std::string)key diff:(BOOL)diff {
+- (void)showVirtualText:(NSString *)text
+                  title:(NSString *)title
+               language:(std::string)language
+                    key:(std::string)key
+                   diff:(BOOL)diff {
     NSInteger existing = -1;
     for (size_t index = 0; index < _tabs.size(); ++index) {
         if (_tabs[index]->isVirtual && _tabs[index]->key == key) {
@@ -3970,7 +4124,7 @@ static double timed(void (^work)(void)) {
     [NSApp terminate:nil];
 }
 
-/// For development: run something colourful in a new terminal (see GLASSWORK_ACTIONS).
+/// For development: run something colorful in a new terminal (see GLASSWORK_ACTIONS).
 /// Developer check: open README.md, rename it on disk the way the file tree does, and confirm
 /// the tab follows.
 - (IBAction)debugOpenReadme:(id)sender {
@@ -4086,7 +4240,8 @@ static double timed(void (^work)(void)) {
 }
 
 - (IBAction)debugTerminalDemo:(id)sender {
-    [self runInTerminal:@"clear; printf '\\e[1;31mbold red\\e[0m \\e[4munderline\\e[0m \\e[3mitalic\\e[0m \\e[38;2;255;160;0mtruecolor\\e[0m \\e[7minverse\\e[0m\\n'; ls -la /System | head -8; echo '日本語 ✓ ─│┌┐└┘╭╮'; git -C ~/Code/Glasswork status -sb | head -3"];
+    [self runInTerminal:@"clear; printf '\\e[1;31mbold red\\e[0m \\e[4munderline\\e[0m \\e[3mitalic\\e[0m "
+                        @"\\e[38;2;255;160;0mtruecolor\\e[0m \\e[7minverse\\e[0m\\n'; ls -la /System | head -8; echo '日本語 ✓ ─│┌┐└┘╭╮'; git -C ~/Code/Glasswork status -sb | head -3"];
 }
 
 - (IBAction)debugTerminalTop:(id)sender {
@@ -4289,10 +4444,14 @@ static double timed(void (^work)(void)) {
     NSArray<NSString *> *oldStrings = [self stringsFromLines:oldLines start:hunk.oldStart count:hunk.oldCount];
     NSArray<NSString *> *newStrings = [self stringsFromLines:newLines start:hunk.newStart count:hunk.newCount];
 
-    NSString *title = hunk.newCount > 0
-        ? (hunk.newCount == 1 ? [NSString stringWithFormat:@"Line %zu", hunk.newStart + 1]
-                              : [NSString stringWithFormat:@"Lines %zu–%zu", hunk.newStart + 1, hunk.newStart + hunk.newCount])
-        : [NSString stringWithFormat:@"Deleted at line %zu", hunk.newStart + 1];
+    NSString *title;
+    if (hunk.newCount == 0) {
+        title = [NSString stringWithFormat:@"Deleted at line %zu", hunk.newStart + 1];
+    } else if (hunk.newCount == 1) {
+        title = [NSString stringWithFormat:@"Line %zu", hunk.newStart + 1];
+    } else {
+        title = [NSString stringWithFormat:@"Lines %zu–%zu", hunk.newStart + 1, hunk.newStart + hunk.newCount];
+    }
     NSString *summary = [NSString stringWithFormat:@"+%zu  −%zu", hunk.newCount, hunk.oldCount];
 
     // Rectangles from the gutter are in the gutter's coordinates.
@@ -4531,6 +4690,95 @@ static double timed(void (^work)(void)) {
     [_git refresh];
 }
 
+// MARK: - Extension views and webview panels
+
+/// Connects the sidebar for extension views, and the editor tabs for webview panels.
+- (void)setUpExtensionViews {
+    __weak GWMainWindowController *weakSelf = self;
+    _webviewTabViews = [NSMutableDictionary dictionary];
+    _extensionViews = [[GWExtensionViews alloc] initWithService:_extensionHost];
+    _extensionViews.onOpenPanel = ^(NSString *handle, NSString *title, WKWebView *webView, BOOL preserveFocus) {
+        [weakSelf openWebviewTab:handle title:title webView:webView];
+    };
+    _extensionViews.onRetitlePanel = ^(NSString *handle, NSString *title) {
+        Tab *tab = [weakSelf webviewTabWithHandle:handle];
+        if (tab != nullptr) {
+            tab->document->title = title.UTF8String;
+            [weakSelf refresh];
+        }
+    };
+    _extensionViews.onRevealPanel = ^(NSString *handle) {
+        GWMainWindowController *strongSelf = weakSelf;
+        Tab *tab = [strongSelf webviewTabWithHandle:handle];
+        if (tab != nullptr) {
+            [strongSelf selectTab:[strongSelf indexOfTab:tab]];
+        }
+    };
+    _extensionViews.onClosePanel = ^(NSString *handle) {
+        GWMainWindowController *strongSelf = weakSelf;
+        Tab *tab = [strongSelf webviewTabWithHandle:handle];
+        if (tab != nullptr) {
+            [strongSelf closeTabAtIndex:[strongSelf indexOfTab:tab]];
+        }
+    };
+    // Pages may read the project and the installed extensions unless their extension says otherwise.
+    _extensionViews.webviewRoots = ^NSArray<NSString *> *{
+        GWMainWindowController *strongSelf = weakSelf;
+        NSMutableArray<NSString *> *roots = [NSMutableArray array];
+        NSString *project = strongSelf->_fileTree.rootURL.path;
+        if (project != nil) {
+            [roots addObject:project];
+        }
+        [roots addObject:@(GWServices.shared.extensions.directory().string().c_str())];
+        return roots;
+    };
+    _extensionViews.onRevealSidebar = ^{
+        [weakSelf revealSidebarMode:4];
+    };
+}
+
+- (Tab *)webviewTabWithHandle:(NSString *)handle {
+    for (auto &tab : _tabs) {
+        if (tab->kind == Tab::Kind::Webview && tab->webviewHandle == handle.UTF8String) {
+            return tab.get();
+        }
+    }
+    return nullptr;
+}
+
+- (NSInteger)indexOfTab:(Tab *)wanted {
+    for (size_t index = 0; index < _tabs.size(); ++index) {
+        if (_tabs[index].get() == wanted) {
+            return static_cast<NSInteger>(index);
+        }
+    }
+    return -1;
+}
+
+/// A webview panel an extension created becomes a tab.
+- (void)openWebviewTab:(NSString *)handle title:(NSString *)title webView:(WKWebView *)webView {
+    _webviewTabViews[handle] = webView;
+    std::string handleText = handle.UTF8String;
+    auto document = std::make_unique<gw::Document>(gw::Document::readOnlyText("", title.UTF8String));
+    [self addTab:std::move(document) atIndex:-1 configure:^(Tab &tab) {
+        tab.isVirtual = true;
+        tab.kind = Tab::Kind::Webview;
+        tab.webviewHandle = handleText;
+        tab.key = "webview:" + handleText;
+        tab.forcedLanguage = "plaintext";
+    }];
+}
+
+/// Webview panels hear whether theirs is the tab in front.
+- (void)tellExtensionsWhichWebviewIsInFront {
+    Tab *front = [self currentTab];
+    for (auto &tab : _tabs) {
+        if (tab->kind == Tab::Kind::Webview) {
+            [_extensionViews panelTab:@(tab->webviewHandle.c_str()) isFront:tab.get() == front];
+        }
+    }
+}
+
 // MARK: - Code intelligence
 
 /// Creates the language service and connects it to the editor: problems, hover and completion.
@@ -4541,6 +4789,7 @@ static double timed(void (^work)(void)) {
     _extensionHost = [GWExtensionHostService new];
     _extensionHost.delegate = self;
     _language.extensionProvider = _extensionHost;
+    [self setUpExtensionViews];
     _serverProgress = [NSMutableDictionary dictionary];
     [self setUpKeybindings];
     __weak GWExtensionHostService *weakHost = _extensionHost;
@@ -4901,7 +5150,11 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
     std::string folder = _fileTree.rootURL.path ? std::string(_fileTree.rootURL.path.UTF8String) : std::string();
     gw::SnippetVariables variables = gw::standardSnippetVariables(path, folder);
     gw::Position caret = tab.document->selection.caret;
-    variables["TM_SELECTED_TEXT"] = tab.document->selection.empty() ? std::string() : tab.document->buffer().text(tab.document->selection.range());
+    if (!tab.document->selection.empty()) {
+        variables["TM_SELECTED_TEXT"] = tab.document->buffer().text(tab.document->selection.range());
+    } else {
+        variables["TM_SELECTED_TEXT"] = std::string();
+    }
     variables["TM_CURRENT_LINE"] = std::string(tab.document->buffer().line(caret.line));
     variables["TM_LINE_INDEX"] = std::to_string(caret.line);
     variables["TM_LINE_NUMBER"] = std::to_string(caret.line + 1);
@@ -5618,7 +5871,7 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
 
 // ---- Symbols (⌘R in this file, ⌘T across the project)
 
-/// SF Symbol and colour for an LSP SymbolKind.
+/// SF Symbol and color for an LSP SymbolKind.
 static void iconForSymbolKind(int kind, NSString **symbol, NSColor **color) {
     switch (kind) {
         case 5: case 11: case 26:  // class, interface, type parameter
@@ -5702,7 +5955,7 @@ static void collectSymbols(const gw::lsp::Json &symbols, const std::string &cont
 /// Picker rows for symbols matching what was typed, best matches first.
 - (NSArray<GWPaletteItem *> *)paletteItemsForSymbols:(std::shared_ptr<std::vector<SymbolRow>>)rows
                                                query:(NSString *)query
-                                         showsFiles:(BOOL)showsFiles {
+                                          showsFiles:(BOOL)showsFiles {
     std::string wanted = query.UTF8String ?: "";
     struct Ranked {
         int score;
@@ -6406,6 +6659,7 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
 
 - (IBAction)toggleSidebar:(id)sender {
     _root.sidebarVisible = !_root.sidebarVisible;
+    [_extensionViews sidebarVisibilityChanged:_sidebarMode == 4 && _root.sidebarVisible];
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
         context.duration = 0.25;
         context.allowsImplicitAnimation = YES;

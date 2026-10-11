@@ -291,7 +291,7 @@ TEST(semanticTokensDecodeRelativePositions) {
 TEST(semanticTokenScopes) {
     CHECK_EQ(gw::scopeForSemanticType("function", {}), std::string("entity.name.function"));
     CHECK_EQ(gw::scopeForSemanticType("class", {}), std::string("entity.name.type.class"));
-    CHECK(gw::scopeForSemanticType("variable", {}).empty());   // left to the grammar and rainbow colours
+    CHECK(gw::scopeForSemanticType("variable", {}).empty());   // left to the grammar and rainbow colors
     CHECK(gw::scopeForSemanticType("keyword", {}).empty());
 }
 

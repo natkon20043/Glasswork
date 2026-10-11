@@ -6,10 +6,8 @@
 
 namespace gw {
 
-/// Reads a colour as extensions write it in decoration options: `#rgb`, `#rgba`, `#rrggbb`,
-/// `#rrggbbaa`, `rgb(r, g, b)`, `rgba(r, g, b, a)`, `hsl(h, s%, l%)`, `hsla(…)`, and the common colour
-/// names plus `transparent`. The result is packed 0xRRGGBBAA, the form gw::Color uses. Nothing
-/// when the text is not a colour.
+/// Accepts #rgb, #rgba, #rrggbb, #rrggbbaa, rgb(), rgba(), hsl(), hsla(), common names and
+/// `transparent`. Returns packed 0xRRGGBBAA (gw::Color's form), or nothing if not a color.
 std::optional<uint32_t> parseCssColor(const std::string& text);
 
 }  // namespace gw

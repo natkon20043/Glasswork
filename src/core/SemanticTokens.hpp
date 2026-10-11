@@ -7,35 +7,34 @@
 
 namespace gw {
 
-/// One token from a language server's semantic highlighting: a stretch of a line that the server
-/// knows the real meaning of (a type, a function, a macro…).
+/// A stretch of a line whose real meaning (type, function, macro...) the language server knows.
 struct SemanticToken {
     uint32_t line = 0;
-    uint32_t startUnit = 0;    // UTF-16 units from the start of the line
+    /// UTF-16 units from the line start.
+    uint32_t startUnit = 0;
     uint32_t lengthUnits = 0;
-    uint32_t type = 0;         // index into SemanticTokenSet::typeNames
-    uint32_t modifiers = 0;    // bit set over SemanticTokenSet::modifierNames
+    /// Index into SemanticTokenSet::typeNames.
+    uint32_t type = 0;
+    /// Bit set over SemanticTokenSet::modifierNames.
+    uint32_t modifiers = 0;
 };
 
-/// All the tokens of one file, sorted by position, with the names the server gave its numbers.
+/// Tokens of one file sorted by position, with the names the server gave its numbers.
 struct SemanticTokenSet {
     std::vector<SemanticToken> tokens;
     std::vector<std::string> typeNames;
     std::vector<std::string> modifierNames;
 };
 
-/// Decodes the `data` array of a semanticTokens response: five numbers per token, each position
-/// relative to the previous token. Malformed data ends the list early rather than failing.
+/// Five numbers per token, each position relative to the previous token. Malformed data ends the list early.
 std::vector<SemanticToken> decodeSemanticTokens(const std::vector<uint32_t>& data);
 
-/// The TextMate scope whose theme colour a token kind should get ("function" → entity.name.function),
-/// or an empty string for kinds the TextMate grammar already colours well (keywords, strings,
-/// comments) or that would fight with per-name colouring (plain variables, parameters, properties).
+/// "function" -> entity.name.function. Empty for kinds the grammar already colors well or that
+/// would fight per-name coloring (variables, parameters, properties).
 std::string scopeForSemanticType(const std::string& typeName, const std::vector<std::string>& modifiers);
 
-/// Adjusts tokens after an edit: tokens on the edited lines go (until the server sends new ones),
-/// later ones move with their lines. `firstLine`..`lastLineBefore` are the lines the edit replaced,
-/// numbered before the edit, and `lineDelta` lines were added.
+/// Tokens on edited lines go until the server sends new ones; later ones move with their lines.
+/// `firstLine`..`lastLineBefore` are the replaced lines numbered before the edit.
 void adjustSemanticTokensForEdit(std::vector<SemanticToken>& tokens, size_t firstLine, size_t lastLineBefore, long lineDelta);
 
 }  // namespace gw

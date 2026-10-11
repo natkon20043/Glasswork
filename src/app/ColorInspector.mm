@@ -16,7 +16,7 @@ using StyleEditor = std::function<void(gw::EditorSettings &, const std::function
 
 }  // namespace
 
-/// One row of controls: text colour, highlight colour, bold, italic, underline, clear.
+/// One row of controls: text color, highlight color, bold, italic, underline, clear.
 @interface GWStyleRow : NSObject
 @property (nonatomic, strong) NSStackView *view;
 @property (nonatomic, strong) NSColorWell *textWell;
@@ -69,17 +69,19 @@ using StyleEditor = std::function<void(gw::EditorSettings &, const std::function
     return button;
 }
 
-- (GWStyleRow *)makeRowWithTextAction:(SEL)textAction highlightAction:(SEL)highlightAction
-                            fontAction:(SEL)fontAction clearAction:(SEL)clearAction {
+- (GWStyleRow *)makeRowWithTextAction:(SEL)textAction
+                      highlightAction:(SEL)highlightAction
+                           fontAction:(SEL)fontAction
+                          clearAction:(SEL)clearAction {
     GWStyleRow *row = [GWStyleRow new];
     row.textWell = [NSColorWell colorWellWithStyle:NSColorWellStyleMinimal];
     row.textWell.target = self;
     row.textWell.action = textAction;
-    row.textWell.toolTip = @"Text colour";
+    row.textWell.toolTip = @"Text color";
     row.highlightWell = [NSColorWell colorWellWithStyle:NSColorWellStyleMinimal];
     row.highlightWell.target = self;
     row.highlightWell.action = highlightAction;
-    row.highlightWell.toolTip = @"Highlight (background) colour";
+    row.highlightWell.toolTip = @"Highlight (background) color";
 
     row.bold = [self toggleWithSymbol:@"bold" tip:@"Bold" action:fontAction];
     row.italic = [self toggleWithSymbol:@"italic" tip:@"Italic" action:fontAction];
@@ -106,7 +108,7 @@ using StyleEditor = std::function<void(gw::EditorSettings &, const std::function
                                                   NSWindowStyleMaskNonactivatingPanel
                                           backing:NSBackingStoreBuffered
                                             defer:NO];
-    _panel.title = @"Colours";
+    _panel.title = @"Colors";
     _panel.titlebarAppearsTransparent = YES;
     _panel.floatingPanel = YES;
     _panel.becomesKeyOnlyIfNeeded = YES;

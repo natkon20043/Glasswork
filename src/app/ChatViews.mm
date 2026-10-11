@@ -449,7 +449,7 @@ void styleCard(NSView *view, CGFloat radius) {
 // ---------------------------------------------------------------------------
 // MARK: Content
 
-/// The lines of a unified patch (from Claude Code's result), coloured by kind.
+/// The lines of a unified patch (from Claude Code's result), colored by kind.
 - (NSAttributedString *)patchText:(const gw::claude::Json &)patch {
     NSFont *font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
     NSMutableParagraphStyle *style = [NSMutableParagraphStyle new];

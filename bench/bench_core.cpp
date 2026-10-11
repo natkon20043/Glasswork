@@ -144,8 +144,8 @@ int main(int argc, char** argv) {
         report("re-highlight after an edit (mid-file, avg)", millisecondsSince(start) / 20, "ms");
     }
 
-    // ---- Colouring
-    std::printf("\nColouring a screen of code\n");
+    // ---- Coloring
+    std::printf("\nColoring a screen of code\n");
     {
         std::string themeError;
         std::unique_ptr<gw::Theme> theme;

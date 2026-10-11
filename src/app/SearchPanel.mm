@@ -77,7 +77,8 @@ struct ResultBox {
         NSForegroundColorAttributeName: on ? NSColor.labelColor : NSColor.secondaryLabelColor,
     };
     NSSize size = [self.title sizeWithAttributes:attributes];
-    [self.title drawAtPoint:NSMakePoint(NSMidX(self.bounds) - size.width / 2, NSMidY(self.bounds) - size.height / 2) withAttributes:attributes];
+    [self.title drawAtPoint:NSMakePoint(NSMidX(self.bounds) - size.width / 2, NSMidY(self.bounds) - size.height / 2)
+             withAttributes:attributes];
 }
 
 @end
@@ -859,8 +860,10 @@ static NSImage *symbolImage(NSString *name, CGFloat size, NSFontWeight weight = 
     NSString *replacement = _replaceField.stringValue;
     NSAlert *alert = [NSAlert new];
     alert.messageText = [NSString stringWithFormat:@"Replace %lu lines in %lu files?", (unsigned long)_totalLines, (unsigned long)_files.count];
-    alert.informativeText = replacement.length > 0 ? [NSString stringWithFormat:@"Every match of “%@” becomes “%@”. Files with unsaved changes in the editor are skipped.", _queryField.stringValue, replacement]
-                                                   : [NSString stringWithFormat:@"Every match of “%@” is deleted. Files with unsaved changes in the editor are skipped.", _queryField.stringValue];
+    alert.informativeText = replacement.length > 0 ? [NSString stringWithFormat:@"Every match of “%@” becomes “%@”. Files with "
+                                                                                @"unsaved changes in the editor are skipped.", _queryField.stringValue, replacement]
+                                                   : [NSString stringWithFormat:@"Every match of “%@” is deleted. Files with "
+                                                                                @"unsaved changes in the editor are skipped.", _queryField.stringValue];
     [alert addButtonWithTitle:@"Replace All"];
     [alert addButtonWithTitle:@"Cancel"];
     NSArray<GWSearchFile *> *files = [_files copy];

@@ -205,7 +205,7 @@ std::optional<SelectorMatch> matchSelector(const std::vector<std::string>& parts
 }
 
 TextStyle Theme::styleFor(const std::vector<std::string>& scopes) const {
-    // The best-matching rule sets the colour; font style is chosen separately, the same way.
+    // The best-matching rule sets the color; font style is chosen separately, the same way.
     // When two rules match equally well, the later one in the theme wins.
     TextStyle style = defaults_;
     std::optional<std::pair<SelectorMatch, size_t>> bestForeground;

@@ -6,29 +6,13 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// The "Changes" tab of the sidebar: branch, commit box, staged and unstaged files, and
-/// recent commits. Everything it shows comes from a GWGitRepository.
+/// Sidebar "Changes" tab: branch, commit box, staged and unstaged files, recent commits, all from a GWGitRepository.
 @interface GWSourceControlPanel : NSObject
 
+// ---- Constructors
 - (instancetype)initWithRepository:(GWGitRepository *)repository;
 
-@property (nonatomic, readonly) NSView *view;
-
-/// Open a file in the editor.
-@property (nonatomic, copy, nullable) void (^onOpenFile)(NSString *absolutePath);
-/// Show the changes to a file (staged or not) in a read-only tab.
-@property (nonatomic, copy, nullable) void (^onShowDiff)(NSString *relativePath, BOOL staged);
-/// Show what a commit changed.
-@property (nonatomic, copy, nullable) void (^onShowCommit)(NSString *hash, NSString *subject);
-/// Called before something that needs saved files (commit): the window saves every open
-/// file that has unsaved changes.
-@property (nonatomic, copy, nullable) void (^onSaveAll)(void);
-/// Ask for the terminal to run a command (used to sign in to GitHub).
-@property (nonatomic, copy, nullable) void (^onRunInTerminal)(NSString *command);
-/// Called with an error message the window should show.
-@property (nonatomic, copy, nullable) void (^onError)(NSString *title, NSString *message);
-
-/// Actions that the menu bar and status bar also trigger.
+// ---- Actions (also triggered from the menu bar and status bar)
 - (void)commit;
 - (void)push;
 - (void)pull;
@@ -39,6 +23,20 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)createBranch;
 - (void)initializeRepository;
 - (void)showBranchMenuRelativeToView:(NSView *)view;
+
+// ---- Properties
+@property (nonatomic, readonly) NSView *view;
+
+// ---- Callbacks
+@property (nonatomic, copy, nullable) void (^onOpenFile)(NSString *absolutePath);
+/// Shows a file's changes in a read-only tab.
+@property (nonatomic, copy, nullable) void (^onShowDiff)(NSString *relativePath, BOOL staged);
+@property (nonatomic, copy, nullable) void (^onShowCommit)(NSString *hash, NSString *subject);
+/// Before something that needs saved files (commit): save every open file with unsaved changes.
+@property (nonatomic, copy, nullable) void (^onSaveAll)(void);
+/// Used to sign in to GitHub.
+@property (nonatomic, copy, nullable) void (^onRunInTerminal)(NSString *command);
+@property (nonatomic, copy, nullable) void (^onError)(NSString *title, NSString *message);
 
 @end
 

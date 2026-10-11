@@ -762,7 +762,8 @@ const std::vector<ModelChoice> &modelChoices() {
     icon.contentTintColor = NSColor.controlAccentColor;
     NSTextField *title = [NSTextField labelWithString:@"What are we building?"];
     title.font = [NSFont systemFontOfSize:17 weight:NSFontWeightBold];
-    NSTextField *subtitle = [NSTextField wrappingLabelWithString:@"Ask about your code, or tell Claude what to change. It reads and edits the files in your project, and you watch the edits appear."];
+    NSTextField *subtitle = [NSTextField wrappingLabelWithString:@"Ask about your code, or tell Claude what to change. It "
+                                                                 @"reads and edits the files in your project, and you watch the edits appear."];
     subtitle.font = [NSFont systemFontOfSize:12.5];
     subtitle.textColor = NSColor.secondaryLabelColor;
     subtitle.alignment = NSTextAlignmentCenter;
@@ -961,7 +962,8 @@ const std::vector<ModelChoice> &modelChoices() {
     if ([mode isEqualToString:@"bypassPermissions"] && ![_mode isEqualToString:mode]) {
         NSAlert *alert = [NSAlert new];
         alert.messageText = @"Give Claude full access?";
-        alert.informativeText = @"In this mode Claude edits files and runs commands without asking. Only use it in projects you trust and keep under version control.";
+        alert.informativeText = @"In this mode Claude edits files and runs commands without asking. Only use it in projects "
+                                @"you trust and keep under version control.";
         alert.alertStyle = NSAlertStyleWarning;
         [alert addButtonWithTitle:@"Use Full Access"];
         [alert addButtonWithTitle:@"Cancel"];
@@ -1338,7 +1340,8 @@ const std::vector<ModelChoice> &modelChoices() {
         return YES;
     }
     if (!gw::claude::Session::isInstalled()) {
-        [self appendNotice:@"Claude Code isn't installed. Install it from claude.com/claude-code, then sign in by running “claude” once in a terminal." isError:YES];
+        [self appendNotice:@"Claude Code isn't installed. Install it from claude.com/claude-code, then sign in by running "
+                           @"“claude” once in a terminal." isError:YES];
         return NO;
     }
     _session = std::make_unique<gw::claude::Session>();
@@ -1485,7 +1488,8 @@ const std::vector<ModelChoice> &modelChoices() {
                     // Structured questions can't be answered here; Claude is told to ask in words.
                     if (_session) {
                         _session->answerPermission(event.requestId, false, event.toolInput,
-                                                   "The user can't answer multiple-choice prompts in this editor. Ask your question in plain text instead.");
+                                                   "The user can't answer multiple-choice prompts in this editor. Ask your "
+                                                   "question in plain text instead.");
                     }
                     continue;
                 }

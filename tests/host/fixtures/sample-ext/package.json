@@ -2,18 +2,114 @@
   "name": "sample",
   "publisher": "glasswork-tests",
   "version": "1.0.0",
-  "engines": { "vscode": "^1.80.0" },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
   "main": "./extension.js",
-  "activationEvents": ["onLanguage:fake"],
+  "activationEvents": [
+    "onLanguage:fake"
+  ],
   "contributes": {
-    "commands": [{ "command": "sample.hello", "title": "Say Hello", "category": "Sample" }, { "command": "sample.shout", "title": "Shout" }, { "command": "sample.snippet", "title": "Snippet" }, { "command": "sample.editorEvents", "title": "Events" }, { "command": "sample.fileEvents", "title": "File events" }, { "command": "sample.decorate", "title": "Decorate" }, { "command": "sample.crash", "title": "Crash" }, { "command": "sample.undecorate", "title": "Undecorate" }],
-    "languages": [{ "id": "fake", "extensions": [".fake"] }],
+    "commands": [
+      {
+        "command": "sample.hello",
+        "title": "Say Hello",
+        "category": "Sample"
+      },
+      {
+        "command": "sample.shout",
+        "title": "Shout"
+      },
+      {
+        "command": "sample.snippet",
+        "title": "Snippet"
+      },
+      {
+        "command": "sample.editorEvents",
+        "title": "Events"
+      },
+      {
+        "command": "sample.fileEvents",
+        "title": "File events"
+      },
+      {
+        "command": "sample.decorate",
+        "title": "Decorate"
+      },
+      {
+        "command": "sample.crash",
+        "title": "Crash"
+      },
+      {
+        "command": "sample.undecorate",
+        "title": "Undecorate"
+      },
+      {
+        "command": "sample.treeClicked",
+        "title": "treeClicked"
+      },
+      {
+        "command": "sample.treeRefresh",
+        "title": "treeRefresh"
+      },
+      {
+        "command": "sample.treeTitle",
+        "title": "treeTitle"
+      },
+      {
+        "command": "sample.treeSelections",
+        "title": "treeSelections"
+      },
+      {
+        "command": "sample.openWebview",
+        "title": "openWebview"
+      },
+      {
+        "command": "sample.webviewReceived",
+        "title": "webviewReceived"
+      },
+      {
+        "command": "sample.picked",
+        "title": "picked"
+      },
+      {
+        "command": "sample.tabs",
+        "title": "tabs"
+      }
+    ],
+    "languages": [
+      {
+        "id": "fake",
+        "extensions": [
+          ".fake"
+        ]
+      }
+    ],
     "configuration": {
       "title": "Sample",
       "properties": {
-        "sample.greeting": { "type": "string", "default": "Hello" },
-        "sample.shout": { "type": "boolean", "default": false }
+        "sample.greeting": {
+          "type": "string",
+          "default": "Hello"
+        },
+        "sample.shout": {
+          "type": "boolean",
+          "default": false
+        }
       }
+    },
+    "views": {
+      "explorer": [
+        {
+          "id": "sample.tree",
+          "name": "Sample Tree"
+        },
+        {
+          "id": "sample.webviewView",
+          "name": "Sample Web",
+          "type": "webview"
+        }
+      ]
     }
   }
 }

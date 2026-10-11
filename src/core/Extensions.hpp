@@ -17,28 +17,33 @@ namespace gw {
 
 struct LanguageInfo {
     std::string id;
-    std::vector<std::string> extensions;  // ".cpp"
-    std::vector<std::string> filenames;   // "Makefile"
-    std::vector<std::string> aliases;     // "C++"
-    std::filesystem::path configuration;  // language-configuration.json
+    /// ".cpp"
+    std::vector<std::string> extensions;
+    /// "Makefile"
+    std::vector<std::string> filenames;
+    /// "C++"
+    std::vector<std::string> aliases;
+    /// language-configuration.json
+    std::filesystem::path configuration;
 };
 
 struct GrammarInfo {
-    std::string language;  // may be empty for grammars only used via includes
+    /// Empty for grammars only reached through includes.
+    std::string language;
     std::string scopeName;
     std::filesystem::path path;
 };
 
 struct ThemeInfo {
     std::string label;
-    std::string uiTheme;  // "vs-dark", "vs", "hc-black", "hc-light"
+    /// "vs-dark", "vs", "hc-black" or "hc-light".
+    std::string uiTheme;
     std::filesystem::path path;
     std::string extensionId;
 
     bool dark() const { return uiTheme == "vs-dark" || uiTheme == "hc-black"; }
 };
 
-/// A file icon theme an extension contributes (`contributes.iconThemes`).
 struct IconThemeInfo {
     std::string id;
     std::string label;
@@ -46,121 +51,132 @@ struct IconThemeInfo {
     std::string extensionId;
 };
 
-/// Editing rules from a language's `language-configuration.json`.
+/// Editing rules from `language-configuration.json`.
 struct LanguageConfiguration {
     std::string lineComment;
     std::pair<std::string, std::string> blockComment;
     std::vector<std::pair<std::string, std::string>> autoClosingPairs;
 };
 
-/// A VS Code extension unpacked on disk. Only its declarative contributions are used:
-/// languages, TextMate grammars, colour themes and language configurations.
+/// A VS Code extension unpacked on disk, with its declarative contributions.
 struct Extension {
-    std::string id;  // "publisher.name"
+    /// "publisher.name"
+    std::string id;
     std::string displayName;
     std::string description;
     std::string version;
     std::filesystem::path root;
-    /// The extension's package.json with its "%key%" strings replaced from package.nls.json, as
-    /// JSON text. The extension host reads activation events, commands and settings from it.
+    /// package.json with "%key%" strings filled from package.nls.json, as JSON text.
     std::string manifestJson;
-    /// True when the extension has code to run (a `main` entry), not only declarative contributions.
+    /// Has a `main` entry, not only declarative contributions.
     bool hasCode = false;
     std::vector<LanguageInfo> languages;
     std::vector<GrammarInfo> grammars;
     std::vector<ThemeInfo> themes;
     std::vector<IconThemeInfo> iconThemes;
-    /// Its `contributes.keybindings` as JSON text (an array), empty when it has none.
+    /// `contributes.keybindings` as a JSON array, empty if none.
     std::string keybindingsJson;
-    /// Snippet files it contributes: language id and file.
+    /// Language id and snippet file.
     std::vector<std::pair<std::string, std::filesystem::path>> snippets;
 };
 
 class ExtensionManager {
 public:
-    explicit ExtensionManager(std::filesystem::path directory);
-
-    /// Re-reads every installed extension. Extensions named in `setDisabled` are listed (see
-    /// `disabledExtensions`) but contribute nothing: no grammars, themes, snippets or code.
-    void scan();
-    void setDisabled(std::set<std::string> ids) { disabledIds_ = std::move(ids); }
-    /// The installed extensions that are switched off.
-    const std::vector<Extension>& disabledExtensions() const { return disabled_; }
-
-    const std::filesystem::path& directory() const { return directory_; }
-
-    /// The folder holding the user's own snippets: `<language>.json` files for one language, and
-    /// `*.code-snippets` files that name their languages themselves. Set before scan().
-    void setUserSnippetsDirectory(std::filesystem::path directory) { userSnippets_ = std::move(directory); }
-    /// Every extension's `contributes.keybindings`, joined into one JSON array.
-    std::string contributedKeybindingsJson() const;
-    /// Snippets from extensions and the user's folder, read on demand.
-    SnippetLibrary& snippets() { return snippetLibrary_; }
-    const std::vector<Extension>& extensions() const { return extensions_; }
-    bool isInstalled(const std::string& id) const;
-
-    std::optional<std::string> languageForFile(const std::filesystem::path& path) const;
-    /// A readable name for a language id ("cpp" → "C++").
-    std::string languageName(const std::string& id) const;
-    const GrammarInfo* grammarForLanguage(const std::string& language) const;
-    const GrammarInfo* grammarForScope(const std::string& scopeName) const;
-    std::vector<ThemeInfo> themes() const;
-    std::vector<IconThemeInfo> iconThemes() const;
-    LanguageConfiguration configuration(const std::string& language) const;
-
     struct InstallResult {
         bool ok = false;
         std::string message;
         std::string id;
         std::string version;
     };
-    /// Downloads the latest version of `id` ("publisher.name") from Open VSX and unpacks it
-    /// into `directory`, replacing older versions. Blocks on the network: call it off the
-    /// main thread, then `scan()`.
-    static InstallResult installFromOpenVSX(const std::string& id, const std::filesystem::path& directory);
 
-    /// One extension found by a search of Open VSX.
     struct MarketplaceEntry {
-        std::string id;           // "publisher.name"
-        std::string displayName;  // "YAML"
+        /// "publisher.name"
+        std::string id;
+        std::string displayName;
         std::string description;
         std::string version;
         std::string publisher;
         long downloads = 0;
-        double rating = 0;        // 0 when nobody has rated it
+        /// 0 when nobody has rated it.
+        double rating = 0;
         std::string iconURL;
     };
-    /// Searches Open VSX (most downloaded first for an empty query). Blocks on the network: call it
-    /// off the main thread. On failure the list is empty and `error` says why.
-    static std::vector<MarketplaceEntry> searchOpenVSX(const std::string& query, size_t limit, std::string* error = nullptr);
-    /// Reads an Open VSX search answer; separated out so it can be tested without the network.
-    static std::vector<MarketplaceEntry> parseSearchResults(const std::string& json);
+
+    // ---- Constructors
+    explicit ExtensionManager(std::filesystem::path directory);
+
+    // ---- Scanning
+    /// Re-reads every installed extension. Disabled ones are listed but contribute nothing.
+    void scan();
+
+    // ---- Installing (blocks on the network: call off the main thread, then scan())
+    /// Downloads the latest `id` from Open VSX into `directory`, replacing older versions.
+    static InstallResult installFromOpenVSX(const std::string& id, const std::filesystem::path& directory);
     bool uninstall(const std::string& id);
 
+    // ---- Marketplace search (blocks on the network)
+    /// Most downloaded first for an empty query. On failure the list is empty and `error` says why.
+    static std::vector<MarketplaceEntry> searchOpenVSX(const std::string& query, size_t limit, std::string* error = nullptr);
+    /// Split out so it can be tested without the network.
+    static std::vector<MarketplaceEntry> parseSearchResults(const std::string& json);
+
+    // ---- Setters
+    void setDisabled(std::set<std::string> ids) { disabledIds_ = std::move(ids); }
+    /// Folder of `<language>.json` and `*.code-snippets` files. Set before scan().
+    void setUserSnippetsDirectory(std::filesystem::path directory) { userSnippets_ = std::move(directory); }
+
+    // ---- Getters
+    const std::filesystem::path& directory() const { return directory_; }
+    const std::vector<Extension>& extensions() const { return extensions_; }
+    const std::vector<Extension>& disabledExtensions() const { return disabled_; }
+    bool isInstalled(const std::string& id) const;
+    SnippetLibrary& snippets() { return snippetLibrary_; }
+    std::vector<ThemeInfo> themes() const;
+    std::vector<IconThemeInfo> iconThemes() const;
+    /// All extensions' `contributes.keybindings` joined into one JSON array.
+    std::string contributedKeybindingsJson() const;
+
+    // ---- Language lookup
+    std::optional<std::string> languageForFile(const std::filesystem::path& path) const;
+    /// "cpp" -> "C++"
+    std::string languageName(const std::string& id) const;
+    const GrammarInfo* grammarForLanguage(const std::string& language) const;
+    const GrammarInfo* grammarForScope(const std::string& scopeName) const;
+    LanguageConfiguration configuration(const std::string& language) const;
+
 private:
+    /// The language for the file's own name, without trying the ".in" template rule.
+    std::optional<std::string> languageForExactFile(const std::filesystem::path& path) const;
+
+    // ---- Private variables
     std::filesystem::path directory_;
     std::filesystem::path userSnippets_;
     SnippetLibrary snippetLibrary_;
     std::vector<Extension> extensions_;
     std::vector<Extension> disabled_;
     std::set<std::string> disabledIds_;
-    std::map<std::string, LanguageInfo> languages_;  // merged across extensions
+    // Merged across extensions.
+    std::map<std::string, LanguageInfo> languages_;
     std::map<std::string, GrammarInfo> grammarsByScope_;
     std::map<std::string, std::string> scopeByLanguage_;
 };
 
-/// Loads grammars on demand by scope name, so grammars can include each other (C++ pulls in
-/// the Doxygen grammar, Markdown pulls in every fenced language, and so on).
+/// Loads grammars on demand by scope name so grammars can include each other.
 class GrammarRegistry {
 public:
+    // ---- Constructors
     explicit GrammarRegistry(const ExtensionManager& extensions) : extensions_(extensions) {}
 
+    // ---- Lookup
     tm::Grammar* forScope(const std::string& scopeName);
     tm::Grammar* forLanguage(const std::string& language);
-    /// Forgets loaded grammars (after installing or removing extensions).
+
+    // ---- Maintenance
+    /// Call after installing or removing extensions.
     void clear();
 
 private:
+    // ---- Private variables
     const ExtensionManager& extensions_;
     std::recursive_mutex mutex_;
     std::map<std::string, std::unique_ptr<tm::Grammar>> loaded_;

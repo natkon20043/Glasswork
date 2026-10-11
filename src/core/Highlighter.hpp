@@ -9,58 +9,66 @@
 
 namespace gw {
 
-/// Keeps a document's syntax tokens up to date. Lines are tokenized top-down (each line's
-/// state depends on the previous one). After an edit only lines from the change onward are
-/// redone, and work stops as soon as a line's end state matches what it was before, because
-/// everything below is then known to be unchanged.
+/// Keeps a document's syntax tokens current. Tokenizes top-down; after an edit only lines from the
+/// change on are redone, stopping once a line's end state matches its old one.
 class Highlighter {
 public:
+    // ---- Constructors
     explicit Highlighter(tm::Grammar* grammar = nullptr) : grammar_(grammar) {}
 
+    // ---- Setters
     void setGrammar(tm::Grammar* grammar);
-    tm::Grammar* grammar() const { return grammar_; }
 
-    /// Must be called for every document change, before the next `tokens` call.
+    // ---- Editing
+    /// Call for every document change, before the next `tokens`.
     void didChange(const Change& change);
 
-    /// Tokens for `line`, tokenizing any earlier lines first, but doing at most `budget`
-    /// lines of work. Returns nullopt if the line isn't ready yet; call again later (the
-    /// work done so far is kept). With no grammar, returns nullopt.
+    // ---- Tokens
+    /// Does at most `budget` lines of work. Nullopt-like null if the line isn't ready (call again,
+    /// progress is kept) or there is no grammar.
     const std::vector<tm::Token>* tokens(const TextBuffer& buffer, size_t line, size_t budget = 5000);
 
-    /// Lines [0, validLines) have up-to-date tokens.
+    // ---- Getters
+    tm::Grammar* grammar() const { return grammar_; }
+    /// Lines [0, validLines) have current tokens.
     size_t validLines() const { return valid_; }
 
-    /// How far past the tokenized part a line may be for `tokens` to simply keep going down
-    /// the file. Farther than that, a small "island" around the line is tokenized instead.
+    // ---- Constants
+    /// Beyond this many lines past the tokenized part, a small island around the line is tokenized instead.
     static constexpr size_t kNearLines = 400;
 
 private:
-    /// A stretch of lines tokenized on its own, starting from a guessed starting point rather
-    /// than the top of the file. Lets a jump far into a huge file show colours at once. The
-    /// guess is right nearly always (top-level code has the same starting state everywhere).
+    /// Lines tokenized on their own from a guessed top-level start, so jumping far into a huge file
+    /// shows colors at once.
     struct Island {
-        size_t first = 0;                            // buffer line of the island's first entry
-        std::deque<tm::State> states;                // the state after each line
-        std::deque<std::vector<tm::Token>> tokens;   // deques keep earlier results in place
-        size_t valid = 0;                            // entries before this are up to date
-        size_t reusableFrom = 0;                     // like Highlighter's: after an edit, entries in
-        size_t reusableUntil = 0;                    // this range are right again once states match
         size_t end() const { return first + valid; }
+
+        size_t first = 0;
+        std::deque<tm::State> states;
+        // Deques keep earlier results in place.
+        std::deque<std::vector<tm::Token>> tokens;
+        size_t valid = 0;
+        // After an edit, entries in [reusableFrom, reusableUntil) are right again once states match.
+        size_t reusableFrom = 0;
+        size_t reusableUntil = 0;
     };
 
+    // ---- Private functions
     const std::vector<tm::Token>* islandTokens(const TextBuffer& buffer, size_t line);
-    /// A line where tokenizing can start with the plain top-level state: a line at the left
-    /// edge that follows a blank line, shortly above `line`.
+    /// A left-edge line after a blank line shortly above `line`, where plain top-level state can start.
     static size_t chooseAnchor(const TextBuffer& buffer, size_t line);
 
-    std::vector<Island> islands_;  // most recently used last
+    // ---- Private variables
+    // Most recently used last.
+    std::vector<Island> islands_;
     tm::Grammar* grammar_;
-    std::vector<tm::State> states_;              // state after each line
+    // State after each line.
+    std::vector<tm::State> states_;
     std::vector<std::vector<tm::Token>> tokens_;
-    size_t valid_ = 0;          // lines before this are current
-    size_t reusableFrom_ = 0;   // from the last edited line up to reusableUntil_, slots hold
-    size_t reusableUntil_ = 0;  // pre-edit results, still right once end states match again
+    size_t valid_ = 0;
+    // From the last edited line to reusableUntil_, slots hold pre-edit results.
+    size_t reusableFrom_ = 0;
+    size_t reusableUntil_ = 0;
 };
 
 }  // namespace gw

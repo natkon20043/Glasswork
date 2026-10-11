@@ -595,13 +595,17 @@ void LanguageServer::registerCapabilities(const Json& registrations) {
             continue;
         }
         Json options = registration.contains("registerOptions") ? registration["registerOptions"] : Json(true);
-        bool existedBefore = capabilities_.contains(key) && !dynamicOnlyKeys_.count(key);
         if (!capabilities_.contains(key)) {
             dynamicOnlyKeys_.insert(key);
         }
         Json current = capabilities_.contains(key) ? capabilities_[key] : Json();
-        capabilities_[key] = current.is_null() ? (options.is_object() ? options : Json(true)) : mergeCapability(current, options);
-        (void)existedBefore;
+        if (!current.is_null()) {
+            capabilities_[key] = mergeCapability(current, options);
+        } else if (options.is_object()) {
+            capabilities_[key] = options;
+        } else {
+            capabilities_[key] = Json(true);  // registered without options: the feature is simply on
+        }
         if (!id.empty()) {
             registrationKeys_[id] = key;
         }
@@ -647,149 +651,149 @@ void LanguageServer::handleMessage(const Json& message) {
     bool hasId = message.contains("id");
 
     if (!hasMethod && hasId) {
-        // An answer to one of our requests.
-        int identifier = message["id"].is_number_integer() ? message["id"].get<int>() : -1;
-        ResponseHandler handler;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            auto found = pending_.find(identifier);
-            if (found == pending_.end()) {
-                return;
-            }
-            handler = std::move(found->second);
-            pending_.erase(found);
-        }
-        std::string error;
-        if (message.contains("error")) {
-            error = message["error"].value("message", "Language server error");
-        }
-        handler(error.empty() ? message.value("result", Json()) : Json(), error);
-        return;
+        handleResponse(message);
+    } else if (hasMethod && hasId) {
+        handleServerRequest(message);
+    } else if (hasMethod) {
+        handleNotification(message);
     }
+}
 
-    if (hasMethod && hasId) {
-        // The server is asking us something. Say no politely, except where "nothing" is a fine answer.
-        std::string method = message["method"].get<std::string>();
-        Json result;
-        if (method == "workspace/configuration") {
-            std::function<Json(const std::string&, const std::string&)> provider;
-            {
-                std::lock_guard<std::mutex> lock(callbackMutex_);
-                provider = onConfiguration;
-            }
-            result = Json::array();
-            for (const Json& item : message["params"].value("items", Json::array())) {
-                Json value;  // null: not set
-                if (provider && item.is_object()) {
-                    value = provider(item.value("section", ""), item.value("scopeUri", ""));
-                }
-                result.push_back(value);
-            }
-        } else if (method == "window/showMessageRequest") {
-            std::function<void(int, const std::string&, const std::vector<std::string>&, std::function<void(const std::string&)>)> handler;
-            {
-                std::lock_guard<std::mutex> lock(callbackMutex_);
-                handler = onShowMessageRequest;
-            }
-            if (handler) {
-                std::vector<std::string> actions;
-                for (const Json& action : message["params"].value("actions", Json::array())) {
-                    actions.push_back(action.value("title", ""));
-                }
-                std::shared_ptr<Liveness> liveness = liveness_;
-                Json requestId = message["id"];
-                Json originalActions = message["params"].value("actions", Json::array());
-                handler(message["params"].value("type", 3), message["params"].value("message", ""), actions,
-                        [liveness, requestId, originalActions](const std::string& chosen) {
-                            std::lock_guard<std::mutex> lock(liveness->mutex);
-                            if (liveness->server == nullptr) {
-                                return;
-                            }
-                            Json answer;  // null: dismissed
-                            for (const Json& action : originalActions) {
-                                if (action.value("title", "") == chosen && !chosen.empty()) {
-                                    answer = action;
-                                }
-                            }
-                            liveness->server->transport_->write(
-                                frameMessage({{"jsonrpc", "2.0"}, {"id", requestId}, {"result", answer}}));
-                        });
-                return;
-            }
-            result = Json();
-        } else if (method == "workspace/applyEdit") {
-            std::function<void(const Json&, std::function<void(bool)>)> handler;
-            {
-                std::lock_guard<std::mutex> lock(callbackMutex_);
-                handler = onApplyEdit;
-            }
-            if (handler) {
-                // The answer goes out whenever the app has made (or refused) the changes.
-                std::shared_ptr<Liveness> liveness = liveness_;
-                Json requestId = message["id"];
-                handler(message["params"].value("edit", Json::object()), [liveness, requestId](bool applied) {
-                    std::lock_guard<std::mutex> lock(liveness->mutex);
-                    if (liveness->server != nullptr) {
-                        liveness->server->replyToApplyEdit(requestId, applied);
-                    }
-                });
-                return;
-            }
-            result = {{"applied", false}};
-        } else if (method == "client/registerCapability") {
-            registerCapabilities(message["params"].value("registrations", Json::array()));
-            result = Json();
-        } else if (method == "client/unregisterCapability") {
-            unregisterCapabilities(message["params"].value("unregisterations", Json::array()));
-            result = Json();
-        } else if (method == "window/workDoneProgress/create") {
-            result = Json();
-        } else {
-            transport_->write(frameMessage({{"jsonrpc", "2.0"},
-                                         {"id", message["id"]},
-                                         {"error", {{"code", -32601}, {"message", "Not supported by this client"}}}}));
+/// An answer to one of our requests: finds who asked and hands it over.
+void LanguageServer::handleResponse(const Json& message) {
+    // An answer to one of our requests.
+    int identifier = message["id"].is_number_integer() ? message["id"].get<int>() : -1;
+    ResponseHandler handler;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto found = pending_.find(identifier);
+        if (found == pending_.end()) {
             return;
         }
-        transport_->write(frameMessage({{"jsonrpc", "2.0"}, {"id", message["id"]}, {"result", result}}));
-        return;
+        handler = std::move(found->second);
+        pending_.erase(found);
     }
-
-    if (hasMethod) {
-        std::string method = message["method"].get<std::string>();
-        const Json parameters = message.contains("params") ? message["params"] : Json::object();
-        if (method == "window/showMessage" || method == "window/logMessage") {
-            std::function<void(int, const std::string&)> handler;
-            {
-                std::lock_guard<std::mutex> lock(callbackMutex_);
-                handler = method == "window/showMessage" ? onShowMessage : onLogMessage;
-            }
-            if (handler) {
-                handler(parameters.value("type", 3), parameters.value("message", ""));
-            }
-            return;
-        }
-        if (method == "$/progress") {
-            std::function<void(const std::string&, const std::string&, const std::string&, const std::string&, int)> handler;
-            {
-                std::lock_guard<std::mutex> lock(callbackMutex_);
-                handler = onProgress;
-            }
-            if (handler && parameters.contains("value") && parameters["value"].is_object()) {
-                const Json& value = parameters["value"];
-                std::string token = parameters.contains("token") ? (parameters["token"].is_string() ? parameters["token"].get<std::string>() : parameters["token"].dump()) : "";
-                int percentage = value.contains("percentage") && value["percentage"].is_number() ? value["percentage"].get<int>() : -1;
-                handler(token, value.value("kind", ""), value.value("title", ""), value.value("message", ""), percentage);
-            }
-            return;
-        }
+    std::string error;
+    if (message.contains("error")) {
+        error = message["error"].value("message", "Language server error");
     }
+    handler(error.empty() ? message.value("result", Json()) : Json(), error);
+    return;
+}
 
-    if (hasMethod && message["method"] == "textDocument/publishDiagnostics") {
-        std::function<void(const std::string&, long, std::vector<Diagnostic>)> handler;
+/// The server is asking us something. We say no politely, except where "nothing" is a fine answer.
+void LanguageServer::handleServerRequest(const Json& message) {
+    // The server is asking us something. Say no politely, except where "nothing" is a fine answer.
+    std::string method = message["method"].get<std::string>();
+    Json result;
+    if (method == "workspace/configuration") {
+        std::function<Json(const std::string&, const std::string&)> provider;
         {
             std::lock_guard<std::mutex> lock(callbackMutex_);
-            handler = onDiagnostics;
+            provider = onConfiguration;
         }
+        result = Json::array();
+        for (const Json& item : message["params"].value("items", Json::array())) {
+            Json value;  // null: not set
+            if (provider && item.is_object()) {
+                value = provider(item.value("section", ""), item.value("scopeUri", ""));
+            }
+            result.push_back(value);
+        }
+    } else if (method == "window/showMessageRequest") {
+        auto handler = copyCallback(onShowMessageRequest);
+        if (handler) {
+            std::vector<std::string> actions;
+            for (const Json& action : message["params"].value("actions", Json::array())) {
+                actions.push_back(action.value("title", ""));
+            }
+            std::shared_ptr<Liveness> liveness = liveness_;
+            Json requestId = message["id"];
+            Json originalActions = message["params"].value("actions", Json::array());
+            handler(message["params"].value("type", 3), message["params"].value("message", ""), actions,
+                    [liveness, requestId, originalActions](const std::string& chosen) {
+                        std::lock_guard<std::mutex> lock(liveness->mutex);
+                        if (liveness->server == nullptr) {
+                            return;
+                        }
+                        Json answer;  // null: dismissed
+                        for (const Json& action : originalActions) {
+                            if (action.value("title", "") == chosen && !chosen.empty()) {
+                                answer = action;
+                            }
+                        }
+                        liveness->server->transport_->write(
+                            frameMessage({{"jsonrpc", "2.0"}, {"id", requestId}, {"result", answer}}));
+                    });
+            return;
+        }
+        result = Json();
+    } else if (method == "workspace/applyEdit") {
+        auto handler = copyCallback(onApplyEdit);
+        if (handler) {
+            // The answer goes out whenever the app has made (or refused) the changes.
+            std::shared_ptr<Liveness> liveness = liveness_;
+            Json requestId = message["id"];
+            handler(message["params"].value("edit", Json::object()), [liveness, requestId](bool applied) {
+                std::lock_guard<std::mutex> lock(liveness->mutex);
+                if (liveness->server != nullptr) {
+                    liveness->server->replyToApplyEdit(requestId, applied);
+                }
+            });
+            return;
+        }
+        result = {{"applied", false}};
+    } else if (method == "client/registerCapability") {
+        registerCapabilities(message["params"].value("registrations", Json::array()));
+        result = Json();
+    } else if (method == "client/unregisterCapability") {
+        unregisterCapabilities(message["params"].value("unregisterations", Json::array()));
+        result = Json();
+    } else if (method == "window/workDoneProgress/create") {
+        result = Json();
+    } else {
+        transport_->write(frameMessage({{"jsonrpc", "2.0"},
+                                     {"id", message["id"]},
+                                     {"error", {{"code", -32601}, {"message", "Not supported by this client"}}}}));
+        return;
+    }
+    transport_->write(frameMessage({{"jsonrpc", "2.0"}, {"id", message["id"]}, {"result", result}}));
+    return;
+}
+
+/// Something the server tells us and expects no answer to: messages, progress and problems found.
+void LanguageServer::handleNotification(const Json& message) {
+    std::string method = message["method"].get<std::string>();
+    const Json parameters = message.contains("params") ? message["params"] : Json::object();
+    if (method == "window/showMessage" || method == "window/logMessage") {
+        std::function<void(int, const std::string&)> handler;
+        {
+            std::lock_guard<std::mutex> lock(callbackMutex_);
+            handler = method == "window/showMessage" ? onShowMessage : onLogMessage;
+        }
+        if (handler) {
+            handler(parameters.value("type", 3), parameters.value("message", ""));
+        }
+        return;
+    }
+    if (method == "$/progress") {
+        auto handler = copyCallback(onProgress);
+        if (handler && parameters.contains("value") && parameters["value"].is_object()) {
+            const Json& value = parameters["value"];
+            // A progress token is a string or a number; either way it is only used as a name.
+            std::string token;
+            if (parameters.contains("token")) {
+                const Json& tokenValue = parameters["token"];
+                token = tokenValue.is_string() ? tokenValue.get<std::string>() : tokenValue.dump();
+            }
+            int percentage = value.contains("percentage") && value["percentage"].is_number() ? value["percentage"].get<int>() : -1;
+            handler(token, value.value("kind", ""), value.value("title", ""), value.value("message", ""), percentage);
+        }
+        return;
+    }
+
+    if (message["method"] == "textDocument/publishDiagnostics") {
+        auto handler = copyCallback(onDiagnostics);
         if (handler) {
             const Json& parameters = message["params"];
             long version = -1;

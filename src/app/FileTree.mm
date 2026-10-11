@@ -257,7 +257,7 @@
     cell.textField.stringValue = name;
     BOOL expanded = item.isDirectory && [outlineView isItemExpanded:item];
     cell.imageView.image = GWFileIconImage(name, item.isDirectory, expanded, 14);
-    cell.imageView.contentTintColor = nil;  // the image carries its own colours
+    cell.imageView.contentTintColor = nil;  // the image carries its own colors
     return cell;
 }
 
@@ -274,7 +274,8 @@
     id item = notification.userInfo[@"NSObject"];
     NSInteger row = item ? [_outline rowForItem:item] : -1;
     if (row >= 0) {
-        [_outline reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:static_cast<NSUInteger>(row)] columnIndexes:[NSIndexSet indexSetWithIndex:0]];
+        [_outline reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:static_cast<NSUInteger>(row)]
+                            columnIndexes:[NSIndexSet indexSetWithIndex:0]];
     }
 }
 
@@ -314,8 +315,11 @@
 }
 
 /// Shows a small dialog asking for a name. The completion gets nil if cancelled.
-- (void)askForNameWithTitle:(NSString *)title message:(NSString *)message initial:(NSString *)initial
-                 selectStem:(BOOL)selectStem completion:(void (^)(NSString *_Nullable name))completion {
+- (void)askForNameWithTitle:(NSString *)title
+                    message:(NSString *)message
+                    initial:(NSString *)initial
+                 selectStem:(BOOL)selectStem
+                 completion:(void (^)(NSString *_Nullable name))completion {
     NSAlert *alert = [NSAlert new];
     alert.messageText = title;
     alert.informativeText = message;
@@ -347,7 +351,8 @@
 
 - (void)createItemInFolder:(NSURL *)folder isDirectory:(BOOL)isDirectory {
     NSString *title = isDirectory ? @"New Folder" : @"New File";
-    NSString *message = [NSString stringWithFormat:@"In “%@”. You can write a path like src/util/helpers.cpp to make folders too.", folder.lastPathComponent];
+    NSString *message = [NSString stringWithFormat:@"In “%@”. You can write a path like src/util/helpers.cpp to make folders "
+                                                   @"too.", folder.lastPathComponent];
     [self askForNameWithTitle:title message:message initial:isDirectory ? @"" : @"untitled.txt" selectStem:!isDirectory
                    completion:^(NSString *name) {
         if (name == nil) return;
@@ -550,8 +555,10 @@
     return item.url;
 }
 
-- (NSDragOperation)outlineView:(NSOutlineView *)outlineView validateDrop:(id<NSDraggingInfo>)info
-                  proposedItem:(GWFileNode *)item proposedChildIndex:(NSInteger)index {
+- (NSDragOperation)outlineView:(NSOutlineView *)outlineView
+                  validateDrop:(id<NSDraggingInfo>)info
+                  proposedItem:(GWFileNode *)item
+            proposedChildIndex:(NSInteger)index {
     if (_root == nil) return NSDragOperationNone;
     // Dropping on a file means dropping in its folder; between rows means the folder they are in.
     GWFileNode *target = item;
@@ -565,7 +572,10 @@
     return copy ? NSDragOperationCopy : NSDragOperationMove;
 }
 
-- (BOOL)outlineView:(NSOutlineView *)outlineView acceptDrop:(id<NSDraggingInfo>)info item:(GWFileNode *)item childIndex:(NSInteger)index {
+- (BOOL)outlineView:(NSOutlineView *)outlineView
+         acceptDrop:(id<NSDraggingInfo>)info
+               item:(GWFileNode *)item
+         childIndex:(NSInteger)index {
     NSURL *folder = item != nil ? item.url : _root.url;
     NSArray<NSURL *> *urls = [info.draggingPasteboard readObjectsForClasses:@[NSURL.class]
                                                                     options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}];

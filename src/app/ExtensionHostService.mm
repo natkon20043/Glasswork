@@ -73,6 +73,9 @@ std::string PathFromURI(const std::string &uri) {
 
 }  // namespace
 
+@implementation GWContributedView
+@end
+
 @implementation GWExtensionHostService {
     std::unique_ptr<gw::ExtensionHost> _host;
     BOOL _initializing;
@@ -85,6 +88,8 @@ std::string PathFromURI(const std::string &uri) {
     std::set<std::string> _activatedLanguages;
     std::vector<ExtensionIndexEntry> _index;
     std::vector<ContributedCommand> _contributedCommands;
+    NSMutableArray<GWContributedView *> *_contributedViews;
+    Json _viewMenus;
     NSMutableDictionary<NSString *, NSString *> *_registeredCommands;  // id → title ("" when it has none)
     NSMutableDictionary<NSString *, GWExtensionStatusItem *> *_statusItemsByID;
     NSMutableDictionary<NSString *, NSString *> *_extensionStates;
@@ -129,6 +134,8 @@ std::string PathFromURI(const std::string &uri) {
     _indexBuilt = YES;
     _index.clear();
     _contributedCommands.clear();
+    _contributedViews = [NSMutableArray array];
+    _viewMenus = Json::object();
     for (const gw::Extension &extension : GWServices.shared.extensions.extensions()) {
         if (!extension.hasCode || extension.id.rfind("vscode.", 0) == 0) {
             continue;  // declarative only, or one of VS Code's own built-ins (themes, grammars)
@@ -175,7 +182,119 @@ std::string PathFromURI(const std::string &uri) {
             contributed.hiddenFromPalette = hidden.count(contributed.identifier) > 0 || title.empty();
             _contributedCommands.push_back(std::move(contributed));
         }
+        [self indexViewsOfExtension:extension contributes:contributes menus:menus];
         _index.push_back(std::move(entry));
+    }
+}
+
+/// Reads the sidebar views an extension contributes, with the container (and title) each sits in.
+- (void)indexViewsOfExtension:(const gw::Extension &)extension contributes:(const Json &)contributes menus:(const Json &)menus {
+    const Json views = contributes.value("views", Json::object());
+    if (!views.is_object() || views.empty()) {
+        return;
+    }
+    std::map<std::string, std::pair<std::string, std::string>> containers = {  // id → title, icon file
+        {"explorer", {"Explorer", ""}}, {"scm", {"Source Control", ""}}, {"debug", {"Run and Debug", ""}},
+        {"test", {"Testing", ""}}, {"remote", {"Remote", ""}},
+    };
+    const Json custom = contributes.value("viewsContainers", Json::object());
+    for (const char *place : {"activitybar", "panel"}) {
+        for (const Json &container : custom.value(place, Json::array())) {
+            if (container.is_object() && container.contains("id") && container["id"].is_string()) {
+                std::string icon = container.value("icon", "");
+                if (!icon.empty() && icon.rfind("$(", 0) != 0) {
+                    icon = (extension.root / icon).string();
+                } else {
+                    icon.clear();
+                }
+                containers[container["id"].get<std::string>()] = {container.value("title", container["id"].get<std::string>()), icon};
+            }
+        }
+    }
+    for (auto it = views.begin(); it != views.end(); ++it) {
+        if (!it.value().is_array()) {
+            continue;
+        }
+        auto found = containers.find(it.key());
+        for (const Json &view : it.value()) {
+            if (!view.is_object() || !view.contains("id") || !view["id"].is_string() || view.value("when", "") == "false") {
+                continue;
+            }
+            GWContributedView *contributed = [GWContributedView new];
+            contributed.identifier = @(view["id"].get<std::string>().c_str());
+            contributed.name = @(view.value("name", view["id"].get<std::string>()).c_str());
+            contributed.containerIdentifier = @(it.key().c_str());
+            contributed.containerTitle = @((found != containers.end() ? found->second.first : it.key()).c_str());
+            contributed.containerIcon = found != containers.end() && !found->second.second.empty() ? @(found->second.second.c_str()) : nil;
+            contributed.extensionIdentifier = @(extension.id.c_str());
+            contributed.when = @(view.value("when", "").c_str());
+            contributed.isWebview = view.value("type", "tree") == "webview";
+            [_contributedViews addObject:contributed];
+        }
+    }
+    for (const char *place : {"view/item/context", "view/title"}) {
+        for (const Json &item : menus.value(place, Json::array())) {
+            if (item.is_object() && item.contains("command")) {
+                _viewMenus[place].push_back(item);
+            }
+        }
+    }
+}
+
+- (NSArray<GWContributedView *> *)contributedViews {
+    [self buildIndexIfNeeded];
+    return [_contributedViews copy];
+}
+
+- (NSString *)titleForCommand:(NSString *)identifier {
+    [self buildIndexIfNeeded];
+    for (const ContributedCommand &command : _contributedCommands) {
+        if (command.identifier == identifier.UTF8String) {
+            return @(command.title.c_str());
+        }
+    }
+    return nil;
+}
+
+- (Json)contributedViewMenus {
+    [self buildIndexIfNeeded];
+    return _viewMenus;
+}
+
+- (void)activateView:(NSString *)viewIdentifier completion:(void (^)(BOOL))done {
+    __weak GWExtensionHostService *weakSelf = self;
+    NSString *event = [@"onView:" stringByAppendingString:viewIdentifier];
+    [self ensureHost:^(BOOL ok) {
+        GWExtensionHostService *strongSelf = weakSelf;
+        if (!ok || strongSelf == nil || strongSelf->_host == nullptr) {
+            done(NO);
+            return;
+        }
+        strongSelf->_host->request("host/event", Json{{"name", event.UTF8String}}, [done](const Json &, const std::string &) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                done(YES);
+            });
+        });
+    }];
+}
+
+- (void)sendViewRequest:(NSString *)method params:(Json)params completion:(void (^)(const Json &, NSString *))completion {
+    if (_host == nullptr || !_initialized) {
+        completion(Json(), @"The extension host isn't running");
+        return;
+    }
+    _host->request(method.UTF8String, std::move(params), [completion](const Json &result, const std::string &problem) {
+        auto sharedResult = std::make_shared<Json>(result);
+        NSString *error = problem.empty() ? nil : @(problem.c_str());
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion(*sharedResult, error);
+        });
+    });
+}
+
+- (void)sendViewNotification:(NSString *)method params:(Json)params {
+    if (_host != nullptr && _initialized) {
+        _host->notify(method.UTF8String, std::move(params));
     }
 }
 
@@ -395,6 +514,7 @@ std::string PathFromURI(const std::string &uri) {
     [_statusItemsByID removeAllObjects];
     [self finishWaiting:NO];
     [self.delegate hostStatusItemsChanged];
+    [self.viewsDelegate hostViewsDidReset];
     if (wasStopping) {
         return;
     }
@@ -404,7 +524,8 @@ std::string PathFromURI(const std::string &uri) {
         [self.delegate hostShowStatusMessage:@"The extension host stopped; restarting…" seconds:4];
         [self.delegate hostProvidersChanged];  // open files ask for a new host
     } else {
-        [self.delegate hostShowStatusMessage:@"The extension host keeps stopping; extensions are off for this window. See the Extension Host log." seconds:10];
+        [self.delegate hostShowStatusMessage:@"The extension host keeps stopping; extensions are off for this window. See the "
+                                             @"Extension Host log." seconds:10];
     }
 }
 
@@ -595,7 +716,8 @@ std::string PathFromURI(const std::string &uri) {
             }
             std::string failure = problem;
             dispatch_async(dispatch_get_main_queue(), ^{
-                [weakSelf.delegate hostShowStatusMessage:[NSString stringWithFormat:@"%@ failed: %s", identifier, failure.c_str()] seconds:8];
+                [weakSelf.delegate hostShowStatusMessage:[NSString stringWithFormat:@"%@ failed: %s", identifier, failure.c_str()]
+                                                 seconds:8];
             });
         });
     }];
@@ -668,6 +790,10 @@ std::string PathFromURI(const std::string &uri) {
 // MARK: Messages from the host
 
 - (void)handleNotification:(const std::string &)method params:(const Json &)params {
+    if (method.rfind("view/", 0) == 0 || method.rfind("webview/", 0) == 0) {
+        [self.viewsDelegate hostViewNotification:@(method.c_str()) params:params];
+        return;
+    }
     if (method == "ui/log") {
         [self appendLog:StringFromJson(params["text"]) ?: @"" toChannel:StringFromJson(params["channel"]) ?: @"Extension Host"];
     } else if (method == "ui/logClear") {
@@ -714,7 +840,8 @@ std::string PathFromURI(const std::string &uri) {
             _extensionStates[identifier] = state;
         }
         if ([state isEqualToString:@"failed"]) {
-            [self.delegate hostShowStatusMessage:[NSString stringWithFormat:@"%@ couldn't start. See the Extension Host log.", identifier] seconds:8];
+            [self.delegate hostShowStatusMessage:[NSString stringWithFormat:@"%@ couldn't start. See the Extension Host log.", identifier]
+                                         seconds:8];
         }
     } else if (method == "commands/setContext") {
         NSString *key = StringFromJson(params["key"]);
@@ -747,6 +874,17 @@ std::string PathFromURI(const std::string &uri) {
 }
 
 - (void)handleRequest:(const std::string &)method params:(const Json &)params reply:(gw::ExtensionHost::Reply)reply {
+    if (method.rfind("webview/", 0) == 0) {
+        id<GWExtensionViewsDelegate> views = self.viewsDelegate;
+        if (views == nil) {
+            reply(Json{{"delivered", false}}, "");
+            return;
+        }
+        [views hostViewRequest:@(method.c_str()) params:params reply:^(const Json &result) {
+            reply(result, "");
+        }];
+        return;
+    }
     if (method == "ui/showMessage") {
         [self showMessage:params reply:reply];
     } else if (method == "ui/quickPick") {
@@ -848,7 +986,12 @@ std::string PathFromURI(const std::string &uri) {
     if (params.contains("detail") && params["detail"].is_string()) {
         alert.informativeText = StringFromJson(params["detail"]);
     }
-    alert.alertStyle = severity == "error" ? NSAlertStyleCritical : (severity == "warning" ? NSAlertStyleWarning : NSAlertStyleInformational);
+    alert.alertStyle = NSAlertStyleInformational;
+    if (severity == "error") {
+        alert.alertStyle = NSAlertStyleCritical;
+    } else if (severity == "warning") {
+        alert.alertStyle = NSAlertStyleWarning;
+    }
     for (NSString *title in items) {
         [alert addButtonWithTitle:title];
     }

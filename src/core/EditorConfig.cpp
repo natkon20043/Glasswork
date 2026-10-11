@@ -63,12 +63,12 @@ std::string braceToRegex(const std::string& inside, bool& ok) {
     size_t dots = inside.find("..");
     if (dots != std::string::npos && inside.find(',') == std::string::npos) {
         try {
-            int from = std::stoi(inside.substr(0, dots));
-            int to = std::stoi(inside.substr(dots + 2));
-            if (from <= to && to - from <= 200) {
+            int first = std::stoi(inside.substr(0, dots));
+            int last = std::stoi(inside.substr(dots + 2));
+            if (first <= last && last - first <= 200) {
                 std::string result = "(?:";
-                for (int value = from; value <= to; ++value) {
-                    if (value > from) result += "|";
+                for (int value = first; value <= last; ++value) {
+                    if (value > first) result += "|";
                     result += std::to_string(value);
                 }
                 return result + ")";

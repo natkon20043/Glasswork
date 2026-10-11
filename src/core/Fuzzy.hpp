@@ -9,20 +9,17 @@ namespace gw {
 
 struct FuzzyMatch {
     int score = 0;
-    /// Byte offsets in the candidate of the matched query characters (for highlighting).
+    /// Byte offsets of matched query characters in the candidate, for highlighting.
     std::vector<uint32_t> positions;
 };
 
-/// Matches `query` against `candidate` the way quick-open pickers do: every query character
-/// must appear in order (ignoring case), and matches score higher when they land on word
-/// starts ("gw" in "glass_work"), run consecutively, or fall in the file name rather than
-/// its folders. `nameStart` is where the file name begins in `candidate` (0 if it is only a
-/// name). Returns nullopt when the query doesn't match at all.
+/// Quick-open style matching: query characters must appear in order, ignoring case. Higher for
+/// word starts, consecutive runs, and hits in the file name. `nameStart` is where the file name
+/// begins in `candidate`. Nothing if no match.
 std::optional<FuzzyMatch> fuzzyMatch(std::string_view query, std::string_view candidate, size_t nameStart = 0);
 
-/// The same score as fuzzyMatch, without the matched positions. Much cheaper (no allocation
-/// per candidate), so pickers score every file with this and call fuzzyMatch only for the
-/// handful of rows they actually show. Safe to call from several threads at once.
+/// Same score without positions and without allocating; thread-safe. Score everything with this,
+/// then call fuzzyMatch only for the rows shown.
 std::optional<int> fuzzyScore(std::string_view query, std::string_view candidate, size_t nameStart = 0);
 
 }  // namespace gw

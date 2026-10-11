@@ -20,7 +20,7 @@ bool isIdentifierByte(unsigned char byte) {
     return std::isalnum(byte) || byte == '_' || byte >= 0x80;
 }
 
-/// Converts a hue/saturation/lightness colour (each 0…1) to 0xRRGGBBAA.
+/// Converts a hue/saturation/lightness color (each 0…1) to 0xRRGGBBAA.
 Color colorFromHSL(double hue, double saturation, double lightness) {
     double chroma = (1 - std::abs(2 * lightness - 1)) * saturation;
     double huePrime = hue * 6;
@@ -85,7 +85,7 @@ Stylist::Stylist(const Theme& theme, ColorCustomizations customizations)
 
 Color Stylist::rainbowColor(std::string_view name, bool darkTheme) {
     // FNV-1a hash of the name picks a hue; saturation and lightness are fixed so every
-    // colour reads well on the theme's background.
+    // color reads well on the theme's background.
     uint32_t hash = 2166136261u;
     for (char character : name) {
         hash ^= static_cast<unsigned char>(character);

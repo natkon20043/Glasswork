@@ -1,6 +1,7 @@
 #include "Extensions.hpp"
 
 #include "Jsonc.hpp"
+#include "JsonText.hpp"
 
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
@@ -286,11 +287,31 @@ bool ExtensionManager::isInstalled(const std::string& id) const {
 }
 
 std::optional<std::string> ExtensionManager::languageForFile(const fs::path& path) const {
+    std::optional<std::string> language = languageForExactFile(path);
+    if (language) {
+        return language;
+    }
+    // "Info.plist.in" and "config.h.in" are templates: they are written in the language of the
+    // name without the ".in" (CMake's configure_file convention).
+    std::string filename = path.filename().string();
+    const std::string templateSuffix = ".in";
+    bool isTemplate = filename.size() > templateSuffix.size() &&
+                      filename.compare(filename.size() - templateSuffix.size(), templateSuffix.size(), templateSuffix) == 0;
+    if (isTemplate) {
+        fs::path withoutSuffix = path;
+        withoutSuffix.replace_filename(filename.substr(0, filename.size() - templateSuffix.size()));
+        return languageForExactFile(withoutSuffix);
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> ExtensionManager::languageForExactFile(const fs::path& path) const {
     std::string filename = path.filename().string();
     std::string lower = lowercase(filename);
     for (const auto& [id, language] : languages_) {
         for (const auto& name : language.filenames) {
-            if (name == filename) return id;
+            // Case does not matter: the CMake extension lists "CMakelists.txt" but projects write "CMakeLists.txt".
+            if (lowercase(name) == lower) return id;
         }
     }
     // Longest matching extension wins (".d.ts" over ".ts").
@@ -306,7 +327,18 @@ std::optional<std::string> ExtensionManager::languageForFile(const fs::path& pat
             }
         }
     }
-    return best;
+    if (best) {
+        return best;
+    }
+    // Apple property lists and entitlements are XML, but the XML extension does not list them.
+    auto endsWith = [&](const std::string& suffix) {
+        return lower.size() >= suffix.size() && lower.compare(lower.size() - suffix.size(), suffix.size(), suffix) == 0;
+    };
+    bool isAppleXml = endsWith(".plist") || endsWith(".entitlements");
+    if (isAppleXml && languages_.count("xml") > 0) {
+        return std::string("xml");
+    }
+    return std::nullopt;
 }
 
 std::string ExtensionManager::languageName(const std::string& id) const {
@@ -396,8 +428,8 @@ std::vector<ExtensionManager::MarketplaceEntry> ExtensionManager::parseSearchRes
         MarketplaceEntry entry;
         entry.publisher = item.value("namespace", "");
         entry.id = entry.publisher + "." + item.value("name", "");
-        entry.displayName = item.contains("displayName") && item["displayName"].is_string() ? item["displayName"].get<std::string>() : item.value("name", "");
-        entry.description = item.contains("description") && item["description"].is_string() ? item["description"].get<std::string>() : "";
+        entry.displayName = stringOr(item, "displayName", item.value("name", ""));
+        entry.description = stringOr(item, "description");
         entry.version = item.value("version", "");
         entry.downloads = item.contains("downloadCount") && item["downloadCount"].is_number() ? item["downloadCount"].get<long>() : 0;
         entry.rating = item.contains("averageRating") && item["averageRating"].is_number() ? item["averageRating"].get<double>() : 0;

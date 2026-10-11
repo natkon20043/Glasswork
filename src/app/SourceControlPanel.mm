@@ -155,8 +155,8 @@ NSTextField *label(NSString *text, CGFloat size, NSFontWeight weight, NSColor *c
 
 @end
 
-/// The rounded box around the commit message. It repaints its colours when the appearance
-/// (light or dark) changes, because layer colours don't adapt on their own.
+/// The rounded box around the commit message. It repaints its colors when the appearance
+/// (light or dark) changes, because layer colors don't adapt on their own.
 @interface GWSCCard : NSView
 @end
 
@@ -525,7 +525,8 @@ NSTextField *label(NSString *text, CGFloat size, NSFontWeight weight, NSColor *c
     _branchButton.alignment = NSTextAlignmentLeft;
     _branchButton.toolTip = @"Switch branch";
     _branchButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [_branchButton setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [_branchButton setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                            forOrientation:NSLayoutConstraintOrientationHorizontal];
 
     _spinner = [NSProgressIndicator new];
     _spinner.style = NSProgressIndicatorStyleSpinning;
@@ -1385,7 +1386,8 @@ NSTextField *label(NSString *text, CGFloat size, NSFontWeight weight, NSColor *c
         NSString *root = info[@"root"];
         NSString *diff = info[@"diff"];
         if (diff.length == 0) {
-            [self finishGenerating:nil error:@"There are no changes to describe. New files are only described once they're staged."];
+            [self finishGenerating:nil error:@"There are no changes to describe. New files are only described once they're "
+                                             @"staged."];
             return;
         }
         if (diff.length > 40000) {

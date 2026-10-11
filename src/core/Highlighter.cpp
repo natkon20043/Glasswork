@@ -30,8 +30,10 @@ void Highlighter::didChange(const Change& change) {
         } else if (change.lineDelta < 0) {
             size_t count = std::min(static_cast<size_t>(-change.lineDelta), island.tokens.size() - inside);
             if (inside + count >= island.tokens.size()) count = island.tokens.size() - inside - 1;
-            island.states.erase(island.states.begin() + static_cast<long>(inside), island.states.begin() + static_cast<long>(inside + count));
-            island.tokens.erase(island.tokens.begin() + static_cast<long>(inside), island.tokens.begin() + static_cast<long>(inside + count));
+            long firstRemoved = static_cast<long>(inside);
+            long afterRemoved = static_cast<long>(inside + count);
+            island.states.erase(island.states.begin() + firstRemoved, island.states.begin() + afterRemoved);
+            island.tokens.erase(island.tokens.begin() + firstRemoved, island.tokens.begin() + afterRemoved);
         }
         size_t lastEdited = inside + static_cast<size_t>(std::max(0L, change.lineDelta));
         if (island.valid > inside) {

@@ -4,44 +4,42 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// One row in the palette.
+/// One palette row.
 @interface GWPaletteItem : NSObject
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, copy, nullable) NSString *subtitle;
-@property (nonatomic, copy, nullable) NSString *shortcut;  // e.g. "⇧⌘P"
-@property (nonatomic, copy) NSString *symbol;             // SF Symbol name
+/// E.g. "⇧⌘P".
+@property (nonatomic, copy, nullable) NSString *shortcut;
+/// SF Symbol name.
+@property (nonatomic, copy) NSString *symbol;
 @property (nonatomic, strong) NSColor *symbolColor;
-/// UTF-16 indexes into `title` to emphasise (the characters the query matched).
+/// UTF-16 indexes into `title` of the characters the query matched.
 @property (nonatomic, copy) NSIndexSet *matchedIndexes;
 @property (nonatomic, copy) void (^run)(void);
 @end
 
-/// A Zed/VS Code-style picker on glass: type to filter, arrows to move, Enter to run,
-/// Esc to close. Used for quick-open (⌘P) and the command palette (⇧⌘P).
+/// Picker on glass for quick-open (Cmd-P) and the command palette (Shift-Cmd-P): type to filter,
+/// arrows to move, Enter to run, Esc to close.
 @interface GWPalette : NSObject
 
+// ---- Constructors
 + (instancetype)shared;
 
-/// Shows the palette over `window`. `provider` returns the rows for the current query and
-/// is called on every keystroke, so it must be fast.
+// ---- Showing
+/// `provider` returns rows for the query and runs on every keystroke, so it must be fast.
 - (void)showOverWindow:(NSWindow *)window
            placeholder:(NSString *)placeholder
               provider:(NSArray<GWPaletteItem *> * (^)(NSString *query))provider;
-
-/// Like showOverWindow:placeholder:provider:, and `onDismiss` runs if the palette is closed
-/// without a row being chosen (Esc, or clicking elsewhere). Used where something is waiting
-/// for an answer.
+/// `onDismiss` runs if closed without choosing a row (Esc, click elsewhere).
 - (void)showOverWindow:(NSWindow *)window
            placeholder:(NSString *)placeholder
               provider:(NSArray<GWPaletteItem *> * (^)(NSString *query))provider
              onDismiss:(void (^)(void))onDismiss;
-
-/// Runs the provider again with the text now in the search field. For lists that fill in
-/// later (results that arrive from a language server).
+/// Re-runs the provider with the current text, for lists that fill in later.
 - (void)refresh;
-/// True while the palette is on screen.
+
+// ---- Properties
 @property (nonatomic, readonly) BOOL isShowing;
-/// The text in the search field.
 @property (nonatomic, readonly, copy) NSString *query;
 
 @end

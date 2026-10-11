@@ -31,7 +31,7 @@
 }
 
 - (BOOL)isEmphasized {
-    return NO;  // keep the text colours as they are when selected
+    return NO;  // keep the text colors as they are when selected
 }
 
 @end
@@ -337,7 +337,7 @@ static const NSUInteger kVisibleRows = 10;
     return cell;
 }
 
-/// Title with the matched characters in bold accent colour, then the subtitle, dimmed.
+/// Title with the matched characters in bold accent color, then the subtitle, dimmed.
 - (NSAttributedString *)attributedTitleFor:(GWPaletteItem *)item {
     NSMutableAttributedString *text = [[NSMutableAttributedString alloc] initWithString:item.title attributes:@{
         NSFontAttributeName: [NSFont systemFontOfSize:14 weight:NSFontWeightMedium],

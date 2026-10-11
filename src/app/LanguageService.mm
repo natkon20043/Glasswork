@@ -725,7 +725,8 @@ static void mergeDiagnostics(Tracked &tracked) {
                     version:(long)version
                  fromServer:(const std::string &)serverName {
     if (getenv("GLASSWORK_LSP_TRACE") != nullptr) {
-        fprintf(stderr, "[lsp diagnostics] %s (%zu items) from %s for %zu followed files\n", uri.c_str(), diagnostics.size(), serverName.c_str(), _tracked.size());
+        fprintf(stderr, "[lsp diagnostics] %s (%zu items) from %s for %zu followed "
+                        "files\n", uri.c_str(), diagnostics.size(), serverName.c_str(), _tracked.size());
     }
     for (auto &[document, tracked] : _tracked) {
         Attachment *attachment = tracked.uri == uri ? attachmentNamed(tracked, serverName) : nullptr;
@@ -753,7 +754,7 @@ static void mergeDiagnostics(Tracked &tracked) {
         attachment->diagnostics = std::move(converted);
         mergeDiagnostics(tracked);
         if (self.onDiagnosticsChanged) self.onDiagnosticsChanged(document);
-        // The server has just looked at the file, so its token colours and hints are fresh too.
+        // The server has just looked at the file, so its token colors and hints are fresh too.
         [self requestSemanticTokensForDocument:document];
         [self requestInlayHintsForDocument:document];
         return;
@@ -770,7 +771,7 @@ static void mergeDiagnostics(Tracked &tracked) {
     if (tracked.semanticRequestedVersion == version) {
         return;
     }
-    // The first server that can colour code (a native server's, normally).
+    // The first server that can color code (a native server's, normally).
     gw::lsp::LanguageServer *server = nullptr;
     for (const Attachment &attachment : tracked.attachments) {
         ServerEntry &candidate = _servers[attachment.serverName];

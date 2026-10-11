@@ -32,7 +32,7 @@ The first configuration downloads nlohmann/json and Oniguruma. A from-scratch bu
 - `.editorconfig` files set the indent style and size per file type, and `files.trimTrailingWhitespace` / `files.insertFinalNewline` (or the same keys in `.editorconfig`) clean up on save.
 - Markdown files open a live rendered preview beside the tab (⇧⌘V); images (png, jpg, gif, svg, pdf…) open in their own tab.
 - Find and replace in the file (⌘F, ⌥⌘F) and across the project (⇧⌘F), with case, whole word and regular expression options and file filters.
-- MARK dividers, TODO/FIXME markers, rainbow brackets, indent guides, rainbow variable names, occurrence highlighting, a colour inspector and per-name colours.
+- MARK dividers, TODO/FIXME markers, rainbow brackets, indent guides, rainbow variable names, occurrence highlighting, a color inspector and per-name colors.
 - Files changed outside the editor (by Claude, a build, git) reload straight away; the changed lines flash. Unsaved edits are never overwritten without asking.
 - Soft word wrap (⌥Z, or `editor.wordWrap`) breaks at words and keeps a line's indentation on the rows below it. Code folding (⌥⌘[ and ⌥⌘], Fold All / Unfold All in the Edit menu, or the arrows in the line numbers) folds by indentation in every language.
 - Several windows: New Window (⇧⌘N) or Open Folder in New Window (⌥⇧⌘O), each with its own folder, tabs, terminal and chat.
@@ -59,7 +59,7 @@ The first configuration downloads nlohmann/json and Oniguruma. A from-scratch bu
 - Build (⇧⌘B), Run Task… (⌥⌘B) and Run Current File (⌥⌘R) find what your project can do — CMake, Swift packages, Cargo, Go modules, Xcode projects, npm/pnpm/yarn scripts, Makefile targets — and run it in a terminal set aside for tasks, after saving your files. Scripts (Python, JavaScript, Swift, shell, Ruby, Go…) and single C, C++ and Rust files run directly. File names in the output are clickable.
 
 **Terminal**
-- ⌃` toggles a real terminal (xterm-256color, true colour, mouse, alternate screen, scrollback, wide characters). Vim, htop, tmux and `claude` itself work in it.
+- ⌃` toggles a real terminal (xterm-256color, true color, mouse, alternate screen, scrollback, wide characters). Vim, htop, tmux and `claude` itself work in it.
 
 **Keyboard shortcuts**
 - Beyond the menus' shortcuts, Glasswork reads VS Code keybindings: the ones extensions declare (`contributes.keybindings`) and your own in `~/Library/Application Support/Glasswork/keybindings.json` (Glasswork ▸ Keyboard Shortcuts (JSON)…, in VS Code's format: `{ "key": "cmd+shift+u", "command": "editor.action.transformToUppercase", "when": "editorTextFocus" }`). Saving the file applies it.
@@ -67,7 +67,7 @@ The first configuration downloads nlohmann/json and Oniguruma. A from-scratch bu
 
 **Settings**
 - ⌘, opens `~/Library/Application Support/Glasswork/settings.json` (JSON with comments). Changes apply as you save. Keys include `editor.fontSize`, `editor.fontFamily`, `editor.tabSize`, `editor.opacity`, `window.glassTint`, `window.frostedBackdrop`, `window.glassStyle`, `workbench.colorTheme`, `files.autoSave`, `files.formatOnSave`, `terminal.fontSize` and `terminal.shell`.
-- **Look:** the panels are real Liquid Glass, which bends and blurs whatever is behind the window. `window.glassTint` (0 clear .. 1 heavy) sets how much colour sits in the glass, `editor.opacity` how see-through the code background is, and `window.glassStyle` (`regular` or `clear`) picks the bar material. `window.frostedBackdrop` (default off) adds a blur behind the whole window; leaving it off keeps the refraction sharp and idle CPU near zero.
+- **Look:** the panels are real Liquid Glass, which bends and blurs whatever is behind the window. `window.glassTint` (0 clear .. 1 heavy) sets how much color sits in the glass, `editor.opacity` how see-through the code background is, and `window.glassStyle` (`regular` or `clear`) picks the bar material. `window.frostedBackdrop` (default off) adds a blur behind the whole window; leaving it off keeps the refraction sharp and idle CPU near zero.
 
 ## Speed
 
@@ -130,24 +130,24 @@ Extensions run in an **extension host**, a Node.js process Glasswork starts only
 
 How it fits together:
 
-- `host/` is the host (JavaScript). `host/api/` implements the `vscode` module extensions `require` (or `import`): `commands`, `window`, `workspace`, `languages`, `env`, `extensions`, configuration, text documents, and the value types (`Position`, `Range`, `Uri`, `Diagnostic`, `CompletionItem`…). APIs without a Glasswork counterpart yet (webviews, tree views, notebooks, tests, debug adapters, terminals) exist but do nothing, so extensions that only touch them still activate; the first use of each is written to the Extension Host log.
+- `host/` is the host (JavaScript). `host/api/` implements the `vscode` module extensions `require` (or `import`): `commands`, `window`, `workspace`, `languages`, `env`, `extensions`, configuration, text documents, and the value types (`Position`, `Range`, `Uri`, `Diagnostic`, `CompletionItem`…). Tree views and webviews are real (`host/api/views.js`, shown by `app/ExtensionViews.*` and `app/WebviewController.*`): extensions' views appear under *Show Extension Views* (⌃⇧E) in the sidebar, webview panels open as editor tabs, and pages load their local files through a `gw-resource:` scheme. APIs without a Glasswork counterpart yet (notebooks, tests, debug adapters, terminals) exist but do nothing, so extensions that only touch them still activate; the first use of each is written to the Extension Host log.
 - The providers an extension registers are presented to the editor as a **virtual language server** (`host/virtualServer.js`): requests such as `textDocument/completion` are answered by calling the extension's provider and converting the result to protocol JSON. So every language feature that works with clangd works with an extension, and an extension's server (such as the one the Red Hat YAML extension starts) is reached through its own language client, running unmodified.
 - A file can follow several servers at once. Completion, hover, code actions, definitions and the like ask every server that supports them and merge the answers; formatting asks the extension first, so Prettier and similar formatters take over; everything else goes to the first server that supports it.
 - `core/ExtensionHost.*` starts and supervises the host and gives each language a transport, `app/ExtensionHostService.*` connects it to the window.
 
-**File icon themes**: install one such as Material Icon Theme, then Extensions ▸ Select File Icon Theme… (or `"workbench.iconTheme"` in settings.json). The file tree and the tabs draw the theme's SVG icons, chosen the way VS Code chooses them (exact file name, then the longest matching extension, then the language, then the default; folders by name, open or closed; separate icons for light colour themes).
+**File icon themes**: install one such as Material Icon Theme, then Extensions ▸ Select File Icon Theme… (or `"workbench.iconTheme"` in settings.json). The file tree and the tabs draw the theme's SVG icons, chosen the way VS Code chooses them (exact file name, then the longest matching extension, then the language, then the default; folders by name, open or closed; separate icons for light color themes).
 
 **Managing extensions**: Extensions ▸ Manage Extensions… lists everything installed; choose one to disable it (`extensions.disabled` in settings.json: its grammars, themes, snippets, icons, keybindings and code all stop), enable it again, or uninstall it.
 
 **Finding extensions**: Extensions ▸ Search Extensions… (⇧⌘X) searches Open VSX live as you type (the most downloaded show first) and Return installs; Install by ID… takes a `publisher.name`.
 
-Extensions can decorate text (`createTextEditorDecorationType` and `setDecorations`): background and border colours, text colour, bold, italic, underline and strikethrough, whole-line highlights, theme colours, light and dark variants, and a note drawn after the end of the line (the way Error Lens shows messages). Decorations belong to the extension that made them and go away when it disposes the type.
+Extensions can decorate text (`createTextEditorDecorationType` and `setDecorations`): background and border colors, text color, bold, italic, underline and strikethrough, whole-line highlights, theme colors, light and dark variants, and a note drawn after the end of the line (the way Error Lens shows messages). Decorations belong to the extension that made them and go away when it disposes the type.
 
 Extensions can read and change the file in front (`window.activeTextEditor`: its document, selections and options, `edit`, `insertSnippet`, moving the cursors, and the active-editor and selection events), react to documents opening, changing and saving, and watch files on disk (`createFileSystemWatcher` gets real create, change and delete events). The same file events go to language servers that asked for them (`workspace/didChangeWatchedFiles`), so a new source file or an edited build file is noticed without reopening anything.
 
 Extension output channels are plain log files (`~/Library/Application Support/Glasswork/extension-logs/`), opened from Extensions ▸ Show Extension Output…. Extensions ▸ Restart Extensions restarts the host. Settings an extension saves go to `extension-settings.json` next to `settings.json`, which is never rewritten.
 
-Tried against the real extensions: Red Hat YAML (its language server runs and reports schema errors), Prettier (an ES module), Even Better TOML (WASM server), ESLint, Go and Vim activate; extensions that depend on features not listed above (Vim's key handling, webview-based UIs) load but those parts do nothing yet.
+Tried against the real extensions: Red Hat YAML (its language server runs and reports schema errors), Prettier (an ES module), Even Better TOML (WASM server), ESLint, Go and Vim activate; extensions that depend on features not listed above (Vim's key handling) load but those parts do nothing yet.
 
 `node host/tools/try-extension.js publisher.name onLanguage:xyz` downloads an extension, activates it in a host of its own and prints what happened, which is the quickest way to see what an extension needs.
 
@@ -168,7 +168,7 @@ Environment variables for checking the interface without clicking:
 2. Conditional breakpoints and watch expressions.
 3. Debugging other languages through their own adapters.
 
-VS Code extension compatibility covers themes, grammars, language configuration and, through the extension host above, extensions' code. The parts of the `vscode` API that need new interface (webviews, tree views, terminals, notebooks, the test and debug UIs) are the remaining work.
+VS Code extension compatibility covers themes, grammars, language configuration and, through the extension host above, extensions' code. The parts of the `vscode` API that need new interface (terminals, notebooks, the test and debug UIs) are the remaining work.
 
 ## License
 

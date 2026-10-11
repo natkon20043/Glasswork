@@ -336,7 +336,7 @@ const char* kTheme = R"json({
   ],
 })json";
 
-TEST(themeResolvesColoursLikeVSCode) {
+TEST(themeResolvesColorsLikeVSCode) {
     std::string error;
     auto theme = gw::Theme::parse(kTheme, true, &error);
     CHECK(theme != nullptr);
@@ -357,7 +357,7 @@ TEST(themeResolvesColoursLikeVSCode) {
     CHECK_EQ(theme->styleFor(std::vector<std::string>{"source.cpp", "variable.other"}).foreground, gw::Color(0xD4D4D4FF));
 }
 
-TEST(themeParsesColourFormats) {
+TEST(themeParsesColorFormats) {
     CHECK_EQ(*gw::parseColor("#fff"), gw::Color(0xFFFFFFFF));
     CHECK_EQ(*gw::parseColor("#12345680"), gw::Color(0x12345680));
     CHECK(!gw::parseColor("red").has_value());
@@ -771,7 +771,7 @@ TEST(snippetEndsWhenTheCaretLeavesIt) {
 
 // MARK: Stylist and settings
 
-TEST(stylistColoursVariablesNamesAndScopes) {
+TEST(stylistColorsVariablesNamesAndScopes) {
     auto grammar = gw::tm::Grammar::parse(kGrammar, nullptr);
     auto theme = gw::Theme::parse(kTheme, true);
     if (!grammar || !theme) return;
@@ -785,7 +785,7 @@ TEST(stylistColoursVariablesNamesAndScopes) {
         return gw::TextStyle{};
     };
 
-    // Rainbow: the plain identifier gets its name's colour; the string stays a string.
+    // Rainbow: the plain identifier gets its name's color; the string stays a string.
     gw::ColorCustomizations rainbow;
     gw::Stylist rainbowStylist(*theme, rainbow);
     auto spans = rainbowStylist.styleLine(line, tokens);
@@ -794,7 +794,7 @@ TEST(stylistColoursVariablesNamesAndScopes) {
     CHECK_EQ(gw::Stylist::rainbowColor("value", true), gw::Stylist::rainbowColor("value", true));
     CHECK(gw::Stylist::rainbowColor("value", true) != gw::Stylist::rainbowColor("other", true));
 
-    // A colour set for the name wins over rainbow, and a scope rule adds a highlight.
+    // A color set for the name wins over rainbow, and a scope rule adds a highlight.
     gw::ColorCustomizations custom;
     custom.identifiers["value"].foreground = 0x112233FF;
     gw::ScopeStyleRule keywordRule;
@@ -807,7 +807,7 @@ TEST(stylistColoursVariablesNamesAndScopes) {
     CHECK_EQ(styleAt(spans, 4).foreground, gw::Color(0x112233FF));
     CHECK(styleAt(spans, 0).background.has_value());
     CHECK(styleAt(spans, 0).bold);
-    CHECK_EQ(styleAt(spans, 0).foreground, gw::Color(0xC586C0FF));  // theme colour kept
+    CHECK_EQ(styleAt(spans, 0).foreground, gw::Color(0xC586C0FF));  // theme color kept
 
     // Spans cover the line without gaps.
     uint32_t cursor = 0;
@@ -1395,6 +1395,29 @@ TEST(extensionManifestsContributeSnippets) {
 }
 
 
+TEST(templateAndPlistFilesGetTheirLanguage) {
+    namespace fs = std::filesystem;
+    fs::path folder = fs::temp_directory_path() / ("gw-ext-templates-" + std::to_string(getpid()));
+    fs::path extension = folder / "extensions" / "demo.langs-1.0.0";
+    fs::create_directories(extension);
+    std::ofstream(extension / "package.json") << R"json({
+      "name": "langs", "publisher": "demo", "version": "1.0.0",
+      "contributes": {"languages": [
+        {"id": "xml", "extensions": [".xml"]},
+        {"id": "cmake", "filenames": ["CMakelists.txt"]},
+        {"id": "c", "extensions": [".h"]}]}})json";
+
+    gw::ExtensionManager manager(folder / "extensions");
+    manager.scan();
+    CHECK_EQ(manager.languageForFile("CMakeLists.txt").value_or("none"), std::string("cmake"));
+    CHECK_EQ(manager.languageForFile("Info.plist").value_or("none"), std::string("xml"));
+    CHECK_EQ(manager.languageForFile("Info.plist.in").value_or("none"), std::string("xml"));
+    CHECK_EQ(manager.languageForFile("config.h.in").value_or("none"), std::string("c"));
+    CHECK_EQ(manager.languageForFile("notes.txt.in").value_or("none"), std::string("none"));
+    fs::remove_all(folder);
+}
+
+
 TEST(settingsAreFoundWhetherWrittenFlatOrNested) {
     nlohmann::json settings = nlohmann::json::parse(R"json({
       "editor.fontSize": 14,
@@ -1546,7 +1569,7 @@ TEST(cssColorsAreReadAsExtensionsWriteThem) {
     CHECK(!gw::parseCssColor("#12").has_value());
     CHECK(!gw::parseCssColor("#gg0000").has_value());
     CHECK(!gw::parseCssColor("rgb(1, 2)").has_value());
-    CHECK(!gw::parseCssColor("notacolour").has_value());
+    CHECK(!gw::parseCssColor("notacolor").has_value());
 }
 
 

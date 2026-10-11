@@ -17,15 +17,9 @@ namespace gw {
 /// 0xRRGGBBAA.
 using Color = uint32_t;
 
-std::optional<Color> parseColor(const std::string& text);
-inline double red(Color color) { return ((color >> 24) & 0xFF) / 255.0; }
-inline double green(Color color) { return ((color >> 16) & 0xFF) / 255.0; }
-inline double blue(Color color) { return ((color >> 8) & 0xFF) / 255.0; }
-inline double alpha(Color color) { return (color & 0xFF) / 255.0; }
-
 struct TextStyle {
     Color foreground = 0xD4D4D4FF;
-    /// A highlight drawn behind the text (themes rarely set one; user colour rules can).
+    /// Behind the text; themes rarely set one, user color rules can.
     std::optional<Color> background;
     bool bold = false;
     bool italic = false;
@@ -33,9 +27,8 @@ struct TextStyle {
     bool strikethrough = false;
 };
 
-/// How well a TextMate selector matches a scope path. Higher is a better match, in the same
-/// order VS Code uses: a match on a deeper (more inner) scope wins, then the more specific
-/// selector (more dot-separated parts), then the one with more parent constraints.
+/// How well a selector matches a scope path, in VS Code's order: deeper scope wins, then more
+/// specific selector, then more parent constraints.
 struct SelectorMatch {
     long depth = -1;
     size_t specificity = 0;
@@ -53,47 +46,63 @@ struct SelectorMatch {
     bool operator==(const SelectorMatch& other) const = default;
 };
 
-/// Splits a selector such as "meta.block string" into its space-separated parts.
+// ---- Color helpers
+
+std::optional<Color> parseColor(const std::string& text);
+inline double red(Color color) { return ((color >> 24) & 0xFF) / 255.0; }
+inline double green(Color color) { return ((color >> 16) & 0xFF) / 255.0; }
+inline double blue(Color color) { return ((color >> 8) & 0xFF) / 255.0; }
+inline double alpha(Color color) { return (color & 0xFF) / 255.0; }
+
+// ---- Selectors
+
+/// "meta.block string" -> {"meta.block", "string"}
 std::vector<std::string> parseSelector(const std::string& selector);
 
-/// Matches selector parts against a scope path (outermost scope first). The last part must
-/// match some scope; earlier parts must match its ancestors, in order. A part matches a scope
-/// equal to it or starting with it followed by a dot ("string" matches "string.quoted").
+/// `scopes` is outermost first. The last part must match a scope and earlier parts its ancestors,
+/// in order. A part matches an equal scope or one it prefixes before a dot ("string" matches "string.quoted").
 std::optional<SelectorMatch> matchSelector(const std::vector<std::string>& parts,
                                            const std::vector<std::string>& scopes);
 
-/// A VS Code colour theme: workbench `colors` plus TextMate `tokenColors`.
+/// A VS Code color theme: workbench `colors` plus TextMate `tokenColors`.
 class Theme {
 public:
-    /// Loads a theme JSON (comments and trailing commas allowed), following `include`s.
+    // ---- Constructors
+    /// Allows comments and trailing commas; follows `include`s.
     static std::unique_ptr<Theme> load(const std::filesystem::path& path, bool dark, std::string* error = nullptr);
     static std::unique_ptr<Theme> parse(const std::string& json, bool dark, std::string* error = nullptr);
 
+    // ---- Getters
     const std::string& name() const { return name_; }
     bool isDark() const { return dark_; }
-
-    /// A workbench colour such as "editor.background" or "editorLineNumber.foreground".
+    /// A workbench color such as "editor.background".
     Color color(const std::string& key, Color fallback) const;
     bool hasColor(const std::string& key) const { return colors_.count(key) > 0; }
 
-    /// Style for a token's scope path. Thread-safe and cached per scope path.
+    // ---- Styling
+    /// Thread-safe; cached per scope path.
     TextStyle styleFor(const tm::ScopeNode* scopes) const;
     TextStyle styleFor(const std::vector<std::string>& scopes) const;
 
 private:
-    Theme() = default;
-    bool merge(const std::string& json, const std::filesystem::path& directory, int depth, std::string* error);
-
     struct Selector {
-        std::vector<std::string> parts;  // "meta.block string" → {"meta.block", "string"}
+        /// "meta.block string" -> {"meta.block", "string"}
+        std::vector<std::string> parts;
     };
+
     struct Rule {
-        std::vector<Selector> selectors;  // an empty list applies to everything (the defaults)
+        /// Empty applies to everything (the defaults).
+        std::vector<Selector> selectors;
         std::optional<Color> foreground;
         std::optional<std::string> fontStyle;
         size_t order = 0;
     };
 
+    // ---- Private functions
+    Theme() = default;
+    bool merge(const std::string& json, const std::filesystem::path& directory, int depth, std::string* error);
+
+    // ---- Private variables
     std::string name_;
     bool dark_ = true;
     std::map<std::string, Color> colors_;

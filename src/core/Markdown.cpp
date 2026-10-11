@@ -286,9 +286,11 @@ Spans parseStyled(std::string_view text, uint8_t inherited, const std::string& i
             }
             // Trailing punctuation belongs to the sentence, not the address.
             while (end > index && std::string_view(".,;:!?)'").find(text[end - 1]) != std::string_view::npos) {
+                // A closing parenthesis stays in the address when it matches an opening one inside it.
+                auto addressBegin = text.begin() + static_cast<long>(index);
+                auto addressEnd = text.begin() + static_cast<long>(end);
                 bool unbalancedParenthesis = text[end - 1] == ')' &&
-                                             std::count(text.begin() + static_cast<long>(index), text.begin() + static_cast<long>(end), '(') >=
-                                                 std::count(text.begin() + static_cast<long>(index), text.begin() + static_cast<long>(end), ')');
+                                             std::count(addressBegin, addressEnd, '(') >= std::count(addressBegin, addressEnd, ')');
                 if (text[end - 1] == ')' && unbalancedParenthesis) {
                     break;
                 }

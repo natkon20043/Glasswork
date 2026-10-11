@@ -40,7 +40,8 @@
         NSForegroundColorAttributeName: on ? NSColor.labelColor : NSColor.secondaryLabelColor,
     };
     NSSize size = [self.title sizeWithAttributes:attributes];
-    [self.title drawAtPoint:NSMakePoint(NSMidX(self.bounds) - size.width / 2, NSMidY(self.bounds) - size.height / 2) withAttributes:attributes];
+    [self.title drawAtPoint:NSMakePoint(NSMidX(self.bounds) - size.width / 2, NSMidY(self.bounds) - size.height / 2)
+             withAttributes:attributes];
 }
 
 @end
@@ -304,7 +305,11 @@
     if (self.hidden) {
         // ⌘G with the bar closed: use the last search without showing anything.
         gw::Document *document = _editor.currentDocument;
-        _anchor = document ? (direction > 0 ? document->selection.range().end : document->selection.range().start) : gw::Position{0, 0};
+        _anchor = gw::Position{0, 0};
+        if (document != nullptr) {
+            gw::Range selected = document->selection.range();
+            _anchor = direction > 0 ? selected.end : selected.start;
+        }
         [self recomputeAndSelect:NO];
         if (_matches.empty()) {
             NSBeep();

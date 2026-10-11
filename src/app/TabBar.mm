@@ -141,10 +141,10 @@
             [timer invalidate];
             return;
         }
-        double t = std::min(1.0, (NSDate.timeIntervalSinceReferenceDate - start) / 0.24);
-        double eased = 1 - std::pow(1 - t, 3);
+        double progress = std::min(1.0, (NSDate.timeIntervalSinceReferenceDate - start) / 0.24);
+        double eased = 1 - std::pow(1 - progress, 3);
         [bar setScrollX:from + (target - from) * eased];
-        if (t >= 1) {
+        if (progress >= 1) {
             [timer invalidate];
             bar->_scrollTimer = nil;
         }
@@ -209,13 +209,13 @@
     _pillTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60 repeats:YES block:^(NSTimer *timer) {
         GWTabBar *bar = weakSelf;
         if (!bar) return;
-        double t = std::min(1.0, (NSDate.timeIntervalSinceReferenceDate - bar->_pillStart) / 0.22);
-        double eased = 1 - std::pow(1 - t, 3);  // ease-out cubic
+        double progress = std::min(1.0, (NSDate.timeIntervalSinceReferenceDate - bar->_pillStart) / 0.22);
+        double eased = 1 - std::pow(1 - progress, 3);  // ease-out cubic
         auto mix = [&](CGFloat a, CGFloat b) { return a + (b - a) * eased; };
         bar->_pill = NSMakeRect(mix(NSMinX(bar->_pillFrom), NSMinX(bar->_pillTo)), NSMinY(bar->_pillTo),
                                 mix(NSWidth(bar->_pillFrom), NSWidth(bar->_pillTo)), NSHeight(bar->_pillTo));
         bar.needsDisplay = YES;
-        if (t >= 1) {
+        if (progress >= 1) {
             [timer invalidate];
             bar->_pillTimer = nil;
         }

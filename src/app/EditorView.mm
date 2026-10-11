@@ -48,7 +48,7 @@ struct LineDecoration {
     size_t startByte = 0;
     size_t endByte = 0;      // clipped to the line's length when drawn
     bool toEndOfLine = false;
-    GWDecoration look;       // the colours and styling (its range is the whole decoration's)
+    GWDecoration look;       // the colors and styling (its range is the whole decoration's)
     bool showsNote = false;  // the note is drawn on the decoration's last line only
 };
 
@@ -269,6 +269,7 @@ std::optional<size_t> indentColumns(std::string_view text, size_t tabSize) {
 
 - (BOOL)isFlipped { return YES; }
 - (BOOL)isOpaque { return NO; }
+- (BOOL)mouseDownCanMoveWindow { return NO; }
 
 - (void)drawRect:(NSRect)dirtyRect {
     GWEditorView *editor = self.editor;
@@ -453,7 +454,7 @@ std::optional<size_t> indentColumns(std::string_view text, size_t tabSize) {
 
 // MARK: - Minimap
 
-/// The whole file in miniature, each token a sliver of its colour, with the visible region
+/// The whole file in miniature, each token a sliver of its color, with the visible region
 /// outlined. Clicking or dragging scrolls the editor there.
 @interface GWMinimapView : NSView
 @property (nonatomic, weak) GWEditorView *editor;
@@ -471,6 +472,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 - (BOOL)isFlipped { return YES; }
 - (BOOL)isOpaque { return NO; }
+- (BOOL)mouseDownCanMoveWindow { return NO; }
 
 /// Where the minimap is scrolled to: it tracks the editor proportionally when the whole
 /// file doesn't fit.
@@ -526,7 +528,9 @@ static constexpr CGFloat kMiniChar = 1.25;
             }
         };
         if (tokens) {
-            for (const auto &token : *tokens) paint(token.start, std::min<size_t>(token.end, text.size()), [editor colorForScopes:token.scopes]);
+            for (const auto &token : *tokens) {
+                paint(token.start, std::min<size_t>(token.end, text.size()), [editor colorForScopes:token.scopes]);
+            }
         } else {
             paint(0, text.size(), plain);
         }
@@ -617,6 +621,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 - (BOOL)isFlipped { return YES; }
 - (BOOL)isOpaque { return NO; }
+- (BOOL)mouseDownCanMoveWindow { return NO; }
 
 - (void)drawRect:(NSRect)dirtyRect {
     [self.editor drawStickyInBounds:self.bounds];
@@ -636,6 +641,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 @implementation GWEditorView {
     gw::Document *_document;
     gw::Highlighter *_highlighter;
+    CGFloat _lastScrolledX;  // the horizontal scroll position last drawn at
     gw::LanguageConfiguration _configuration;
     std::unordered_map<size_t, LineLayout> _layouts;
     bool _highlightBlocked;  // this frame ran out of highlighting budget
@@ -680,7 +686,7 @@ static constexpr CGFloat kMiniChar = 1.25;
     BOOL _hoverActive;
     NSPoint _hoverPoint;
 
-    // Bracket nesting depth at the start of each line, for colouring brackets by depth.
+    // Bracket nesting depth at the start of each line, for coloring brackets by depth.
     std::vector<int> _depthAt;
     size_t _depthValid;
     std::unordered_map<const gw::tm::ScopeNode *, bool> _inertScopes;  // strings and comments
@@ -758,6 +764,8 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 - (BOOL)isFlipped { return YES; }
 - (BOOL)isOpaque { return NO; }
+// Without this, dragging to select text would move the whole window (see-through views let drags through).
+- (BOOL)mouseDownCanMoveWindow { return NO; }
 - (BOOL)acceptsFirstResponder { return YES; }
 
 - (void)updateTrackingAreas {
@@ -810,7 +818,10 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 
 /// Opens a gap in the line for each hint, without adding any characters: the character before it
 /// gets extra kerning, which moves everything after it, so every position in the line stays valid.
-- (void)applyInlayHintsToLine:(size_t)line text:(std::string_view)text attributed:(NSMutableAttributedString *)attributed layout:(LineLayout &)layout {
+- (void)applyInlayHintsToLine:(size_t)line
+                         text:(std::string_view)text
+                   attributed:(NSMutableAttributedString *)attributed
+                       layout:(LineLayout &)layout {
     auto found = _inlayByLine.find(line);
     if (found == _inlayByLine.end() || _wrapEnabled) {
         return;
@@ -900,7 +911,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
             }
         }
     }
-    _layouts.clear();  // text colours and styles are part of a laid-out line
+    _layouts.clear();  // text colors and styles are part of a laid-out line
     self.needsDisplay = YES;
     _minimap.needsDisplay = YES;
 }
@@ -1087,7 +1098,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     _occurrenceColor = [services color:@"editor.wordHighlightBackground"
                               fallback:[NSColor.controlAccentColor colorWithAlphaComponent:0.22]];
     _dividerColor = [_foreground colorWithAlphaComponent:0.22];
-    // Bracket pair colours, as in VS Code (gold, orchid, blue unless the theme says otherwise).
+    // Bracket pair colors, as in VS Code (gold, orchid, blue unless the theme says otherwise).
     NSArray *fallbacks = @[GWColor(0xFFD700FF), GWColor(0xDA70D6FF), GWColor(0x179FFFFF)];
     NSMutableArray *brackets = [NSMutableArray array];
     for (int index = 1; index <= 3; ++index) {
@@ -1154,6 +1165,14 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 - (void)clipViewChanged:(NSNotification *)notification { [self updateFrameSize]; }
 
 - (void)clipViewScrolled:(NSNotification *)notification {
+    // AppKit moves the old pixels when scrolling and only draws the newly exposed strip. That is
+    // right for vertical scrolling, but the current-line band is as wide as the visible area, so
+    // after a sideways scroll its old ends would be left behind as dark smudges. Redraw instead.
+    CGFloat scrolledX = NSMinX(self.visibleRect);
+    if (scrolledX != _lastScrolledX) {
+        _lastScrolledX = scrolledX;
+        self.needsDisplay = YES;
+    }
     [self updateStickyScroll];
     [self.window invalidateCursorRectsForView:self];
     _gutter.needsDisplay = YES;
@@ -1203,7 +1222,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     }
 }
 
-// MARK: Syntax colours and brackets
+// MARK: Syntax colors and brackets
 
 - (NSColor *)colorForScopes:(const gw::tm::ScopeNode *)scopes {
     return GWColor(GWServices.shared.theme.styleFor(scopes).foreground);
@@ -1235,7 +1254,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 }
 
 /// Bracket depth at the start of `line`, computed incrementally; nullopt if the highlighter
-/// hasn't reached that far yet (brackets then draw uncoloured for a frame).
+/// hasn't reached that far yet (brackets then draw uncolored for a frame).
 - (std::optional<int>)depthAtLine:(size_t)line {
     const auto &buffer = _document->buffer();
     if (_depthAt.size() != buffer.lineCount() + 1) {
@@ -1351,8 +1370,8 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         (NSString *)kCTLigatureAttributeName: @0,
     }];
     if (tokens) {
-        // The stylist combines the theme, the user's colour rules, rainbow variables and
-        // colours set for specific names into one look per run of the line.
+        // The stylist combines the theme, the user's color rules, rainbow variables and
+        // colors set for specific names into one look per run of the line.
         std::vector<gw::StyledSpan> spans = GWServices.shared.stylist.styleLine(text, *tokens);
         for (const gw::StyledSpan &span : spans) {
             uint32_t start = layout.unitForByte(span.start);
@@ -1371,7 +1390,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     [self applySemanticTokensToLine:index text:attributed unitCount:string.length];
     [self applyDecorationsToLine:index text:text attributed:attributed layout:layout];
     [self applyInlayHintsToLine:index text:text attributed:attributed layout:layout];
-    // Colour brackets by nesting depth (skipping strings and comments).
+    // Color brackets by nesting depth (skipping strings and comments).
     bool bracketColors = GWServices.shared.settings.bracketPairColors;
     std::optional<int> depth;
     if (bracketColors) {
@@ -1403,8 +1422,11 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     return &inserted.first->second;
 }
 
-/// Text colour and styling from extension decorations.
-- (void)applyDecorationsToLine:(size_t)line text:(std::string_view)text attributed:(NSMutableAttributedString *)attributed layout:(LineLayout &)layout {
+/// Text color and styling from extension decorations.
+- (void)applyDecorationsToLine:(size_t)line
+                          text:(std::string_view)text
+                    attributed:(NSMutableAttributedString *)attributed
+                        layout:(LineLayout &)layout {
     auto found = _decorationsByLine.find(line);
     if (found == _decorationsByLine.end()) {
         return;
@@ -1457,7 +1479,8 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
             const GWDecoration &look = entry.look;
             if (look.background && look.wholeLine) {
                 [GWColor(*look.background) setFill];
-                NSRect band = NSMakeRect(NSMinX(visible) + 4, [self yForLine:line] + 1, NSWidth(visible) - 8, [self rowsForLine:line] * _lineHeight - 2);
+                CGFloat bandHeight = [self rowsForLine:line] * _lineHeight - 2;
+                NSRect band = NSMakeRect(NSMinX(visible) + 4, [self yForLine:line] + 1, NSWidth(visible) - 8, bandHeight);
                 [[NSBezierPath bezierPathWithRoundedRect:band xRadius:5 yRadius:5] fill];
                 continue;
             }
@@ -1502,7 +1525,9 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     }
     for (size_t line = first; line <= last; ++line) {
         auto found = _decorationsByLine.find(line);
-        if (found == _decorationsByLine.end() || [self isLineHidden:line] || [self rowsForLine:line] != 1 || linesWithDiagnostics.count(line) > 0) {
+        bool hasDecorations = found != _decorationsByLine.end();
+        // Notes after the line's end only fit on a plain, visible, single-row line without a problem marker.
+        if (!hasDecorations || [self isLineHidden:line] || [self rowsForLine:line] != 1 || linesWithDiagnostics.count(line) > 0) {
             continue;
         }
         for (const LineDecoration &entry : found->second) {
@@ -1527,7 +1552,9 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
             NSSize size = [note sizeWithAttributes:attributes];
             CGFloat top = [self yForLine:line];
             NSRect textRect = NSMakeRect(left, top + (_lineHeight - size.height) / 2, std::min(size.width, available), size.height);
-            [note drawWithRect:textRect options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine attributes:attributes];
+            [note drawWithRect:textRect
+                       options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
+                    attributes:attributes];
             break;  // one note per line
         }
     }
@@ -1791,10 +1818,10 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 /// edge of the covered part and the row's top. A range that ends where the line continues
 /// (a selection running on into the next line) gets a little extra at its end.
 - (void)enumerateSegmentsInLine:(size_t)line
-                      fromUnit:(uint32_t)startUnit
-                        toUnit:(uint32_t)endUnit
-              continuesPastEnd:(BOOL)continues
-                         block:(void (^)(CGFloat left, CGFloat right, CGFloat top))block {
+                       fromUnit:(uint32_t)startUnit
+                         toUnit:(uint32_t)endUnit
+               continuesPastEnd:(BOOL)continues
+                          block:(void (^)(CGFloat left, CGFloat right, CGFloat top))block {
     LineLayout *layout = [self layoutForLine:line];
     CGFloat lineTop = [self yForLine:line];
     size_t rows = layout->rowCount();
@@ -1831,10 +1858,10 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 
 /// The same, with the range given in bytes of the line.
 - (void)enumerateSegmentsInLine:(size_t)line
-                      fromByte:(size_t)startByte
-                        toByte:(size_t)endByte
-              continuesPastEnd:(BOOL)continues
-                         block:(void (^)(CGFloat left, CGFloat right, CGFloat top))block {
+                       fromByte:(size_t)startByte
+                         toByte:(size_t)endByte
+               continuesPastEnd:(BOOL)continues
+                          block:(void (^)(CGFloat left, CGFloat right, CGFloat top))block {
     LineLayout *layout = [self layoutForLine:line];
     [self enumerateSegmentsInLine:line
                          fromUnit:layout->unitForByte(startByte)
@@ -1844,8 +1871,10 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
+    // Replace what was there instead of drawing over it: the background is see-through, so
+    // drawing over old pixels would leave a faint echo of the previous text.
     [_backgroundColor setFill];
-    NSRectFillUsingOperation(dirtyRect, NSCompositingOperationSourceOver);
+    NSRectFillUsingOperation(dirtyRect, NSCompositingOperationCopy);
     if (!_document) return;
     _highlightBlocked = false;
 
@@ -2113,7 +2142,9 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     [[color colorWithAlphaComponent:0.10] setFill];
     [[NSBezierPath bezierPathWithRoundedRect:chip xRadius:5 yRadius:5] fill];
     NSRect textRect = NSMakeRect(left, top + (_lineHeight - size.height) / 2, width, size.height);
-    [full drawWithRect:textRect options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine attributes:attributes];
+    [full drawWithRect:textRect
+               options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
+            attributes:attributes];
 }
 
 // MARK: Semantic highlighting
@@ -2130,7 +2161,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     _minimap.needsDisplay = YES;
 }
 
-/// The look for a kind of token, or nothing if the grammar's own colour should stay.
+/// The look for a kind of token, or nothing if the grammar's own color should stay.
 - (std::optional<gw::TextStyle>)styleForSemanticType:(uint32_t)type {
     auto cached = _semanticStyles.find(type);
     if (cached != _semanticStyles.end()) {
@@ -2144,7 +2175,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
             gw::TextStyle style = theme.styleFor(std::vector<std::string>{"source", scope});
             gw::Color plain = theme.color("editor.foreground", theme.isDark() ? 0xD4D4D4FF : 0x1E1E1EFF);
             if (style.foreground != plain) {
-                result = style;  // the theme really has a colour for this kind of name
+                result = style;  // the theme really has a color for this kind of name
             }
         }
     }
@@ -2152,7 +2183,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     return result;
 }
 
-/// Paints the tokens the language server knows the meaning of, over the grammar's colours.
+/// Paints the tokens the language server knows the meaning of, over the grammar's colors.
 - (void)applySemanticTokensToLine:(size_t)line text:(NSMutableAttributedString *)text unitCount:(NSUInteger)unitCount {
     if (_semantic.tokens.empty() || !GWServices.shared.settings.semanticHighlighting) {
         return;
@@ -2552,7 +2583,7 @@ static bool isAccessLabel(std::string_view line) {
     }];
 }
 
-/// Whole-line colours, for added and removed lines in a diff.
+/// Whole-line colors, for added and removed lines in a diff.
 - (void)drawLineTintsFromLine:(size_t)first toLine:(size_t)last {
     if (_lineTints.empty()) {
         return;
@@ -2612,7 +2643,7 @@ static bool isAccessLabel(std::string_view line) {
     }
 }
 
-/// Backgrounds from the user's colour rules ("highlight this name", scope backgrounds).
+/// Backgrounds from the user's color rules ("highlight this name", scope backgrounds).
 - (void)drawHighlightsFromLine:(size_t)first toLine:(size_t)last {
     for (size_t line = first; line <= last; ++line) {
         if ([self isLineHidden:line]) continue;
@@ -2660,7 +2691,7 @@ static bool isAccessLabel(std::string_view line) {
     }
 }
 
-// MARK: Caret context (for the colour inspector and the breadcrumb)
+// MARK: Caret context (for the color inspector and the breadcrumb)
 
 - (std::string)wordAtCaret {
     if (!_document) {
@@ -2804,15 +2835,19 @@ static bool isAccessLabel(std::string_view line) {
     std::string word = [self wordAtCaret];
     if (!word.empty()) {
         NSString *name = @(word.c_str());
-        [menu addItemWithTitle:[NSString stringWithFormat:@"Colour “%@”…", name] action:@selector(inspectColors:) keyEquivalent:@""];
-        [menu addItemWithTitle:[NSString stringWithFormat:@"Highlight Every “%@”", name] action:@selector(highlightName:) keyEquivalent:@""];
+        [menu addItemWithTitle:[NSString stringWithFormat:@"Color “%@”…", name] action:@selector(inspectColors:) keyEquivalent:@""];
+        [menu addItemWithTitle:[NSString stringWithFormat:@"Highlight Every “%@”", name]
+                        action:@selector(highlightName:)
+                 keyEquivalent:@""];
         const auto &identifiers = GWServices.shared.settings.colors.identifiers;
         if (identifiers.count(word) > 0) {
-            [menu addItemWithTitle:[NSString stringWithFormat:@"Clear Colours for “%@”", name] action:@selector(clearNameColours:) keyEquivalent:@""];
+            [menu addItemWithTitle:[NSString stringWithFormat:@"Clear Colors for “%@”", name]
+                            action:@selector(clearNameColors:)
+                     keyEquivalent:@""];
         }
         [menu addItem:NSMenuItem.separatorItem];
     }
-    [menu addItemWithTitle:@"Inspect Colours at Caret…" action:@selector(inspectColors:) keyEquivalent:@""];
+    [menu addItemWithTitle:@"Inspect Colors at Caret…" action:@selector(inspectColors:) keyEquivalent:@""];
     [menu addItem:NSMenuItem.separatorItem];
     [menu addItemWithTitle:@"Cut" action:@selector(cut:) keyEquivalent:@""];
     [menu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@""];
@@ -2831,7 +2866,7 @@ static bool isAccessLabel(std::string_view line) {
     }
 }
 
-/// Gives the name under the caret a highlight in its own rainbow colour, everywhere.
+/// Gives the name under the caret a highlight in its own rainbow color, everywhere.
 - (IBAction)highlightName:(id)sender {
     std::string word = [self wordAtCaret];
     if (word.empty()) {
@@ -2845,7 +2880,7 @@ static bool isAccessLabel(std::string_view line) {
     }];
 }
 
-- (IBAction)clearNameColours:(id)sender {
+- (IBAction)clearNameColors:(id)sender {
     std::string word = [self wordAtCaret];
     [GWServices.shared updateSettings:^(gw::EditorSettings &settings) {
         settings.colors.identifiers.erase(word);
@@ -3196,7 +3231,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
         if (inGutter || event.clickCount >= 3) {  // whole lines
             gw::Position start{std::min(anchor.line, at.line), 0};
             size_t endLine = std::max(anchor.line, at.line);
-            gw::Position end = endLine + 1 < buffer.lineCount() ? gw::Position{endLine + 1, 0} : gw::Position{endLine, buffer.line(endLine).size()};
+            // Up to the start of the next line, or the end of the text on the last line.
+            bool hasNextLine = endLine + 1 < buffer.lineCount();
+            gw::Position end = hasNextLine ? gw::Position{endLine + 1, 0} : gw::Position{endLine, buffer.line(endLine).size()};
             return at.line < anchor.line ? gw::Selection{end, start} : gw::Selection{start, end};
         }
         if (event.clickCount == 2) {  // whole words
@@ -3316,8 +3353,12 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
         return;
     }
     gw::Position caret = selection.caret;
-    gw::Position target = direction < 0 ? (word ? buffer.previousWordStart(caret) : buffer.previousCharacter(caret))
-                                        : (word ? buffer.nextWordEnd(caret) : buffer.nextCharacter(caret));
+    gw::Position target;
+    if (direction < 0) {
+        target = word ? buffer.previousWordStart(caret) : buffer.previousCharacter(caret);
+    } else {
+        target = word ? buffer.nextWordEnd(caret) : buffer.nextCharacter(caret);
+    }
     [self moveCaretTo:target extend:extend];
 }
 

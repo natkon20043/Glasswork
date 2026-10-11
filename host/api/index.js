@@ -168,7 +168,9 @@ function createApi(runtime) {
     function splitMessageArguments(args) {
         let options = {};
         let items = args;
-        if (args.length > 0 && args[0] !== null && typeof args[0] === 'object' && !args[0].title && args[0].modal !== undefined) {
+        const first = args[0];
+        const firstIsOptions = first !== null && typeof first === 'object' && !first.title && first.modal !== undefined;
+        if (args.length > 0 && firstIsOptions) {
             options = args[0];
             items = args.slice(1);
         }
@@ -303,27 +305,55 @@ function createApi(runtime) {
             unsupported('window.createTerminal');
             return { name: (options && options.name) || 'terminal', sendText() {}, show() {}, hide() {}, dispose() {}, processId: Promise.resolve(undefined) };
         },
-        registerTreeDataProvider: () => new Disposable(() => {}),
-        createTreeView: () => ({ dispose() {}, reveal: async () => {}, onDidChangeSelection: new EventEmitter().event, onDidChangeVisibility: new EventEmitter().event, onDidExpandElement: new EventEmitter().event, onDidCollapseElement: new EventEmitter().event, visible: false, selection: [] }),
-        registerWebviewViewProvider: () => new Disposable(() => {}),
-        registerWebviewPanelSerializer: () => new Disposable(() => {}),
+        registerTreeDataProvider: (viewId, provider) => runtime.views.registerTreeDataProvider(viewId, provider),
+        createTreeView: (viewId, options) => runtime.views.createTreeView(viewId, options),
+        registerWebviewViewProvider: (viewId, provider, options) => runtime.views.registerWebviewViewProvider(viewId, provider, options),
+        registerWebviewPanelSerializer: (viewType, serializer) => runtime.views.registerWebviewPanelSerializer(viewType, serializer),
         registerUriHandler: () => new Disposable(() => {}),
         registerCustomEditorProvider: () => new Disposable(() => {}),
         registerFileDecorationProvider: () => new Disposable(() => {}),
-        createWebviewPanel(viewType, title) {
-            unsupported('window.createWebviewPanel');
-            return {
-                viewType,
-                title,
-                webview: { html: '', options: {}, onDidReceiveMessage: new EventEmitter().event, postMessage: async () => false, asWebviewUri: (uri) => uri, cspSource: '' },
-                visible: false,
-                active: false,
-                onDidDispose: new EventEmitter().event,
-                onDidChangeViewState: new EventEmitter().event,
-                reveal() {},
-                dispose() {},
+        createWebviewPanel: (viewType, title, showOptions, options) => runtime.views.createWebviewPanel(viewType, title, showOptions, options),
+        // The editor's tabs: one group holding every open file (Glasswork has a single editor area).
+        tabGroups: (() => {
+            const changeTabs = new EventEmitter();
+            const changeGroups = new EventEmitter();
+            const group = {
+                isActive: true,
+                viewColumn: 1,
+                get tabs() {
+                    const activeUri = runtime.editors.activeUri;
+                    return runtime.documents
+                        .all()
+                        .filter((document) => document.uri.scheme === 'file')
+                        .map((document) => ({
+                            label: path.basename(document.uri.fsPath),
+                            input: new types.TabInputText(document.uri),
+                            isActive: document.uri.toString() === activeUri,
+                            isDirty: document.isDirty,
+                            isPinned: false,
+                            isPreview: false,
+                            group,
+                        }));
+                },
+                get activeTab() {
+                    return group.tabs.find((tab) => tab.isActive);
+                },
             };
-        },
+            const fireChange = () => changeTabs.fire({ opened: [], closed: [], changed: [] });
+            runtime.documents.openEmitter.event(fireChange);
+            runtime.documents.closeEmitter.event(fireChange);
+            return {
+                get all() {
+                    return [group];
+                },
+                get activeTabGroup() {
+                    return group;
+                },
+                onDidChangeTabs: changeTabs.event,
+                onDidChangeTabGroups: changeGroups.event,
+                close: async () => false,
+            };
+        })(),
         showOpenDialog: async () => undefined,
         showSaveDialog: async () => undefined,
         showWorkspaceFolderPick: async () => undefined,
@@ -359,7 +389,12 @@ function createApi(runtime) {
         async stat(uri) {
             try {
                 const stats = await fs.promises.lstat(uri.fsPath);
-                const kind = stats.isDirectory() ? types.FileType.Directory : stats.isSymbolicLink() ? types.FileType.SymbolicLink : types.FileType.File;
+                let kind = types.FileType.File;
+                if (stats.isDirectory()) {
+                    kind = types.FileType.Directory;
+                } else if (stats.isSymbolicLink()) {
+                    kind = types.FileType.SymbolicLink;
+                }
                 return { type: kind, ctime: stats.ctimeMs, mtime: stats.mtimeMs, size: stats.size };
             } catch (error) {
                 throw types.FileSystemError.FileNotFound(uri);
@@ -387,8 +422,14 @@ function createApi(runtime) {
     async function findFiles(include, exclude, maxResults) {
         const includePattern = typeof include === 'string' ? include : include && include.pattern;
         const excludePattern = typeof exclude === 'string' ? exclude : exclude && exclude.pattern;
-        const includeRegex = includePattern ? globToRegExp(includePattern.startsWith('**') || includePattern.startsWith('/') ? includePattern : '**/' + includePattern) : null;
-        const excludeRegex = excludePattern ? globToRegExp(excludePattern.startsWith('**') ? excludePattern : '**/' + excludePattern) : null;
+        // A pattern like "*.js" means "in any folder": "**/*.js". Patterns that start with ** (or, for
+        // includes, with a slash) already say where they apply.
+        const anywhere = (pattern, alsoKeepIfStartsWithSlash) => {
+            const alreadyAnchored = pattern.startsWith('**') || (alsoKeepIfStartsWithSlash && pattern.startsWith('/'));
+            return globToRegExp(alreadyAnchored ? pattern : '**/' + pattern);
+        };
+        const includeRegex = includePattern ? anywhere(includePattern, true) : null;
+        const excludeRegex = excludePattern ? anywhere(excludePattern, false) : null;
         const found = [];
         const skipFolders = new Set(['node_modules', '.git', '.hg', '.svn', 'build', 'dist', 'target']);
 
@@ -426,7 +467,8 @@ function createApi(runtime) {
         if (arg && arg.uri) {
             return arg;
         }
-        if (arg && typeof arg === 'object' && !(arg instanceof Uri) && (arg.content !== undefined || arg.language !== undefined)) {
+        const describesNewDocument = arg && typeof arg === 'object' && !(arg instanceof Uri) && (arg.content !== undefined || arg.language !== undefined);
+        if (describesNewDocument) {
             return documents.createDetached(Uri.parse('untitled:Untitled-1'), arg.language || 'plaintext', arg.content || '');
         }
         const uri = typeof arg === 'string' ? Uri.file(arg) : arg;
@@ -736,7 +778,6 @@ function createApi(runtime) {
         NotebookCellData: class NotebookCellData { constructor(kind, value, languageId) { Object.assign(this, { kind, value, languageId }); } },
         NotebookData: class NotebookData { constructor(cells) { this.cells = cells; } },
         NotebookCellKind: { Markup: 1, Code: 2 },
-        TabInputText: class TabInputText { constructor(uri) { this.uri = uri; } },
         LanguageModelChatMessage: { User: () => ({}), Assistant: () => ({}) },
     };
     void os;

@@ -11,37 +11,44 @@ namespace gw::claude {
 
 using Json = nlohmann::json;
 
-// ---------------------------------------------------------------------------
-// Events: one line of the `claude --output-format stream-json` output, understood.
-
+// One line of `claude --output-format stream-json` output -> which kind of Event it parses into.
 enum class EventKind {
-    SessionInit,        // the session started: id, model, tools, slash commands
-    Status,             // "requesting": the model is being called
-    MessageStart,       // a new assistant message begins (streaming)
-    BlockStart,         // a text, thinking or tool-use block begins
-    TextDelta,          // more text for a text block
-    ThinkingDelta,      // more thinking for a thinking block
-    ToolInputDelta,     // more of a tool call's JSON arguments
-    BlockStop,          // that block is complete
-    MessageStop,        // the assistant message is complete
-    AssistantMessage,   // a complete assistant block (also sent when not streaming)
-    UserMessage,        // a user message, or tool results (also used when loading history)
-    PermissionRequest,  // Claude wants to use a tool and asks us first
-    TurnResult,         // the turn is finished: cost, timing, final text
-    RateLimit,          // usage information
-    Notice,             // other system messages (permission denied, retries…)
-    ControlResponse,    // the answer to a request we sent
+    SessionInit,
+    Status,
+    MessageStart,
+    BlockStart,
+    TextDelta,
+    ThinkingDelta,
+    ToolInputDelta,
+    BlockStop,
+    MessageStop,
+    AssistantMessage,
+    UserMessage,
+    PermissionRequest,
+    TurnResult,
+    RateLimit,
+    Notice,
+    ControlResponse,
     Unknown,
 };
 
+// Permission request from Claude + the user's answer -> state shown on the tool call.
+enum class Approval {
+    NotNeeded,
+    Pending,
+    Allowed,
+    Denied,
+};
+
+// ---- Events
+
 struct Event {
     EventKind kind = EventKind::Unknown;
-    /// The event exactly as it arrived, for anything the fields below don't cover.
+    /// The line exactly as it arrived, for anything the fields below don't cover.
     Json raw;
 
     std::string sessionId;
     std::string model;
-    /// Streaming block number within its message.
     int blockIndex = -1;
     /// "text", "thinking" or "tool_use" for BlockStart.
     std::string blockType;
@@ -54,7 +61,7 @@ struct Event {
     std::string toolId;
     std::string toolName;
 
-    /// Set on events that belong to a sub-agent's work rather than the main conversation.
+    /// Belongs to a sub-agent's work rather than the main conversation.
     bool isSubAgent = false;
     bool isError = false;
 
@@ -75,37 +82,38 @@ struct Event {
     std::vector<std::string> slashCommands;
     std::string permissionMode;
 
-    // RateLimit: how much of the 5-hour window is used, 0…1, or -1 if unknown.
+    // RateLimit: share of the 5-hour window used, 0..1, or -1 if unknown.
     double fiveHourUtilization = -1;
 };
 
-/// Understands one line of stream-json output. Lines that aren't JSON give nullopt.
+/// Lines that aren't JSON give nullopt.
 std::optional<Event> parseEvent(std::string_view line);
 
-/// Splits a byte stream (which arrives in arbitrary chunks) into complete lines.
+/// Splits a byte stream that arrives in arbitrary chunks into complete lines.
 class LineSplitter {
 public:
-    /// Adds bytes and returns every line that is now complete, without its newline.
+    // ---- Input
+    /// Returns every line now complete, without its newline.
     std::vector<std::string> feed(std::string_view bytes);
 
 private:
+    // ---- Private variables
     std::string pending_;
 };
 
-// ---------------------------------------------------------------------------
-// The conversation as the UI shows it
-
-enum class Approval {
-    NotNeeded,
-    Pending,
-    Allowed,
-    Denied,
-};
+// ---- Conversation shown in the UI
 
 struct ToolCall {
+    // ---- Getters
+    /// One line such as "Edit  src/main.cpp" or "Bash  ls -la".
+    std::string summary() const;
+    std::string filePath() const;
+    bool changesFiles() const;
+
+    // ---- Variables
     std::string id;
     std::string name;
-    /// The arguments as JSON text; grows while they stream in.
+    /// Arguments as JSON text; grows while they stream in.
     std::string inputText;
     Json input;
     bool inputComplete = false;
@@ -113,21 +121,17 @@ struct ToolCall {
     std::string resultText;
     bool hasResult = false;
     bool resultIsError = false;
-    /// Claude Code's structured result (for example the patch of an edit), if it sent one.
+    /// Claude Code's structured result (such as an edit's patch), if sent.
     Json resultDetail;
 
     Approval approval = Approval::NotNeeded;
     std::string permissionRequestId;
-
-    /// A short line describing what the tool is doing: "Edit  src/main.cpp", "Bash  ls -la".
-    std::string summary() const;
-    /// The file the tool reads or changes, when it has one.
-    std::string filePath() const;
-    bool changesFiles() const;
 };
 
 struct Block {
+    // Block start event -> what the block holds.
     enum class Kind { Text, Thinking, Tool };
+
     Kind kind = Kind::Text;
     std::string text;
     ToolCall tool;
@@ -136,12 +140,14 @@ struct Block {
 };
 
 struct Message {
+    // Source of a message -> which side of the conversation draws it.
     enum class Role { User, Assistant, Notice };
+
     Role role = Role::Assistant;
     std::string id;
     std::vector<Block> blocks;
     bool streaming = false;
-    /// True for messages that only carry tool results (not shown as a user bubble).
+    /// Carries only tool results, so no user bubble is drawn.
     bool onlyToolResults = false;
     /// Notices only: drawn as an error.
     bool isError = false;
@@ -156,53 +162,63 @@ struct TurnSummary {
     std::string resultText;
 };
 
-/// What an event did to the transcript, so the view can refresh just that part.
+/// What an event did to the transcript, so the view refreshes only that part.
 struct TranscriptChange {
     bool changed = false;
-    /// True if a new message was added (rather than an existing one updated).
     bool addedMessage = false;
     size_t messageIndex = 0;
-    /// True if the turn finished with this event.
     bool turnFinished = false;
 };
 
-/// Builds up the conversation from events. No I/O, no UI: feed it events, read messages.
+/// Builds the conversation from events. No I/O, no UI.
 class Transcript {
 public:
-    const std::vector<Message>& messages() const { return messages_; }
-    size_t size() const { return messages_.size(); }
-
-    /// Adds what the user typed.
+    // ---- Adding content
     TranscriptChange addUserMessage(const std::string& text);
-    /// Adds a plain informational line (errors, "session ended", …).
     TranscriptChange addNotice(const std::string& text, bool isError = false);
-
     TranscriptChange apply(const Event& event);
 
-    /// Marks the pending tool call for this permission request as answered.
+    // ---- Permissions
     bool resolvePermission(const std::string& requestId, bool allowed);
-    /// Every tool call still waiting for the user to answer.
     std::vector<const ToolCall*> pendingPermissions() const;
 
-    bool isBusy() const { return busy_; }
+    // ---- Setters
     void setBusy(bool busy) { busy_ = busy; }
-    const TurnSummary& lastTurn() const { return lastTurn_; }
-    const std::string& sessionId() const { return sessionId_; }
     void setSessionId(const std::string& id) { sessionId_ = id; }
+    /// True while replaying a saved session, where user messages in events become transcript messages.
+    void setReplayUserText(bool replay) { replayUserText_ = replay; }
     void clear();
 
-    /// When replaying a saved session, plain user messages in the events become messages in
-    /// the transcript. While chatting live they don't, because the UI adds them itself.
-    void setReplayUserText(bool replay) { replayUserText_ = replay; }
+    // ---- Getters
+    const std::vector<Message>& messages() const { return messages_; }
+    size_t size() const { return messages_.size(); }
+    bool isBusy() const { return busy_; }
+    const TurnSummary& lastTurn() const { return lastTurn_; }
+    const std::string& sessionId() const { return sessionId_; }
 
 private:
+    // ---- Lookup
     Message* messageWithId(const std::string& id);
     size_t startAssistantMessage(const std::string& id);
     ToolCall* findTool(const std::string& toolId, size_t* messageIndex = nullptr);
     Block* findStreamBlock(size_t messageIndex, int streamIndex);
 
+    // ---- One step per event kind (`apply` picks)
+    void applyBlockStart(const Event& event, TranscriptChange& change);
+    void applyTextDelta(const Event& event, TranscriptChange& change);
+    void applyToolInputDelta(const Event& event, TranscriptChange& change);
+    void applyBlockStop(const Event& event, TranscriptChange& change);
+    void applyAssistantMessage(const Event& event, TranscriptChange& change);
+    void applyUserMessage(const Event& event, TranscriptChange& change);
+    void applyPermissionRequest(const Event& event, TranscriptChange& change);
+    void applyTurnResult(const Event& event, TranscriptChange& change);
+    void mergeTextPart(Message& message, const Json& part, const std::string& partType);
+    void mergeToolUsePart(Message& message, const Json& part);
+    void recordToolResult(ToolCall& tool, const Json& resultPart, const Json& wholeEvent);
+
+    // ---- Private variables
     std::vector<Message> messages_;
-    /// The assistant message currently streaming in, if any.
+    /// Index of the assistant message streaming in now, or -1.
     long streamingMessage_ = -1;
     bool busy_ = false;
     bool replayUserText_ = false;
@@ -210,34 +226,30 @@ private:
     std::string sessionId_;
 };
 
-// ---------------------------------------------------------------------------
-// Messages we send
+// ---- Messages we send (each is one newline-terminated stream-json line)
 
-/// A user message in stream-json form, as one line ending in a newline.
 std::string userMessageLine(const std::string& text);
-/// Answers a permission request. To allow, pass the input the tool should run with (usually
-/// the same one it asked with).
+/// To allow, pass the input the tool should run with (usually the one it asked with).
 std::string permissionResponseLine(const std::string& requestId, bool allow, const Json& input,
                                    const std::string& denyMessage = "");
 std::string interruptLine(const std::string& requestId);
 std::string setPermissionModeLine(const std::string& requestId, const std::string& mode);
 std::string setModelLine(const std::string& requestId, const std::string& model);
 
-// ---------------------------------------------------------------------------
-// Past conversations, kept by Claude Code on disk
+// ---- Past conversations kept by Claude Code on disk
 
 struct SavedSession {
     std::string id;
-    std::string title;  // the first thing the user said
-    double modifiedSeconds = 0;  // seconds since 1970
+    /// The first thing the user said.
+    std::string title;
+    /// Seconds since 1970.
+    double modifiedSeconds = 0;
     std::string path;
 };
 
-/// The folder Claude Code keeps sessions for a project in.
 std::string sessionFolderFor(const std::string& projectPath);
-/// Sessions for a project, newest first.
+/// Newest first.
 std::vector<SavedSession> listSavedSessions(const std::string& projectPath, size_t limit = 30);
-/// Rebuilds a transcript from a saved session file.
 Transcript loadSavedSession(const std::string& path);
 
 }  // namespace gw::claude

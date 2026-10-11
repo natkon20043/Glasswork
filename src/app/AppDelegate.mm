@@ -13,6 +13,17 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
     GWSettingMinimap,
 };
 
+// Modifier keys used by the menus below.
+static const NSEventModifierFlags kCommand = NSEventModifierFlagCommand;
+static const NSEventModifierFlags kShift = NSEventModifierFlagShift;
+static const NSEventModifierFlags kOption = NSEventModifierFlagOption;
+static const NSEventModifierFlags kControl = NSEventModifierFlagControl;
+
+/// The key-equivalent text for a special key (an arrow or a function key).
+static NSString *SpecialKey(unichar key) {
+    return [NSString stringWithFormat:@"%C", key];
+}
+
 @implementation GWAppDelegate {
     GWMainWindowController *_window;                          // the first window (the debug hooks use it)
     NSMutableArray<GWMainWindowController *> *_windows;       // every open window
@@ -66,6 +77,20 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
                         [NSApp sendAction:selector to:self from:nil];
                     }
                 }
+            });
+        }
+    }
+
+    // GLASSWORK_COMMANDS="ext.command,other.command" runs extension commands, a moment apart,
+    // after the menu actions (debugging).
+    NSString *commands = NSProcessInfo.processInfo.environment[@"GLASSWORK_COMMANDS"];
+    if (commands.length) {
+        NSArray<NSString *> *identifiers = [commands componentsSeparatedByString:@","];
+        for (NSUInteger index = 0; index < identifiers.count; ++index) {
+            NSString *identifier = identifiers[index];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>((4.0 + 1.5 * index) * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                [self->_window debugRunExtensionCommand:identifier];
             });
         }
     }
@@ -243,11 +268,8 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
     [target showWindow:nil];
 }
 
-- (NSMenu *)buildMainMenu {
-    NSMenu *main = [NSMenu new];
-    const NSEventModifierFlags command = NSEventModifierFlagCommand, shift = NSEventModifierFlagShift,
-                               option = NSEventModifierFlagOption;
-
+/// The Glasswork menu: about, settings, hide, quit.
+- (void)addAppMenuTo:(NSMenu *)main {
     [self submenu:@"Glasswork" items:@[
         [self item:@"About Glasswork" action:@selector(orderFrontStandardAboutPanel:) key:@""],
         NSMenuItem.separatorItem,
@@ -255,34 +277,40 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
         [self item:@"Keyboard Shortcuts (JSON)…" action:@selector(openKeybindings:) key:@""],
         NSMenuItem.separatorItem,
         [self item:@"Hide Glasswork" action:@selector(hide:) key:@"h"],
-        [self item:@"Hide Others" action:@selector(hideOtherApplications:) key:@"h" modifiers:command | option],
+        [self item:@"Hide Others" action:@selector(hideOtherApplications:) key:@"h" modifiers:kCommand | kOption],
         [self item:@"Show All" action:@selector(unhideAllApplications:) key:@""],
         NSMenuItem.separatorItem,
         [self item:@"Quit Glasswork" action:@selector(terminate:) key:@"q"],
     ] parent:main];
+}
 
+/// File: new, open, save, close.
+- (void)addFileMenuTo:(NSMenu *)main {
     [self submenu:@"File" items:@[
         [self item:@"New File" action:@selector(newDocument:) key:@"n"],
-        [self item:@"New Window" action:@selector(newWindow:) key:@"n" modifiers:command | shift],
-        [self item:@"Open Folder in New Window…" action:@selector(openFolderInNewWindow:) key:@"o" modifiers:command | option | shift],
+        [self item:@"New Window" action:@selector(newWindow:) key:@"n" modifiers:kCommand | kShift],
+        [self item:@"Open Folder in New Window…" action:@selector(openFolderInNewWindow:) key:@"o" modifiers:kCommand | kOption | kShift],
         [self item:@"Open…" action:@selector(openDocument:) key:@"o"],
-        [self item:@"Open Folder…" action:@selector(openFolder:) key:@"o" modifiers:command | shift],
+        [self item:@"Open Folder…" action:@selector(openFolder:) key:@"o" modifiers:kCommand | kShift],
         [self openRecentItem],
         NSMenuItem.separatorItem,
         [self item:@"Save" action:@selector(saveDocument:) key:@"s"],
-        [self item:@"Save As…" action:@selector(saveDocumentAs:) key:@"s" modifiers:command | shift],
+        [self item:@"Save As…" action:@selector(saveDocumentAs:) key:@"s" modifiers:kCommand | kShift],
         NSMenuItem.separatorItem,
-        [self item:@"Save All" action:@selector(saveAllDocuments:) key:@"s" modifiers:command | option],
+        [self item:@"Save All" action:@selector(saveAllDocuments:) key:@"s" modifiers:kCommand | kOption],
         NSMenuItem.separatorItem,
         [self item:@"Close Tab" action:@selector(closeTab:) key:@"w"],
-        [self item:@"Close Other Tabs" action:@selector(closeOtherTabs:) key:@"t" modifiers:command | option],
-        [self item:@"Reopen Closed Tab" action:@selector(reopenClosedTab:) key:@"t" modifiers:command | shift],
-        [self item:@"Close Window" action:@selector(performClose:) key:@"w" modifiers:command | shift],
+        [self item:@"Close Other Tabs" action:@selector(closeOtherTabs:) key:@"t" modifiers:kCommand | kOption],
+        [self item:@"Reopen Closed Tab" action:@selector(reopenClosedTab:) key:@"t" modifiers:kCommand | kShift],
+        [self item:@"Close Window" action:@selector(performClose:) key:@"w" modifiers:kCommand | kShift],
     ] parent:main];
+}
 
+/// Edit: undo, clipboard, line operations, cursors, folding.
+- (void)addEditMenuTo:(NSMenu *)main {
     [self submenu:@"Edit" items:@[
         [self item:@"Undo" action:@selector(undo:) key:@"z"],
-        [self item:@"Redo" action:@selector(redo:) key:@"z" modifiers:command | shift],
+        [self item:@"Redo" action:@selector(redo:) key:@"z" modifiers:kCommand | kShift],
         NSMenuItem.separatorItem,
         [self item:@"Cut" action:@selector(cut:) key:@"x"],
         [self item:@"Copy" action:@selector(copy:) key:@"c"],
@@ -293,53 +321,59 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
         [self item:@"Indent Lines" action:@selector(indentLines:) key:@"]"],
         [self item:@"Outdent Lines" action:@selector(outdentLines:) key:@"["],
         NSMenuItem.separatorItem,
-        [self item:@"Move Line Up" action:@selector(moveLinesUp:) key:[NSString stringWithFormat:@"%C", (unichar)NSUpArrowFunctionKey] modifiers:option],
-        [self item:@"Move Line Down" action:@selector(moveLinesDown:) key:[NSString stringWithFormat:@"%C", (unichar)NSDownArrowFunctionKey] modifiers:option],
-        [self item:@"Duplicate Line Up" action:@selector(duplicateLinesUp:) key:[NSString stringWithFormat:@"%C", (unichar)NSUpArrowFunctionKey] modifiers:option | shift],
-        [self item:@"Duplicate Line Down" action:@selector(duplicateLinesDown:) key:[NSString stringWithFormat:@"%C", (unichar)NSDownArrowFunctionKey] modifiers:option | shift],
-        [self item:@"Delete Line" action:@selector(deleteLines:) key:@"k" modifiers:command | shift],
-        [self item:@"Join Lines" action:@selector(joinSelectedLines:) key:@"j" modifiers:NSEventModifierFlagControl],
+        [self item:@"Move Line Up" action:@selector(moveLinesUp:) key:SpecialKey(NSUpArrowFunctionKey) modifiers:kOption],
+        [self item:@"Move Line Down" action:@selector(moveLinesDown:) key:SpecialKey(NSDownArrowFunctionKey) modifiers:kOption],
+        [self item:@"Duplicate Line Up" action:@selector(duplicateLinesUp:) key:SpecialKey(NSUpArrowFunctionKey) modifiers:kOption | kShift],
+        [self item:@"Duplicate Line Down" action:@selector(duplicateLinesDown:) key:SpecialKey(NSDownArrowFunctionKey) modifiers:kOption | kShift],
+        [self item:@"Delete Line" action:@selector(deleteLines:) key:@"k" modifiers:kCommand | kShift],
+        [self item:@"Join Lines" action:@selector(joinSelectedLines:) key:@"j" modifiers:kControl],
         [self transformItem],
-        [self item:@"Insert Line Below" action:@selector(insertLineBelow:) key:@"\r" modifiers:command],
-        [self item:@"Insert Line Above" action:@selector(insertLineAbove:) key:@"\r" modifiers:command | shift],
+        [self item:@"Insert Line Below" action:@selector(insertLineBelow:) key:@"\r" modifiers:kCommand],
+        [self item:@"Insert Line Above" action:@selector(insertLineAbove:) key:@"\r" modifiers:kCommand | kShift],
         [self item:@"Expand Selection" action:@selector(expandSelection:)
-               key:[NSString stringWithFormat:@"%C", (unichar)NSRightArrowFunctionKey]
-         modifiers:NSEventModifierFlagControl | command | shift],
+               key:SpecialKey(NSRightArrowFunctionKey)
+         modifiers:kControl | kCommand | kShift],
         [self item:@"Shrink Selection" action:@selector(shrinkSelection:)
-               key:[NSString stringWithFormat:@"%C", (unichar)NSLeftArrowFunctionKey]
-         modifiers:NSEventModifierFlagControl | command | shift],
-        [self item:@"Go to Matching Bracket" action:@selector(goToMatchingBracket:) key:@"\\" modifiers:command | shift],
+               key:SpecialKey(NSLeftArrowFunctionKey)
+         modifiers:kControl | kCommand | kShift],
+        [self item:@"Go to Matching Bracket" action:@selector(goToMatchingBracket:) key:@"\\" modifiers:kCommand | kShift],
         [self item:@"Add Next Occurrence" action:@selector(selectNextOccurrence:) key:@"d"],
-        [self item:@"Select All Occurrences" action:@selector(selectAllOccurrences:) key:@"g" modifiers:NSEventModifierFlagControl | command],
-        [self item:@"Add Cursor Above" action:@selector(addCursorAbove:) key:[NSString stringWithFormat:@"%C", (unichar)NSUpArrowFunctionKey] modifiers:command | option],
-        [self item:@"Add Cursor Below" action:@selector(addCursorBelow:) key:[NSString stringWithFormat:@"%C", (unichar)NSDownArrowFunctionKey] modifiers:command | option],
+        [self item:@"Select All Occurrences" action:@selector(selectAllOccurrences:) key:@"g" modifiers:kControl | kCommand],
+        [self item:@"Add Cursor Above" action:@selector(addCursorAbove:) key:SpecialKey(NSUpArrowFunctionKey) modifiers:kCommand | kOption],
+        [self item:@"Add Cursor Below" action:@selector(addCursorBelow:) key:SpecialKey(NSDownArrowFunctionKey) modifiers:kCommand | kOption],
         NSMenuItem.separatorItem,
-        [self item:@"Fold" action:@selector(foldCode:) key:@"[" modifiers:command | option],
-        [self item:@"Unfold" action:@selector(unfoldCode:) key:@"]" modifiers:command | option],
-        [self item:@"Fold All" action:@selector(foldAllCode:) key:@"[" modifiers:command | option | shift],
-        [self item:@"Unfold All" action:@selector(unfoldAllCode:) key:@"]" modifiers:command | option | shift],
-        [self item:@"Word Wrap" action:@selector(toggleWordWrap:) key:@"z" modifiers:option],
+        [self item:@"Fold" action:@selector(foldCode:) key:@"[" modifiers:kCommand | kOption],
+        [self item:@"Unfold" action:@selector(unfoldCode:) key:@"]" modifiers:kCommand | kOption],
+        [self item:@"Fold All" action:@selector(foldAllCode:) key:@"[" modifiers:kCommand | kOption | kShift],
+        [self item:@"Unfold All" action:@selector(unfoldAllCode:) key:@"]" modifiers:kCommand | kOption | kShift],
+        [self item:@"Word Wrap" action:@selector(toggleWordWrap:) key:@"z" modifiers:kOption],
         NSMenuItem.separatorItem,
-        [self item:@"Inspect Colours…" action:@selector(inspectColors:) key:@"c" modifiers:command | option],
+        [self item:@"Inspect Colors…" action:@selector(inspectColors:) key:@"c" modifiers:kCommand | kOption],
     ] parent:main];
+}
 
+/// Find: search in the file and in the project.
+- (void)addFindMenuTo:(NSMenu *)main {
     [self submenu:@"Find" items:@[
         [self item:@"Find…" action:@selector(showFind:) key:@"f"],
-        [self item:@"Find and Replace…" action:@selector(showFindAndReplace:) key:@"f" modifiers:command | option],
+        [self item:@"Find and Replace…" action:@selector(showFindAndReplace:) key:@"f" modifiers:kCommand | kOption],
         [self item:@"Find Next" action:@selector(findNext:) key:@"g"],
-        [self item:@"Find Previous" action:@selector(findPrevious:) key:@"g" modifiers:command | shift],
+        [self item:@"Find Previous" action:@selector(findPrevious:) key:@"g" modifiers:kCommand | kShift],
         [self item:@"Use Selection for Find" action:@selector(useSelectionForFind:) key:@"e"],
         NSMenuItem.separatorItem,
-        [self item:@"Find in Files…" action:@selector(findInFiles:) key:@"f" modifiers:command | shift],
+        [self item:@"Find in Files…" action:@selector(findInFiles:) key:@"f" modifiers:kCommand | kShift],
     ] parent:main];
+}
 
+/// View: sidebar, tabs, text size and the editor's visual options. Returns the menu so Theme and Editor Opacity can be added to it.
+- (NSMenu *)addViewMenuTo:(NSMenu *)main {
     NSMenu *view = [self submenu:@"View" items:@[
         [self item:@"Toggle Sidebar" action:@selector(toggleSidebar:) key:@"b"],
-        [self item:@"Show Files" action:@selector(showExplorer:) key:@"e" modifiers:command | shift],
-        [self item:@"Show Source Control" action:@selector(showSourceControl:) key:@"g" modifiers:NSEventModifierFlagControl | shift],
-        [self item:@"Next Tab" action:@selector(selectNextTab:) key:@"]" modifiers:command | shift],
-        [self item:@"Previous Tab" action:@selector(selectPreviousTab:) key:@"[" modifiers:command | shift],
-        [self item:@"Open Markdown Preview" action:@selector(openMarkdownPreview:) key:@"v" modifiers:command | shift],
+        [self item:@"Show Files" action:@selector(showExplorer:) key:@"e" modifiers:kCommand | kShift],
+        [self item:@"Show Source Control" action:@selector(showSourceControl:) key:@"g" modifiers:kControl | kShift],
+        [self item:@"Next Tab" action:@selector(selectNextTab:) key:@"]" modifiers:kCommand | kShift],
+        [self item:@"Previous Tab" action:@selector(selectPreviousTab:) key:@"[" modifiers:kCommand | kShift],
+        [self item:@"Open Markdown Preview" action:@selector(openMarkdownPreview:) key:@"v" modifiers:kCommand | kShift],
         NSMenuItem.separatorItem,
         [self item:@"Bigger Text" action:@selector(increaseFontSize:) key:@"="],
         [self item:@"Smaller Text" action:@selector(decreaseFontSize:) key:@"-"],
@@ -347,81 +381,96 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
         NSMenuItem.separatorItem,
         [self settingToggle:@"Rainbow Variables" tag:GWSettingRainbow],
         [self settingToggle:@"Highlight Occurrences" tag:GWSettingOccurrences],
-        [self settingToggle:@"Bracket Pair Colours" tag:GWSettingBrackets],
+        [self settingToggle:@"Bracket Pair Colors" tag:GWSettingBrackets],
         [self settingToggle:@"Indent Guides" tag:GWSettingGuides],
         [self settingToggle:@"Section Dividers" tag:GWSettingDividers],
         [self settingToggle:@"Minimap" tag:GWSettingMinimap],
         NSMenuItem.separatorItem,
     ] parent:main];
+    return view;
+}
 
+/// Go: files, symbols, navigation history, code intelligence.
+- (void)addGoMenuTo:(NSMenu *)main {
     [self submenu:@"Go" items:@[
         [self item:@"Go to File…" action:@selector(quickOpen:) key:@"p"],
-        [self item:@"Command Palette…" action:@selector(showCommandPalette:) key:@"p" modifiers:command | shift],
-        [self item:@"Back" action:@selector(goBack:) key:@"-" modifiers:NSEventModifierFlagControl],
-        [self item:@"Forward" action:@selector(goForward:) key:@"-" modifiers:NSEventModifierFlagControl | shift],
+        [self item:@"Command Palette…" action:@selector(showCommandPalette:) key:@"p" modifiers:kCommand | kShift],
+        [self item:@"Back" action:@selector(goBack:) key:@"-" modifiers:kControl],
+        [self item:@"Forward" action:@selector(goForward:) key:@"-" modifiers:kControl | kShift],
         NSMenuItem.separatorItem,
-        [self item:@"Go to Line…" action:@selector(goToLine:) key:@"g" modifiers:NSEventModifierFlagControl],
-        [self item:@"Jump to Section…" action:@selector(jumpToSection:) key:@"6" modifiers:NSEventModifierFlagControl],
+        [self item:@"Go to Line…" action:@selector(goToLine:) key:@"g" modifiers:kControl],
+        [self item:@"Jump to Section…" action:@selector(jumpToSection:) key:@"6" modifiers:kControl],
         [self item:@"Next Change" action:@selector(nextChange:)
-               key:[NSString stringWithFormat:@"%C", (unichar)NSDownArrowFunctionKey]
-         modifiers:NSEventModifierFlagControl | option],
+               key:SpecialKey(NSDownArrowFunctionKey)
+         modifiers:kControl | kOption],
         [self item:@"Previous Change" action:@selector(previousChange:)
-               key:[NSString stringWithFormat:@"%C", (unichar)NSUpArrowFunctionKey]
-         modifiers:NSEventModifierFlagControl | option],
+               key:SpecialKey(NSUpArrowFunctionKey)
+         modifiers:kControl | kOption],
         NSMenuItem.separatorItem,
-        [self item:@"Complete Code…" action:@selector(completeCode:) key:@" " modifiers:NSEventModifierFlagControl],
-        [self item:@"Go to Definition" action:@selector(goToDefinition:) key:@"d" modifiers:command | NSEventModifierFlagControl],
-        [self item:@"Find References…" action:@selector(findReferences:) key:@"r" modifiers:command | NSEventModifierFlagControl],
-        [self item:@"Check File for Problems…" action:@selector(checkProblems:) key:@"m" modifiers:command | shift],
+        [self item:@"Complete Code…" action:@selector(completeCode:) key:@" " modifiers:kControl],
+        [self item:@"Go to Definition" action:@selector(goToDefinition:) key:@"d" modifiers:kCommand | kControl],
+        [self item:@"Find References…" action:@selector(findReferences:) key:@"r" modifiers:kCommand | kControl],
+        [self item:@"Check File for Problems…" action:@selector(checkProblems:) key:@"m" modifiers:kCommand | kShift],
         NSMenuItem.separatorItem,
         [self item:@"Go to Symbol in File…" action:@selector(goToSymbolInFile:) key:@"r"],
-        [self item:@"Go to Symbol in Project…" action:@selector(goToSymbolInWorkspace:) key:@"t" modifiers:command],
-        [self item:@"Quick Fix…" action:@selector(showQuickFixes:) key:@"." modifiers:command],
-        [self item:@"Rename Symbol…" action:@selector(renameSymbol:) key:[NSString stringWithFormat:@"%C", (unichar)NSF2FunctionKey] modifiers:0],
-        [self item:@"Format Document" action:@selector(formatDocument:) key:@"f" modifiers:option | shift],
+        [self item:@"Go to Symbol in Project…" action:@selector(goToSymbolInWorkspace:) key:@"t" modifiers:kCommand],
+        [self item:@"Quick Fix…" action:@selector(showQuickFixes:) key:@"." modifiers:kCommand],
+        [self item:@"Rename Symbol…" action:@selector(renameSymbol:) key:SpecialKey(NSF2FunctionKey) modifiers:0],
+        [self item:@"Format Document" action:@selector(formatDocument:) key:@"f" modifiers:kOption | kShift],
     ] parent:main];
-    NSString *f5 = [NSString stringWithFormat:@"%C", (unichar)NSF5FunctionKey];
-    NSString *f9 = [NSString stringWithFormat:@"%C", (unichar)NSF9FunctionKey];
-    NSString *f10 = [NSString stringWithFormat:@"%C", (unichar)NSF10FunctionKey];
-    NSString *f11 = [NSString stringWithFormat:@"%C", (unichar)NSF11FunctionKey];
-    [self submenu:@"Run" items:@[
-        [self item:@"Build" action:@selector(buildProject:) key:@"b" modifiers:command | shift],
-        [self item:@"Run Task…" action:@selector(runTask:) key:@"b" modifiers:command | option],
-        [self item:@"Run Current File" action:@selector(runCurrentFile:) key:@"r" modifiers:command | option],
-        NSMenuItem.separatorItem,
-        [self item:@"Start Debugging / Continue" action:@selector(startDebugging:) key:f5 modifiers:0],
-        [self item:@"Debug Current File" action:@selector(debugCurrentFile:) key:f5 modifiers:option],
-        [self item:@"Debug Executable…" action:@selector(debugExecutable:) key:@""],
-        [self item:@"Stop Debugging" action:@selector(stopDebugging:) key:f5 modifiers:shift],
-        NSMenuItem.separatorItem,
-        [self item:@"Step Over" action:@selector(debugStepOver:) key:f10 modifiers:0],
-        [self item:@"Step Into" action:@selector(debugStepInto:) key:f11 modifiers:0],
-        [self item:@"Step Out" action:@selector(debugStepOut:) key:f11 modifiers:shift],
-        NSMenuItem.separatorItem,
-        [self item:@"Toggle Breakpoint" action:@selector(toggleBreakpoint:) key:f9 modifiers:0],
-        [self item:@"Remove All Breakpoints" action:@selector(removeAllBreakpoints:) key:@""],
-        [self item:@"Show Run and Debug" action:@selector(showDebugPanel:) key:@"d" modifiers:command | shift],
-    ] parent:main];
+}
 
+/// Run: build, run and the debugger. Debugger keys are the usual F-keys.
+- (void)addRunMenuTo:(NSMenu *)main {
+    [self submenu:@"Run" items:@[
+        [self item:@"Build" action:@selector(buildProject:) key:@"b" modifiers:kCommand | kShift],
+        [self item:@"Run Task…" action:@selector(runTask:) key:@"b" modifiers:kCommand | kOption],
+        [self item:@"Run Current File" action:@selector(runCurrentFile:) key:@"r" modifiers:kCommand | kOption],
+        NSMenuItem.separatorItem,
+        [self item:@"Start Debugging / Continue" action:@selector(startDebugging:) key:SpecialKey(NSF5FunctionKey) modifiers:0],
+        [self item:@"Debug Current File" action:@selector(debugCurrentFile:) key:SpecialKey(NSF5FunctionKey) modifiers:kOption],
+        [self item:@"Debug Executable…" action:@selector(debugExecutable:) key:@""],
+        [self item:@"Stop Debugging" action:@selector(stopDebugging:) key:SpecialKey(NSF5FunctionKey) modifiers:kShift],
+        NSMenuItem.separatorItem,
+        [self item:@"Step Over" action:@selector(debugStepOver:) key:SpecialKey(NSF10FunctionKey) modifiers:0],
+        [self item:@"Step Into" action:@selector(debugStepInto:) key:SpecialKey(NSF11FunctionKey) modifiers:0],
+        [self item:@"Step Out" action:@selector(debugStepOut:) key:SpecialKey(NSF11FunctionKey) modifiers:kShift],
+        NSMenuItem.separatorItem,
+        [self item:@"Toggle Breakpoint" action:@selector(toggleBreakpoint:) key:SpecialKey(NSF9FunctionKey) modifiers:0],
+        [self item:@"Remove All Breakpoints" action:@selector(removeAllBreakpoints:) key:@""],
+        [self item:@"Show Run and Debug" action:@selector(showDebugPanel:) key:@"d" modifiers:kCommand | kShift],
+        [self item:@"Show Extension Views" action:@selector(showExtensionViews:) key:@"e" modifiers:kControl | kShift],
+    ] parent:main];
+}
+
+/// Terminal: show, create and clear terminals.
+- (void)addTerminalMenuTo:(NSMenu *)main {
     [self submenu:@"Terminal" items:@[
-        [self item:@"Toggle Terminal" action:@selector(toggleTerminal:) key:@"`" modifiers:NSEventModifierFlagControl],
-        [self item:@"New Terminal" action:@selector(newTerminal:) key:@"`" modifiers:NSEventModifierFlagControl | shift],
+        [self item:@"Toggle Terminal" action:@selector(toggleTerminal:) key:@"`" modifiers:kControl],
+        [self item:@"New Terminal" action:@selector(newTerminal:) key:@"`" modifiers:kControl | kShift],
         [self item:@"Close Terminal" action:@selector(closeTerminal:) key:@""],
         NSMenuItem.separatorItem,
         [self item:@"Clear Terminal" action:@selector(clearTerminal:) key:@"k"],
     ] parent:main];
+}
 
+/// Claude: the chat and the one-click requests.
+- (void)addClaudeMenuTo:(NSMenu *)main {
     [self submenu:@"Claude" items:@[
         [self item:@"Chat with Claude" action:@selector(toggleChat:) key:@"l"],
-        [self item:@"Ask About Selection" action:@selector(askClaudeAboutSelection:) key:@"l" modifiers:command | shift],
-        [self item:@"New Chat" action:@selector(newClaudeChat:) key:@"l" modifiers:command | option],
+        [self item:@"Ask About Selection" action:@selector(askClaudeAboutSelection:) key:@"l" modifiers:kCommand | kShift],
+        [self item:@"New Chat" action:@selector(newClaudeChat:) key:@"l" modifiers:kCommand | kOption],
         NSMenuItem.separatorItem,
-        [self item:@"Explain Selection" action:@selector(explainSelectionWithClaude:) key:@"e" modifiers:command | option],
+        [self item:@"Explain Selection" action:@selector(explainSelectionWithClaude:) key:@"e" modifiers:kCommand | kOption],
         [self item:@"Find Problems" action:@selector(findProblemsWithClaude:) key:@""],
         [self item:@"Fix Compiler Problems" action:@selector(fixProblemsWithClaude:) key:@""],
         [self item:@"Write Tests" action:@selector(writeTestsWithClaude:) key:@""],
         [self item:@"Improve This Code" action:@selector(improveWithClaude:) key:@""],
     ] parent:main];
+}
+
+/// The Theme and Editor Opacity submenus of View. Their items are filled in when they open.
+- (void)addThemeAndOpacityMenusTo:(NSMenu *)view {
     _themeMenu = [self submenu:@"Theme" items:@[] parent:view];
     _themeMenu.delegate = self;
     NSMenu *opacity = [self submenu:@"Editor Opacity" items:@[] parent:view];
@@ -432,13 +481,17 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
         [opacity addItem:item];
     }
     opacity.delegate = self;
+}
 
+/// Extensions: find, install and manage extensions.
+- (void)addExtensionsMenuTo:(NSMenu *)main {
     NSMenu *extensions = [self submenu:@"Extensions" items:@[
-        [self item:@"Search Extensions…" action:@selector(searchExtensions:) key:@"x" modifiers:command | shift],
+        [self item:@"Search Extensions…" action:@selector(searchExtensions:) key:@"x" modifiers:kCommand | kShift],
         [self item:@"Manage Extensions…" action:@selector(manageExtensions:) key:@""],
         [self item:@"Install by ID…" action:@selector(installExtension:) key:@""],
         [self item:@"Browse Open VSX" action:@selector(browseOpenVSX:) key:@""],
         NSMenuItem.separatorItem,
+        [self item:@"Select Color Theme…" action:@selector(selectColorTheme:) key:@""],
         [self item:@"Select File Icon Theme…" action:@selector(selectIconTheme:) key:@""],
         [self item:@"Show Extension Output…" action:@selector(showExtensionLogs:) key:@""],
         [self item:@"Restart Extensions" action:@selector(restartExtensionHost:) key:@""],
@@ -447,7 +500,10 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
     for (NSMenuItem *item in extensions.itemArray) item.target = self;
     _installedMenu = [self submenu:@"Installed" items:@[] parent:extensions];
     _installedMenu.delegate = self;
+}
 
+/// Window: the standard window commands; also tells AppKit which menu lists the windows.
+- (void)addWindowMenuTo:(NSMenu *)main {
     NSMenu *window = [self submenu:@"Window" items:@[
         [self item:@"Minimize" action:@selector(performMiniaturize:) key:@"m"],
         [self item:@"Zoom" action:@selector(performZoom:) key:@""],
@@ -455,7 +511,24 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
         [self item:@"Bring All to Front" action:@selector(arrangeInFront:) key:@""],
     ] parent:main];
     NSApp.windowsMenu = window;
+}
 
+- (NSMenu *)buildMainMenu {
+    NSMenu *main = [NSMenu new];
+    [self addAppMenuTo:main];
+    [self addFileMenuTo:main];
+    [self addEditMenuTo:main];
+    [self addFindMenuTo:main];
+    NSMenu *view = [self addViewMenuTo:main];
+    [self addGoMenuTo:main];
+    [self addRunMenuTo:main];
+    [self addTerminalMenuTo:main];
+    [self addClaudeMenuTo:main];
+    [self addThemeAndOpacityMenusTo:view];
+    [self addExtensionsMenuTo:main];
+    [self addWindowMenuTo:main];
+
+    // The text size items are handled by the app delegate, not by the front window.
     for (NSMenuItem *item in view.itemArray) {
         if (item.action == @selector(increaseFontSize:) || item.action == @selector(decreaseFontSize:) ||
             item.action == @selector(resetFontSize:)) {

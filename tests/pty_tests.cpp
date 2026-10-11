@@ -158,7 +158,7 @@ TEST(aLoginShellStartsAndRunsCommands) {
 }
 
 TEST(aFullScreenProgramDrawsCorrectly) {
-    // vim uses the alternate screen, cursor addressing, scroll regions, colours and bracketed
+    // vim uses the alternate screen, cursor addressing, scroll regions, colors and bracketed
     // paste: a good check that the emulator agrees with a real terminal program.
     if (access("/usr/bin/vim", X_OK) != 0) return;
     std::string path = "/private/tmp/glasswork-pty-vim-test.txt";

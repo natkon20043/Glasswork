@@ -188,9 +188,10 @@ class EditorManager {
                 return manager.applyEdit(edit);
             },
             async insertSnippet(snippet, location) {
-                const targets = location === undefined
-                    ? editor.selections
-                    : (Array.isArray(location) ? location : [location]).map((item) => (item instanceof Position ? new Range(item, item) : item));
+                // No location means "at the cursors"; a Position means an empty range there.
+                const asRange = (item) => (item instanceof Position ? new Range(item, item) : item);
+                const locations = Array.isArray(location) ? location : [location];
+                const targets = location === undefined ? editor.selections : locations.map(asRange);
                 const result = await manager.connection.sendRequest('editor/insertSnippet', {
                     uri: document.uri.toString(),
                     snippet: typeof snippet === 'string' ? snippet : snippet.value,

@@ -65,7 +65,7 @@ std::string percentDecode(std::string_view text) {
     return decoded;
 }
 
-/// The colour the standard 16-colour palette entry looks like, for answering colour queries.
+/// The color the standard 16-color palette entry looks like, for answering color queries.
 std::string colorReply(TermColor color) {
     char buffer[64];
     std::snprintf(buffer, sizeof buffer, "rgb:%02x%02x/%02x%02x/%02x%02x", color.red(), color.red(), color.green(), color.green(),
@@ -511,15 +511,17 @@ void Screen::printCharacter(uint32_t codePoint) {
     // Overwriting half of a wide character blanks the other half.
     Row& line = liveRow(cursorRow_);
     ensureWidth(line, columns_);
-    size_t at = static_cast<size_t>(cursorColumn_);
-    if ((line.cells[at].attributes & kWideEnd) && cursorColumn_ > 0) line.cells[at - 1] = blankCell();
-    if ((line.cells[at].attributes & kWideStart) && at + 1 < line.cells.size()) line.cells[at + 1] = blankCell();
-    line.cells[at] = cell;
+    size_t cellIndex = static_cast<size_t>(cursorColumn_);
+    if ((line.cells[cellIndex].attributes & kWideEnd) && cursorColumn_ > 0) line.cells[cellIndex - 1] = blankCell();
+    if ((line.cells[cellIndex].attributes & kWideStart) && cellIndex + 1 < line.cells.size()) {
+        line.cells[cellIndex + 1] = blankCell();
+    }
+    line.cells[cellIndex] = cell;
     if (width == 2) {
         Cell filler = pen_;
         filler.character = ' ';
         filler.attributes = kWideEnd;
-        line.cells[at + 1] = filler;
+        line.cells[cellIndex + 1] = filler;
     }
     touch(line);
 
@@ -849,7 +851,7 @@ void Screen::applyGraphicRendition() {
             case 38:
             case 48:
             case 58: {
-                // Extended colours: 38;5;n  38;2;r;g;b  and the colon forms 38:5:n  38:2::r:g:b
+                // Extended colors: 38;5;n  38;2;r;g;b  and the colon forms 38:5:n  38:2::r:g:b
                 bool colon = index + 1 < parameters_.size() && subParameter_[index + 1];
                 std::vector<int> values;
                 size_t next = index + 1;
@@ -867,7 +869,7 @@ void Screen::applyGraphicRendition() {
                     color = TermColor::indexed(static_cast<uint8_t>(std::clamp(values[1], 0, 255)));
                     valid = true;
                 } else if (!values.empty() && values[0] == 2 && values.size() >= 4) {
-                    // With a colour-space slot (38:2::r:g:b) there is one extra value.
+                    // With a color-space slot (38:2::r:g:b) there is one extra value.
                     size_t first = values.size() >= 5 ? values.size() - 3 : 1;
                     color = TermColor::rgb(static_cast<uint8_t>(std::clamp(values[first], 0, 255)),
                                            static_cast<uint8_t>(std::clamp(values[first + 1], 0, 255)),
@@ -969,49 +971,49 @@ void Screen::handleCsiFinal(uint8_t byte) {
     }
 
     switch (byte) {
-        case 'A': {
+        case 'A': {  // cursor up
             // Moving up stops at the top margin if the cursor is inside the scroll region.
             int limit = cursorRow_ >= scrollTop_ ? scrollTop_ : 0;
             moveCursor(std::max(cursorRow_ - count(0), limit), cursorColumn_);
             break;
         }
-        case 'B':
+        case 'B':  // cursor down
         case 'e': {
             int limit = cursorRow_ <= scrollBottom_ ? scrollBottom_ : rows_ - 1;
             moveCursor(std::min(cursorRow_ + count(0), limit), cursorColumn_);
             break;
         }
-        case 'C':
+        case 'C':  // cursor forward
         case 'a':
             moveCursor(cursorRow_, cursorColumn_ + count(0));
             break;
-        case 'D':
+        case 'D':  // cursor back
             moveCursor(cursorRow_, cursorColumn_ - count(0));
             break;
-        case 'E':
+        case 'E':  // start of a line further down
             moveCursor(cursorRow_ + count(0), 0);
             break;
-        case 'F':
+        case 'F':  // start of a line further up
             moveCursor(cursorRow_ - count(0), 0);
             break;
-        case 'G':
+        case 'G':  // go to a column
         case '`':
             moveCursor(cursorRow_, parameter(0, 1) - 1);
             break;
-        case 'H':
+        case 'H':  // go to a row and column
         case 'f':
             moveCursor((originMode_ ? scrollTop_ : 0) + parameter(0, 1) - 1, parameter(1, 1) - 1);
             break;
-        case 'd':
+        case 'd':  // go to a row
             moveCursor((originMode_ ? scrollTop_ : 0) + parameter(0, 1) - 1, cursorColumn_);
             break;
-        case 'I':
+        case 'I':  // tab forward
             tabForward(count(0));
             break;
-        case 'Z':
+        case 'Z':  // tab backward
             tabBackward(count(0));
             break;
-        case 'J': {
+        case 'J': {  // erase in the display: 0 below, 1 above, 2 all, 3 all including history
             int mode = parameter(0, 0);
             if (mode == 0) {
                 eraseCells(cursorRow_, cursorColumn_, columns_);
@@ -1027,7 +1029,7 @@ void Screen::handleCsiFinal(uint8_t byte) {
             pendingWrap_ = false;
             break;
         }
-        case 'K': {
+        case 'K': {  // erase in the line: 0 to the end, 1 to the start, 2 all
             int mode = parameter(0, 0);
             if (mode == 0) eraseCells(cursorRow_, cursorColumn_, columns_);
             else if (mode == 1) eraseCells(cursorRow_, 0, cursorColumn_ + 1);
@@ -1039,49 +1041,49 @@ void Screen::handleCsiFinal(uint8_t byte) {
         case 'M': deleteLines(count(0)); break;
         case '@': insertCharacters(count(0)); break;
         case 'P': deleteCharacters(count(0)); break;
-        case 'X':
+        case 'X':  // blank some characters without moving the rest
             eraseCells(cursorRow_, cursorColumn_, cursorColumn_ + count(0));
             break;
-        case 'S':
+        case 'S':  // scroll the text up
             scrollUp(count(0));
             break;
-        case 'T':
+        case 'T':  // scroll the text down
             if (parameters_.size() <= 1) scrollDown(count(0));
             break;
-        case 'b':
+        case 'b':  // repeat the last printed character
             for (int repeat = 0; repeat < std::min(count(0), 10000); ++repeat) printCharacter(lastPrinted_);
             break;
-        case 'c':
+        case 'c':  // "what are you?" (device attributes)
             if (parameter(0, 0) == 0) reply("\x1b[?62;22c");
             break;
-        case 'g': {
+        case 'g': {  // clear tab stops: 0 here, 3 all
             int mode = parameter(0, 0);
             if (mode == 0) tabStops_[static_cast<size_t>(cursorColumn_)] = false;
             else if (mode == 3) std::fill(tabStops_.begin(), tabStops_.end(), false);
             break;
         }
-        case 'h':
+        case 'h':  // switch a mode on
             setMode(true, priv);
             break;
-        case 'l':
+        case 'l':  // switch a mode off
             setMode(false, priv);
             break;
-        case 'm':
+        case 'm':  // colors and text styles (select graphic rendition)
             applyGraphicRendition();
             break;
-        case 'n':
+        case 'n':  // status report requests
             reportDeviceStatus(parameter(0, 0), priv);
             break;
-        case 'r':
+        case 'r':  // set the scrolling region
             if (!priv) setScrollRegion(parameter(0, 1) - 1, parameter(1, rows_) - 1);
             break;
-        case 's':
+        case 's':  // save the cursor
             if (parameters_.empty()) saveCursor();
             break;
-        case 'u':
+        case 'u':  // restore the cursor
             restoreCursor();
             break;
-        case 't': {
+        case 't': {  // window reports; only the text area size (18) is answered
             int kind = parameter(0, 0);
             if (kind == 18) reply("\x1b[8;" + std::to_string(rows_) + ";" + std::to_string(columns_) + "t");
             break;

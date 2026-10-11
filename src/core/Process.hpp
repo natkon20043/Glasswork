@@ -11,80 +11,81 @@
 
 namespace gw {
 
-/// Environment variable overrides, as (name, value) pairs.
+/// (name, value) pairs.
 using EnvironmentOverrides = std::vector<std::pair<std::string, std::string>>;
 
 struct ProcessOptions {
-    /// Directory the program runs in. Empty means "inherit ours".
+    /// Empty: inherit ours.
     std::string workingDirectory;
-    /// Added to (or replacing) the environment the program starts with.
+    /// Added to or replacing the program's environment.
     EnvironmentOverrides environment;
-    /// Bytes written to the program's standard input, which is then closed.
+    /// Written to standard input, which is then closed.
     std::string input;
-    /// Kill the program after this many seconds. Zero means wait forever.
+    /// Zero waits forever.
     double timeoutSeconds = 0;
-    /// Output beyond this many bytes is dropped (protects against runaway commands).
+    /// Output beyond this is dropped.
     size_t maxOutputBytes = 64 * 1024 * 1024;
 };
 
 struct ProcessResult {
-    /// False if the program could not be started at all (not found, no permission…).
+    bool succeeded() const { return started && !timedOut && exitCode == 0; }
+
+    /// False if the program couldn't start at all.
     bool started = false;
     int exitCode = -1;
     bool timedOut = false;
-    std::string output;       // standard output
-    std::string errorOutput;  // standard error
-    /// Why it could not start, when `started` is false.
+    std::string output;
+    std::string errorOutput;
+    /// Why it couldn't start, when `started` is false.
     std::string startError;
-
-    bool succeeded() const { return started && !timedOut && exitCode == 0; }
 };
 
-/// Finds a program by name. GUI apps start with a very short PATH, so besides $PATH this
-/// also looks in the usual Homebrew, MacPorts and per-user install folders.
-/// Returns an empty string if it isn't found anywhere.
+/// Also searches Homebrew, MacPorts and per-user install folders, since GUI apps get a short PATH.
+/// Empty if not found.
 std::string findExecutable(const std::string& name);
 
-/// The PATH child programs should get: ours plus the usual extra install folders.
+/// Our PATH plus the usual extra install folders.
 std::string searchPathForChildren();
 
-/// Runs `argv[0]` with the arguments and waits for it to finish, collecting its output.
-/// Blocking: call it from a background queue, never from the UI thread.
+/// Waits and collects output. Blocking: call from a background queue.
 ProcessResult runProcess(const std::vector<std::string>& argv, const ProcessOptions& options = {});
 
-/// A long-running child program with a live, two-way conversation over its pipes. Output
-/// arrives through callbacks on a background thread. Used for the Claude session, and by
-/// anything else that needs to stream.
+/// A long-running child with a live two-way conversation over its pipes. Output arrives through
+/// callbacks on a background thread.
 class ChildProcess {
 public:
+    // ---- Constructors and destructor
     ChildProcess();
     ~ChildProcess();
     ChildProcess(const ChildProcess&) = delete;
     ChildProcess& operator=(const ChildProcess&) = delete;
 
-    /// Standard output arrives in whatever chunks the pipe delivers, not line by line.
-    std::function<void(std::string_view)> onOutput;
-    std::function<void(std::string_view)> onErrorOutput;
-    /// Called once, after the program ends and all output has been delivered.
-    /// The value is the exit code, or 128 + signal number if it was killed.
-    std::function<void(int)> onExit;
-
-    /// Starts the program. Returns false and fills `error` if that fails.
+    // ---- Lifecycle
     bool start(const std::vector<std::string>& argv, const ProcessOptions& options, std::string* error = nullptr);
-
-    /// Sends bytes to the program's standard input. Safe to call from any thread.
-    bool write(std::string_view bytes);
-    /// Closes standard input, which tells many programs to finish up.
-    void closeInput();
-
-    /// Asks the program to stop (SIGTERM), and kills it if it hasn't after a moment.
+    /// SIGTERM, then a kill if it hasn't stopped after a moment.
     void terminate();
 
+    // ---- Input
+    /// Safe from any thread.
+    bool write(std::string_view bytes);
+    /// Many programs finish up when standard input closes.
+    void closeInput();
+
+    // ---- Getters
     bool isRunning() const { return running_.load(); }
 
+    // ---- Callbacks
+    /// Whatever chunks the pipe delivers, not line by line.
+    std::function<void(std::string_view)> onOutput;
+    std::function<void(std::string_view)> onErrorOutput;
+    /// Once, after the program ends and all output is delivered. Exit code, or 128 + signal.
+    std::function<void(int)> onExit;
+
 private:
+    // ---- Private functions
     void readLoop();
 
+    // ---- Private variables
     int processId_ = -1;
     int inputDescriptor_ = -1;
     int outputDescriptor_ = -1;

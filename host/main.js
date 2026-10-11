@@ -25,6 +25,7 @@ const { createApi } = require('./api');
 const { VirtualServer, ProviderRegistry } = require('./virtualServer');
 const { ActivationManager } = require('./activation');
 const { EditorManager } = require('./api/editor');
+const { ViewManager } = require('./api/views');
 const convertEdit = require('./api/lspConvert');
 
 const connection = new Connection(process.stdin, { write: writeToProtocol });
@@ -203,11 +204,14 @@ connection.onRequest('initialize', async (params) => {
         return !!(result && result.applied);
     }
     editors = new EditorManager({ connection, documents, applyEdit });
+    const views = new ViewManager({ connection, commands, log });
+    views.install(connection);
 
     const runtime = {
         connection,
         fileWatchers,
         editors,
+        views,
         documents,
         registry,
         commands,

@@ -57,13 +57,16 @@ bool functionArguments(const std::string& text, const std::string& name, std::ve
     return true;
 }
 
-double hueToChannel(double p, double q, double t) {
-    if (t < 0) t += 1;
-    if (t > 1) t -= 1;
-    if (t < 1.0 / 6) return p + (q - p) * 6 * t;
-    if (t < 1.0 / 2) return q;
-    if (t < 2.0 / 3) return p + (q - p) * (2.0 / 3 - t) * 6;
-    return p;
+/// One red, green or blue channel (0 to 1) of an HSL color. `low` and `high` are the darkest and
+/// brightest the channels get for this lightness and saturation; `position` is where the hue sits on
+/// the color wheel for this channel (0 to 1, wrapping round).
+double hueToChannel(double low, double high, double position) {
+    if (position < 0) position += 1;
+    if (position > 1) position -= 1;
+    if (position < 1.0 / 6) return low + (high - low) * 6 * position;
+    if (position < 1.0 / 2) return high;
+    if (position < 2.0 / 3) return low + (high - low) * (2.0 / 3 - position) * 6;
+    return low;
 }
 
 }  // namespace
@@ -110,12 +113,17 @@ std::optional<uint32_t> parseCssColor(const std::string& original) {
         hue /= 360;
         double saturation = std::max(0.0, std::min(1.0, values[1] / 100.0));
         double lightness = std::max(0.0, std::min(1.0, values[2] / 100.0));
-        double q = lightness < 0.5 ? lightness * (1 + saturation) : lightness + saturation - lightness * saturation;
-        double p = 2 * lightness - q;
-        int alpha = values.size() >= 4 ? static_cast<int>(std::lround((percents[3] ? values[3] / 100.0 : values[3]) * 255)) : 255;
-        return pack(static_cast<int>(std::lround(hueToChannel(p, q, hue + 1.0 / 3) * 255)),
-                    static_cast<int>(std::lround(hueToChannel(p, q, hue) * 255)),
-                    static_cast<int>(std::lround(hueToChannel(p, q, hue - 1.0 / 3) * 255)), alpha);
+        double high = lightness < 0.5 ? lightness * (1 + saturation) : lightness + saturation - lightness * saturation;
+        double low = 2 * lightness - high;
+        int alpha = 255;
+        if (values.size() >= 4) {
+            double fraction = percents[3] ? values[3] / 100.0 : values[3];
+            alpha = static_cast<int>(std::lround(fraction * 255));
+        }
+        auto channel = [&](double position) {
+            return static_cast<int>(std::lround(hueToChannel(low, high, position) * 255));
+        };
+        return pack(channel(hue + 1.0 / 3), channel(hue), channel(hue - 1.0 / 3), alpha);
     }
 
     static const std::map<std::string, uint32_t> names = {

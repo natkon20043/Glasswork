@@ -36,6 +36,11 @@ class ExtensionRecord {
         for (const language of contributes.languages || []) {
             if (language && language.id) events.add(`onLanguage:${language.id}`);
         }
+        for (const list of Object.values(contributes.views || {})) {
+            for (const view of Array.isArray(list) ? list : []) {
+                if (view && view.id) events.add(`onView:${view.id}`);
+            }
+        }
         return events;
     }
 

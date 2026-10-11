@@ -183,6 +183,8 @@ add_executable(Glasswork MACOSX_BUNDLE
     src/app/SourceControlPanel.mm
     src/app/ExtensionHostService.mm
     src/app/KeybindingService.mm
+    src/app/WebviewController.mm
+    src/app/ExtensionViews.mm
     src/app/Services.mm)
 # The app is built into a folder ending in ".noindex", which Spotlight skips, so development
 # builds never show up next to the installed Glasswork.app.
@@ -198,4 +200,4 @@ add_custom_command(TARGET Glasswork POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/host $<TARGET_BUNDLE_CONTENT_DIR:Glasswork>/Resources/ExtensionHost
     COMMAND ${CMAKE_COMMAND} -E remove_directory $<TARGET_BUNDLE_CONTENT_DIR:Glasswork>/Resources/ExtensionHost/tools)
 target_link_libraries(Glasswork PRIVATE glasswork_core
-    "-framework AppKit" "-framework CoreText" "-framework QuartzCore" "-framework CoreServices")
+    "-framework AppKit" "-framework CoreText" "-framework QuartzCore" "-framework CoreServices" "-framework WebKit" "-framework UniformTypeIdentifiers")

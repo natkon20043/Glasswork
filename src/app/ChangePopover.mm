@@ -92,7 +92,7 @@ static NSButton *toolButton(NSString *symbol, NSString *title, NSString *tip, id
     return button;
 }
 
-/// The text of the two versions, with a coloured background on every line.
+/// The text of the two versions, with a colored background on every line.
 + (void)showRelativeToRect:(NSRect)rect
                     ofView:(NSView *)view
                      title:(NSString *)title

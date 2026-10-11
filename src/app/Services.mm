@@ -37,6 +37,8 @@ NSArray<NSString *> *DefaultExtensions() {
         @"vscode.diff", @"vscode.git-base", @"vscode.ini", @"vscode.xml", @"vscode.sql", @"vscode.ruby",
         @"vscode.php", @"vscode.csharp", @"vscode.lua", @"vscode.docker", @"vscode.scss", @"vscode.less",
         @"vscode.powershell", @"vscode.dart", @"vscode.log",
+        // Not built in to VS Code, but CMake files are everywhere in C++ projects.
+        @"twxs.cmake",
     ];
 }
 
@@ -284,13 +286,21 @@ std::optional<std::string> readFile(NSURL *url) {
     std::filesystem::path folder = _extensions->directory();
     NSString *cleaned = [identifier stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     std::string id = cleaned.UTF8String;
+    NSArray<NSString *> *themesBefore = self.themeLabels;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         auto result = gw::ExtensionManager::installFromOpenVSX(id, folder);
         dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *message = @(result.message.c_str());
             if (result.ok) {
                 [self extensionsChanged];
+                // Someone who installs a color theme wants to see it, so switch to it right away.
+                NSString *newTheme = [self firstThemeNotIn:themesBefore];
+                if (newTheme != nil) {
+                    [self selectThemeNamed:newTheme];
+                    message = [message stringByAppendingFormat:@" Switched to the theme \u201c%@\u201d.", newTheme];
+                }
             }
-            completion(result.ok, @(result.message.c_str()));
+            completion(result.ok, message);
         });
     });
 }
@@ -372,6 +382,16 @@ std::optional<std::string> readFile(NSURL *url) {
         [labels addObject:@(theme.label.c_str())];
     }
     return labels;
+}
+
+/// The first installed theme whose name is not in `known`, or nil if there is none.
+- (NSString *)firstThemeNotIn:(NSArray<NSString *> *)known {
+    for (NSString *label in self.themeLabels) {
+        if (![known containsObject:label]) {
+            return label;
+        }
+    }
+    return nil;
 }
 
 - (void)applySavedTheme {

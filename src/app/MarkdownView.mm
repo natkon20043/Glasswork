@@ -90,7 +90,7 @@
 
 @end
 
-/// A code block: header with the language and buttons, then the coloured code.
+/// A code block: header with the language and buttons, then the colored code.
 @interface GWCodeBlockView : NSView
 @property (nonatomic, copy, nullable) void (^onInsert)(NSString *code);
 @property (nonatomic, readonly) NSString *code;
@@ -507,8 +507,11 @@ typedef NS_ENUM(NSInteger, GWMDItemKind) {
     return components.URL;
 }
 
-- (void)appendSpans:(const gw::markdown::Spans &)spans to:(NSMutableAttributedString *)text size:(CGFloat)size
-              color:(NSColor *)color forceBold:(BOOL)forceBold {
+- (void)appendSpans:(const gw::markdown::Spans &)spans
+                 to:(NSMutableAttributedString *)text
+               size:(CGFloat)size
+              color:(NSColor *)color
+          forceBold:(BOOL)forceBold {
     for (const gw::markdown::Span &span : spans) {
         NSString *content = @(span.text.c_str());
         if (content == nil) {

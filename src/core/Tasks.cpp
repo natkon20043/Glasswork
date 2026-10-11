@@ -113,7 +113,8 @@ std::string shellQuote(const std::string& text) {
 std::vector<Task> detectTasks(const std::filesystem::path& folder) {
     std::vector<Task> tasks;
     if (pathExists(folder / "CMakeLists.txt")) {
-        add(tasks, "Build (CMake)", "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build", Task::Kind::Build);
+        add(tasks, "Build (CMake)", "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build "
+                                    "build", Task::Kind::Build);
         add(tasks, "Build again (CMake)", "cmake --build build", Task::Kind::Build);
         add(tasks, "Test (CTest)", "ctest --test-dir build --output-on-failure", Task::Kind::Test);
     }

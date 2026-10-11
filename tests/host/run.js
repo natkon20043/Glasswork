@@ -66,6 +66,16 @@ async function main() {
             pendingServer.delete(message.id);
         }
     });
+    const viewEvents = [];
+    const webviewEvents = [];
+    connection.onNotification('view/registered', (p) => viewEvents.push(['registered', p.id, p.kind]));
+    connection.onNotification('view/changed', (p) => viewEvents.push(['changed', p.id]));
+    connection.onNotification('view/state', (p) => viewEvents.push(['state', p.id, p.title, p.message]));
+    connection.onNotification('webview/create', (p) => webviewEvents.push(['create', p.handle, p.viewType, p.title, p.column, p.options.enableScripts]));
+    connection.onNotification('webview/html', (p) => webviewEvents.push(['html', p.handle, p.html]));
+    connection.onNotification('webview/title', (p) => webviewEvents.push(['title', p.handle, p.title]));
+    connection.onNotification('webview/dispose', (p) => webviewEvents.push(['dispose', p.handle]));
+    connection.onRequest('webview/postMessage', async (p) => { webviewEvents.push(['post', p.handle, p.message]); return { delivered: true }; });
     connection.onRequest('ui/showMessage', async (p) => { seen.messages.push(p); return messageAnswer; });
     connection.onRequest('workspace/applyEdit', async () => ({ applied: true }));
 
@@ -250,7 +260,7 @@ async function main() {
         check(received.length === 1, 'one batch sent');
         const batch = received[0];
         check(batch.uri === documentUri && batch.key.startsWith('decoration-'), 'for the file, under a key');
-        check(batch.options.backgroundColor.id === 'editor.findMatchBackground', 'a theme colour keeps its id: ' + JSON.stringify(batch.options.backgroundColor));
+        check(batch.options.backgroundColor.id === 'editor.findMatchBackground', 'a theme color keeps its id: ' + JSON.stringify(batch.options.backgroundColor));
         check(batch.options.after.fontStyle === 'italic', 'type options pass through');
         check(batch.ranges.length === 2 && batch.ranges[0].range.end.character === 5, 'plain range');
         check(batch.ranges[1].renderOptions.after.contentText === ' ← fix this', 'per-range render options pass through');
@@ -276,6 +286,70 @@ async function main() {
         check(events[0] === 'created /tmp/project/src/new.fake' && events[1] === 'changed /tmp/project/src/a.fake', 'create and change: ' + events[0]);
         check(events[2] === 'deleted /tmp/project/old.fake', 'delete');
         check(events[3] === 'relative created /tmp/project/sub/x.json', 'relative pattern, creations only: ' + events[3]);
+    });
+
+    await test('tree views register and serve nodes lazily', async () => {
+        check(viewEvents.some((e) => e[0] === 'registered' && e[1] === 'sample.tree' && e[2] === 'tree'), 'registered: ' + JSON.stringify(viewEvents));
+        const top = await connection.sendRequest('tree/children', { id: 'sample.tree' });
+        check(top.nodes.length === 2 && top.nodes[0].label === 'Apple', 'top level: ' + JSON.stringify(top));
+        check(top.nodes[0].collapsible && !top.nodes[0].expanded && top.nodes[0].contextValue === 'fruit', 'collapsible with context value');
+        check(top.nodes[0].icon.theme === 'circle-filled', 'theme icon');
+        const children = await connection.sendRequest('tree/children', { id: 'sample.tree', handle: top.nodes[0].handle });
+        check(children.nodes.length === 2 && children.nodes[0].label === 'Red Apple', 'children: ' + JSON.stringify(children));
+        check(children.nodes[0].description === 'variety' && children.nodes[0].hasCommand && !children.nodes[0].collapsible, 'leaf with a command');
+        await connection.sendRequest('tree/click', { id: 'sample.tree', handle: children.nodes[1].handle });
+        const clicked = await connection.sendRequest('commands/execute', { id: 'sample.treeClicked', args: [] });
+        check(JSON.stringify(clicked) === '["Apple:Green Apple"]', 'node command ran with its arguments: ' + JSON.stringify(clicked));
+        connection.sendNotification('tree/select', { id: 'sample.tree', handles: [top.nodes[1].handle] });
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        const selected = await connection.sendRequest('commands/execute', { id: 'sample.treeSelections', args: [] });
+        check(JSON.stringify(selected) === '["Banana"]', 'selection event: ' + JSON.stringify(selected));
+        const missing = await connection.sendRequest('tree/children', { id: 'nope' });
+        check(missing.missing === true, 'unknown view answers with nothing');
+    });
+
+    await test('changing tree data tells the app, and the view can set its title and message', async () => {
+        viewEvents.length = 0;
+        await connection.sendRequest('commands/execute', { id: 'sample.treeRefresh', args: [] });
+        check(viewEvents.some((e) => e[0] === 'changed' && e[1] === 'sample.tree'), 'refresh announced');
+        const top = await connection.sendRequest('tree/children', { id: 'sample.tree' });
+        check(top.nodes.length === 1 && top.nodes[0].label === 'Cherry', 'new data served');
+        await connection.sendRequest('commands/execute', { id: 'sample.treeTitle', args: [] });
+        check(viewEvents.some((e) => e[0] === 'state' && e[2] === 'Fruit' && e[3] === 'Pick one'), 'title and message sent');
+    });
+
+    await test('webview panels carry HTML, titles and messages both ways', async () => {
+        const opened = await connection.sendRequest('commands/execute', { id: 'sample.openWebview', args: [] });
+        check(opened === 'opened', 'command ran');
+        const create = webviewEvents.find((e) => e[0] === 'create');
+        check(create && create[2] === 'sample.page' && create[3] === 'Sample Page' && create[5] === true, 'panel created: ' + JSON.stringify(create));
+        const html = webviewEvents.find((e) => e[0] === 'html');
+        check(html[2].includes('<h1>Hello page</h1>') && html[2].includes('gw-resource://local/tmp/a%20b/style.css'), 'html with a resource link: ' + html[2]);
+        check(webviewEvents.some((e) => e[0] === 'title' && e[2] === 'Renamed'), 'title change sent');
+        connection.sendNotification('webview/message', { handle: create[1], message: { hello: 'page' } });
+        await waitFor(() => webviewEvents.some((e) => e[0] === 'post'), 'echo');
+        check(JSON.stringify(webviewEvents.find((e) => e[0] === 'post')[2]) === '{"echo":{"hello":"page"}}', 'extension answered the page');
+        connection.sendNotification('webview/disposed', { handle: create[1] });
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        const received = await connection.sendRequest('commands/execute', { id: 'sample.webviewReceived', args: [] });
+        check(JSON.stringify(received) === '[{"hello":"page"},"disposed"]', 'message and disposal seen: ' + JSON.stringify(received));
+    });
+
+    await test('sidebar webview views are resolved when the app asks', async () => {
+        const resolved = await connection.sendRequest('view/resolve', { id: 'sample.webviewView' });
+        check(resolved.ok && resolved.handle === 'view:sample.webviewView' && resolved.html === '<p>side view</p>' && resolved.options.enableScripts, 'resolved: ' + JSON.stringify(resolved));
+        connection.sendNotification('webview/message', { handle: resolved.handle, message: 'hi' });
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        const received = await connection.sendRequest('commands/execute', { id: 'sample.webviewReceived', args: [] });
+        check(received.includes('view:hi'), 'view message received');
+        const none = await connection.sendRequest('view/resolve', { id: 'unknown.view' });
+        check(none.ok === false, 'unknown view');
+    });
+
+    await test('window.tabGroups lists the open files', async () => {
+        const groups = await connection.sendRequest('commands/execute', { id: 'sample.tabs', args: [] });
+        check(groups.length === 1 && Array.isArray(groups[0]), 'one group: ' + JSON.stringify(groups));
+        check(groups[0].some((label) => label.startsWith('a.fake')), 'the open file is a tab: ' + JSON.stringify(groups));
     });
 
     await test('settings changes reach extensions', async () => {

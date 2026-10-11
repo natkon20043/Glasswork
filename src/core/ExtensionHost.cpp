@@ -195,7 +195,8 @@ bool ExtensionHost::start(const Settings& settings, std::string* error) {
     std::string node = settings.nodeProgram.empty() ? findNode() : settings.nodeProgram;
     if (node.empty()) {
         if (error != nullptr) {
-            *error = "Extensions need Node.js, which wasn't found. Install it from nodejs.org or with Homebrew (brew install node).";
+            *error = "Extensions need Node.js, which wasn't found. Install it from nodejs.org or with Homebrew (brew install "
+                     "node).";
         }
         return false;
     }
@@ -205,7 +206,8 @@ bool ExtensionHost::start(const Settings& settings, std::string* error) {
     long version = versionNumber(versionCheck.output);
     if (!versionCheck.succeeded() || version < 18000000) {
         if (error != nullptr) {
-            *error = "Extensions need Node.js 18 or newer; found " + (versionCheck.output.empty() ? std::string("none that runs") : versionCheck.output);
+            std::string found = versionCheck.output.empty() ? std::string("none that runs") : versionCheck.output;
+            *error = "Extensions need Node.js 18 or newer; found " + found;
         }
         return false;
     }

@@ -106,7 +106,8 @@ static NSTextField *sectionTitle(NSString *text) {
     _startButton = [NSButton buttonWithTitle:@"Start Debugging" target:self action:@selector(startClicked:)];
     _startButton.bezelStyle = NSBezelStyleGlass;
     _startButton.translatesAutoresizingMaskIntoConstraints = NO;
-    NSTextField *hint = [NSTextField wrappingLabelWithString:@"Click the line numbers to set breakpoints. F5 builds and runs the current file (or the program you chose) under the debugger."];
+    NSTextField *hint = [NSTextField wrappingLabelWithString:@"Click the line numbers to set breakpoints. F5 builds and runs "
+                                                             @"the current file (or the program you chose) under the debugger."];
     hint.font = [NSFont systemFontOfSize:11.5];
     hint.textColor = NSColor.tertiaryLabelColor;
     hint.translatesAutoresizingMaskIntoConstraints = NO;
@@ -244,7 +245,8 @@ static NSTextField *sectionTitle(NSString *text) {
     }
     [_stackTable reloadData];
     if (state == GWDebugStateStopped && _debugger.frames.count > 0) {
-        [_stackTable selectRowIndexes:[NSIndexSet indexSetWithIndex:static_cast<NSUInteger>(_debugger.selectedFrameIndex)] byExtendingSelection:NO];
+        [_stackTable selectRowIndexes:[NSIndexSet indexSetWithIndex:static_cast<NSUInteger>(_debugger.selectedFrameIndex)]
+                 byExtendingSelection:NO];
         [self reloadVariables];
     } else {
         _scopes = @[];
@@ -406,7 +408,9 @@ static NSTextField *sectionTitle(NSString *text) {
     }
 }
 
-- (NSView *)outlineView:(NSOutlineView *)outlineView viewForTableColumn:(NSTableColumn *)tableColumn item:(GWDebugVariable *)item {
+- (NSView *)outlineView:(NSOutlineView *)outlineView
+     viewForTableColumn:(NSTableColumn *)tableColumn
+                   item:(GWDebugVariable *)item {
     BOOL isName = [tableColumn.identifier isEqualToString:@"name"];
     NSString *identifier = isName ? @"nameCell" : @"valueCell";
     NSTableCellView *cell = [outlineView makeViewWithIdentifier:identifier owner:self];

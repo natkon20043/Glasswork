@@ -2,6 +2,5 @@
 
 #import <Foundation/Foundation.h>
 
-/// With GLASSWORK_TIMING=1 in the environment, prints how long after the process started each
-/// stage of start-up happened. Does nothing otherwise.
+/// With GLASSWORK_TIMING=1, prints how long after process start each start-up stage happened; otherwise nothing.
 void GWStartupMark(NSString *label);

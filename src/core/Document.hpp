@@ -22,18 +22,15 @@ struct Selection {
     bool empty() const { return anchor == caret; }
 };
 
-/// Describes an edit so views and the highlighter can invalidate just what changed: lines
-/// from `firstLine` on were touched, and `lineDelta` lines were added (or removed if negative).
+/// Lines from `firstLine` on were touched; `lineDelta` lines were added (negative: removed).
 struct Change {
     size_t firstLine;
     long lineDelta;
-    /// The last line (as numbered after the edit) that holds changed text.
     size_t lastLine;
 };
 
-/// One edit in the form language servers expect: the range that was replaced and the text that
-/// took its place. Columns are UTF-16 code units, as in the protocol, and are measured on the
-/// text as it was just before this edit (so after the edits recorded earlier).
+/// One edit as language servers expect it. Columns are UTF-16 units, measured on the text as it
+/// was just before this edit.
 struct SyncEdit {
     size_t startLine = 0;
     size_t startUnits = 0;
@@ -42,120 +39,82 @@ struct SyncEdit {
     std::string text;
 };
 
-/// A text buffer plus everything that makes it editable: file path, selection, undo history
-/// and a dirty flag. Knows nothing about fonts or pixels.
+/// A text buffer plus file path, selection, undo history and a dirty flag. No fonts or pixels.
 class Document {
 public:
-    Document() = default;
+    // Disk reload: file on disk -> Unchanged (same text), Reloaded (text replaced), Failed (unreadable).
+    enum class ReloadResult { Unchanged, Reloaded, Failed };
 
+    struct SnippetSession {
+        /// Tab order; the last stop is the final caret. A stop with several ranges is mirrored.
+        std::vector<std::vector<Range>> stops;
+        size_t current = 0;
+        Range whole;
+    };
+
+    // ---- Constructors
+    Document() = default;
     static std::optional<Document> open(const std::filesystem::path& path, std::string* error = nullptr);
-    /// A document that exists only in memory and cannot be edited (a diff, command output…).
     static Document readOnlyText(std::string text, std::string title);
+
+    // ---- Saving and disk state
     bool save(std::string* error = nullptr);
     bool saveAs(const std::filesystem::path& path, std::string* error = nullptr);
-
-    /// The file was moved or renamed on disk; from now on this document belongs to `path`.
-    /// The text and undo history are untouched.
     void movedTo(const std::filesystem::path& path);
-
-    /// Shown instead of the file name when not empty.
-    std::string title;
-    /// Read-only documents ignore every edit.
-    bool readOnly = false;
-
-    /// True if the file on disk is not the one we last read or wrote (someone else, such as
-    /// Claude or a build step, changed it).
     bool fileChangedOnDisk() const;
-    /// Treats the file on disk as seen: it stops counting as "changed", but the text is
-    /// not touched. Used when the user chooses to keep their own version.
     void acknowledgeDiskChange() { rememberDiskState(); }
-
-    enum class ReloadResult {
-        Unchanged,  // the disk holds the text we already have
-        Reloaded,   // the text was replaced with what is on disk
-        Failed,
-    };
-    /// Brings in the file's current content. Only the lines that differ are replaced, as
-    /// one undoable edit, so the caret, scroll position and undo history stay meaningful.
-    /// The document counts as saved afterwards.
+    /// Replaces only the differing lines, as one undoable edit.
     ReloadResult reloadFromDisk(std::string* error = nullptr);
-    /// After a reload: the first line that changed and how many lines it now spans, so the
-    /// editor can highlight what someone else just edited.
-    size_t reloadedFirstLine = 0;
-    size_t reloadedLineCount = 0;
 
-    const TextBuffer& buffer() const { return buffer_; }
-    const std::optional<std::filesystem::path>& path() const { return path_; }
-    std::string displayName() const;
-    bool isDirty() const { return version_ != savedVersion_; }
-    /// Increments on every edit; lets caches (and later the language server) spot changes.
-    uint64_t version() const { return version_; }
-
-    std::string languageId;
-
-    Selection selection;
-    /// More carets and selections besides `selection` (multi-cursor editing). They follow every
-    /// edit, so a command run at one cursor keeps the others in the right place. Undo and redo
-    /// clear them.
-    std::vector<Selection> extraSelections;
-    /// Lines (from 0) with a debugger breakpoint. They move with the text when lines are added or
-    /// removed above them, and go when their own line is removed.
-    std::set<size_t> breakpointLines;
-    /// Column the caret wants when moving up/down, in the view's units (points). Kept here so
-    /// it survives across views; set to nullopt after any horizontal movement or edit.
-    std::optional<double> preferredX;
-
-    // Editing. All edits go through `replace`, which records undo and notifies listeners.
-    /// Replaces `range` with `text`; returns the position after the inserted text.
+    // ---- Editing
+    /// Every edit goes through here. Returns the position after the inserted text.
     Position replace(Range range, std::string_view text, bool coalesceTyping = false);
-    /// Types over the selection, merging runs of typing into one undo step.
     void typeText(std::string_view text);
     void deleteSelectionOr(Range fallback);
 
-    /// Edits made between beginUndoGroup() and endUndoGroup() undo (and redo) together as one
-    /// step, such as Replace All. Groups may nest.
-    void beginUndoGroup();
-    void endUndoGroup();
-
-    /// Starts or stops keeping a list of edits for takeSyncEdits(). Starting clears the list.
-    /// Used to tell a language server about small changes instead of sending the whole file.
-    void recordSyncEdits(bool on);
-    /// The edits made since the last call (or since recording began), oldest first, and clears
-    /// the list. Undo, redo and every other kind of edit are included. Returns nothing when
-    /// too much happened to be worth replaying: send the whole text then.
-    std::optional<std::vector<SyncEdit>> takeSyncEdits();
-
+    // ---- Undo and redo
     bool undo();
     bool redo();
     bool canUndo() const { return !undoStack_.empty(); }
     bool canRedo() const { return !redoStack_.empty(); }
+    /// Groups nest; everything between begin and end undoes as one step.
+    void beginUndoGroup();
+    void endUndoGroup();
 
-    /// The tab stops of the snippet being filled in, if any. See startSnippet().
-    struct SnippetSession {
-        /// The stops still ahead and behind, in the order Tab visits them; the last one is the
-        /// final caret position. A stop with several ranges is mirrored: typing in one types in all.
-        std::vector<std::vector<Range>> stops;
-        /// The stop the caret is on now.
-        size_t current = 0;
-        /// Everything the snippet inserted; Tab only jumps while the caret is inside it.
-        Range whole;
-    };
+    // ---- Language server sync
+    void recordSyncEdits(bool on);
+    /// Edits since the last call, oldest first. Empty optional: too much changed, send the whole text.
+    std::optional<std::vector<SyncEdit>> takeSyncEdits();
 
+    // ---- Snippets
     bool snippetActive() const { return !snippet_.stops.empty(); }
-
-    /// Begins filling in a snippet that was just inserted with its first character at `start`.
-    /// Selects the first stop (with extra cursors on its mirrors). A snippet with nothing but a
-    /// final stop just puts the caret there and starts no session.
+    /// `start` is where the snippet's first character was inserted.
     void startSnippet(Position start, const ParsedSnippet& snippet);
-
-    /// Moves to the next (direction > 0) or previous stop. Returns false, and ends the session,
-    /// when there is nothing to jump to, for example the caret has left the snippet.
-    /// Landing on the final stop ends the session too.
+    /// Returns false (and ends the session) when there is no stop to jump to.
     bool jumpSnippetStop(int direction);
-
     void endSnippet();
 
-    /// Called after every change.
+    // ---- Getters
+    const TextBuffer& buffer() const { return buffer_; }
+    const std::optional<std::filesystem::path>& path() const { return path_; }
+    std::string displayName() const;
+    bool isDirty() const { return version_ != savedVersion_; }
+    uint64_t version() const { return version_; }
+
+    // ---- Variables
+    std::string title;
+    bool readOnly = false;
+    std::string languageId;
+    Selection selection;
+    /// Multi-cursor carets; they follow every edit. Undo and redo clear them.
+    std::vector<Selection> extraSelections;
+    /// Zero-based lines with a breakpoint; they move with the text.
+    std::set<size_t> breakpointLines;
+    /// Wanted caret column when moving up/down, in view points. Reset by horizontal moves and edits.
+    std::optional<double> preferredX;
+    /// First changed line and line count after a reload.
+    size_t reloadedFirstLine = 0;
+    size_t reloadedLineCount = 0;
     std::function<void(const Change&)> onChange;
 
 private:
@@ -171,21 +130,19 @@ private:
         uint64_t group = 0;
     };
 
+    // ---- Private functions
     Position apply(Position at, const std::string& removed, const std::string& inserted);
     void recordSyncEdit(Position at, Position removedEnd, const std::string& inserted);
     void notify(size_t firstLine, long lineDelta, size_t lastLine);
+    void rememberDiskState();
+    void selectSnippetStop(size_t index);
+    void followEditInSnippet(Position at, Position removedEnd, Position end);
 
+    // ---- Private variables
     bool recordingSyncEdits_ = false;
     bool syncEditsOverflowed_ = false;
     std::vector<SyncEdit> syncEdits_;
     size_t syncEditBytes_ = 0;
-
-    /// Remembers what the file looked like when we last read or wrote it.
-    void rememberDiskState();
-
-    void selectSnippetStop(size_t index);
-    void followEditInSnippet(Position at, Position removedEnd, Position end);
-
     SnippetSession snippet_;
     TextBuffer buffer_;
     std::optional<std::filesystem::path> path_;
@@ -200,11 +157,9 @@ private:
     uint64_t nextGroup_ = 1;
 };
 
-/// Position just past `text` if it were inserted at `start`.
 Position endOfInsertion(Position start, std::string_view text);
 
-/// Where a position ends up after the text between `at` and `removedEnd` was replaced by text
-/// that ends at `end`: earlier positions stay, later ones move with the text.
+/// Earlier positions stay; later ones move with the text that replaced `at`..`removedEnd` and now ends at `end`.
 Position positionAfterEdit(Position p, Position at, Position removedEnd, Position end);
 
 }  // namespace gw

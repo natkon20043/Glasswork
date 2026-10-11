@@ -270,7 +270,7 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
     _cellHeight = ceil((ascent + descent + leading) * 1.12);
     _baseline = round((_cellHeight - (ascent + descent)) / 2 + ascent);
 
-    // Colours: the theme's terminal colours, else a familiar palette.
+    // Colors: the theme's terminal colors, else a familiar palette.
     static const uint8_t fallback[16][3] = {
         {0x00, 0x00, 0x00}, {0xCD, 0x31, 0x31}, {0x0D, 0xBC, 0x79}, {0xE5, 0xE5, 0x10},
         {0x24, 0x72, 0xC8}, {0xBC, 0x3F, 0xBC}, {0x11, 0xA8, 0xCD}, {0xE5, 0xE5, 0xE5},
@@ -283,10 +283,11 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
     for (int index = 0; index < 16; ++index) {
         NSColor *fallbackColor = [NSColor colorWithSRGBRed:fallback[index][0] / 255.0 green:fallback[index][1] / 255.0
                                                       blue:fallback[index][2] / 255.0 alpha:1];
-        NSColor *color = [services color:[@"terminal.ansi" stringByAppendingString:names[static_cast<NSUInteger>(index)]] fallback:fallbackColor];
+        NSColor *color = [services color:[@"terminal.ansi" stringByAppendingString:names[static_cast<NSUInteger>(index)]]
+                                fallback:fallbackColor];
         _palette[index] = makeColor(color);
     }
-    // 6x6x6 colour cube, then 24 greys.
+    // 6x6x6 color cube, then 24 greys.
     for (int index = 16; index < 232; ++index) {
         int value = index - 16;
         auto level = [](int step) -> uint8_t { return step == 0 ? 0 : static_cast<uint8_t>(55 + step * 40); };
@@ -296,8 +297,10 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
         uint8_t grey = static_cast<uint8_t>(8 + (index - 232) * 10);
         _palette[index] = makeRGB(grey, grey, grey);
     }
-    NSColor *foreground = [services color:@"terminal.foreground" fallback:[services color:@"editor.foreground" fallback:NSColor.labelColor]];
-    NSColor *background = [services color:@"terminal.background" fallback:[services color:@"editor.background" fallback:NSColor.blackColor]];
+    NSColor *foreground = [services color:@"terminal.foreground"
+                                 fallback:[services color:@"editor.foreground" fallback:NSColor.labelColor]];
+    NSColor *background = [services color:@"terminal.background"
+                                 fallback:[services color:@"editor.background" fallback:NSColor.blackColor]];
     _foreground = makeColor(foreground);
     _background = makeColor(background);
     _cursorColor = makeColor([services color:@"terminalCursor.foreground" fallback:NSColor.controlAccentColor]);
@@ -337,7 +340,7 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
     session.onChange = ^{
         [weakSelf sessionChanged];
     };
-    [self reloadAppearance];  // also gives the screen its default colours and fits it
+    [self reloadAppearance];  // also gives the screen its default colors and fits it
     self.needsDisplay = YES;
 }
 
@@ -392,12 +395,15 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
     int columns = static_cast<int>(floor((NSWidth(self.bounds) - kPadding * 2) / _cellWidth));
     int rows = static_cast<int>(floor((NSHeight(self.bounds) - kPadding) / _cellHeight));
     if (columns >= 2 && rows >= 1) {
-        [_session resizeToColumns:columns rows:rows pixelWidth:static_cast<int>(NSWidth(self.bounds)) pixelHeight:static_cast<int>(NSHeight(self.bounds))];
+        [_session resizeToColumns:columns
+                             rows:rows
+                       pixelWidth:static_cast<int>(NSWidth(self.bounds))
+                      pixelHeight:static_cast<int>(NSHeight(self.bounds))];
     }
 }
 
 // ---------------------------------------------------------------------------
-// MARK: Colours
+// MARK: Colors
 
 - (CGColorRef)colorForTerm:(TermColor)color isForeground:(BOOL)isForeground bold:(BOOL)bold {
     if (color.isIndexed()) {
@@ -406,7 +412,7 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
         return _palette[index];
     }
     if (color.isRgb()) {
-        // A one-off colour; cached by value in a small map so it lives long enough to draw.
+        // A one-off color; cached by value in a small map so it lives long enough to draw.
         static NSMutableDictionary<NSNumber *, id> *custom;
         if (custom == nil) custom = [NSMutableDictionary dictionary];
         if (custom.count > 2000) [custom removeAllObjects];
@@ -474,7 +480,7 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
         [runText setString:@""];
     };
 
-    // Background spans merge neighbouring cells of the same colour.
+    // Background spans merge neighbouring cells of the same color.
     int backgroundStart = -1;
     CGColorRef backgroundColor = nullptr;
     auto finishBackground = [&](int endColumn) {
@@ -671,8 +677,8 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
             CGContextFillRect(context, CGRectMake(fromX, midY - 2, toX - fromX, lightWidth));
             CGContextFillRect(context, CGRectMake(fromX, midY + 1, toX - fromX, lightWidth));
         } else {
-            CGFloat t = thickness(kind);
-            CGContextFillRect(context, CGRectMake(fromX, midY - floor(t / 2), toX - fromX, t));
+            CGFloat lineThickness = thickness(kind);
+            CGContextFillRect(context, CGRectMake(fromX, midY - floor(lineThickness / 2), toX - fromX, lineThickness));
         }
     };
     auto vertical = [&](CGFloat fromY, CGFloat toY, uint8_t kind) {
@@ -680,8 +686,8 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
             CGContextFillRect(context, CGRectMake(midX - 2, fromY, lightWidth, toY - fromY));
             CGContextFillRect(context, CGRectMake(midX + 1, fromY, lightWidth, toY - fromY));
         } else {
-            CGFloat t = thickness(kind);
-            CGContextFillRect(context, CGRectMake(midX - floor(t / 2), fromY, t, toY - fromY));
+            CGFloat lineThickness = thickness(kind);
+            CGContextFillRect(context, CGRectMake(midX - floor(lineThickness / 2), fromY, lineThickness, toY - fromY));
         }
     };
     if (lines.left) horizontal(x, midX + overlap, lines.left);
@@ -763,7 +769,7 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
                 CGContextSetAlpha(context, 0.9);
                 CGContextFillRect(context, rect);
                 CGContextSetAlpha(context, 1);
-                // The character under the cursor in the background colour, so it stays readable.
+                // The character under the cursor in the background color, so it stays readable.
                 Cell under = screen.cellAt(cursorLine, cursorColumn);
                 if (under.character > ' ' && !isDrawnAsShape(under.character)) {
                     uint32_t character = under.character;

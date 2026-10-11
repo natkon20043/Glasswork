@@ -1,6 +1,7 @@
 #include "IconTheme.hpp"
 
 #include "Jsonc.hpp"
+#include "JsonText.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -25,10 +26,6 @@ std::map<std::string, std::string> readTable(const json& object, const char* nam
         }
     }
     return table;
-}
-
-std::string readString(const json& object, const char* name) {
-    return object.contains(name) && object[name].is_string() ? object[name].get<std::string>() : std::string();
 }
 
 }  // namespace
@@ -62,11 +59,11 @@ std::optional<IconTheme> IconTheme::load(const std::filesystem::path& file) {
         tables.folderNamesExpanded = readTable(source, "folderNamesExpanded");
         tables.rootFolderNames = readTable(source, "rootFolderNames");
         tables.rootFolderNamesExpanded = readTable(source, "rootFolderNamesExpanded");
-        tables.file = readString(source, "file");
-        tables.folder = readString(source, "folder");
-        tables.folderExpanded = readString(source, "folderExpanded");
-        tables.rootFolder = readString(source, "rootFolder");
-        tables.rootFolderExpanded = readString(source, "rootFolderExpanded");
+        tables.file = stringOr(source, "file");
+        tables.folder = stringOr(source, "folder");
+        tables.folderExpanded = stringOr(source, "folderExpanded");
+        tables.rootFolder = stringOr(source, "rootFolder");
+        tables.rootFolderExpanded = stringOr(source, "rootFolderExpanded");
     };
     fillTables(theme, result.dark_);
     if (theme.contains("light") && theme["light"].is_object()) {

@@ -232,8 +232,10 @@ std::string serializeSettings(const EditorSettings& settings) {
         << "\n"
         << "  // Look\n"
         << "  \"workbench.colorTheme\": " << json(settings.theme).dump() << ",  // View > Theme lists them\n"
-        << "  \"extensions.disabled\": " << json(settings.disabledExtensions).dump() << ",  // extensions switched off (Extensions > Manage Extensions)\n"
-        << "  \"workbench.iconTheme\": " << json(settings.iconTheme).dump() << ",  // a file icon theme from an extension; empty for the built-in icons\n"
+        << "  \"extensions.disabled\": " << json(settings.disabledExtensions).dump() << ",  // extensions switched off "
+                                                                                        "(Extensions > Manage Extensions)\n"
+        << "  \"workbench.iconTheme\": " << json(settings.iconTheme).dump() << ",  // a file icon theme from an extension; "
+                                                                               "empty for the built-in icons\n"
         << "  \"editor.opacity\": " << settings.editorOpacity << ",  // 0.15 (see-through) to 1 (solid)\n"
         << "  \"window.glassTint\": " << settings.glassTint << ",  // 0 = clear glass, 1 = strongest tint\n"
         << "  \"window.frostedBackdrop\": " << boolean(settings.frostedBackdrop)
@@ -251,23 +253,23 @@ std::string serializeSettings(const EditorSettings& settings) {
         << "  \"editor.stickyScroll\": " << boolean(settings.stickyScroll)
         << ",  // pin the current function or class header at the top while you scroll\n"
         << "  \"editor.semanticHighlighting\": " << boolean(settings.semanticHighlighting)
-        << ",  // colour types and functions by what the language server knows they are\n"
+        << ",  // color types and functions by what the language server knows they are\n"
         << "  \"lsp.enabled\": " << boolean(settings.languageServers)
         << ",  // language servers: problems, completion, hover, rename\n"
         << "  \"editor.highlightOccurrences\": " << boolean(settings.highlightOccurrences)
         << ",  // highlight the word under the caret everywhere\n"
         << "\n"
-        << "  // Colours\n"
-        << "  // Every variable gets its own colour, chosen from its name.\n"
+        << "  // Colors\n"
+        << "  // Every variable gets its own color, chosen from its name.\n"
         << "  \"editor.rainbowVariables\": " << boolean(settings.colors.rainbowVariables) << ",\n"
         << "\n"
-        << "  // Colour any kind of code. \"scope\" is a TextMate selector such as \"keyword.control\",\n"
-        << "  // \"variable.parameter\" or \"meta.function string\". Right-click > Inspect Colours shows the\n"
+        << "  // Color any kind of code. \"scope\" is a TextMate selector such as \"keyword.control\",\n"
+        << "  // \"variable.parameter\" or \"meta.function string\". Right-click > Inspect Colors shows the\n"
         << "  // scopes under the caret. Each entry can set \"foreground\", \"background\" (a highlight)\n"
         << "  // and \"fontStyle\" (\"bold\", \"italic\", \"underline\", combined with spaces).\n"
         << "  \"editor.tokenColors\": " << indented(tokenColors, 2) << ",\n"
         << "\n"
-        << "  // Colour specific names wherever they appear in code, e.g.\n"
+        << "  // Color specific names wherever they appear in code, e.g.\n"
         << "  // \"total\": { \"foreground\": \"#FFD700\", \"background\": \"#FFD70033\" }\n"
         << "  \"editor.identifierColors\": " << indented(identifierColors, 2) << "\n"
         << "}\n";

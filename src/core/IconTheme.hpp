@@ -7,24 +7,22 @@
 
 namespace gw {
 
-/// A VS Code file icon theme: which SVG to show for a file or folder. Themes name icons by
-/// definition ids; `iconDefinitions` says which file each id is, and tables map file names,
-/// extensions, language ids and folder names to those ids. A `light` section overrides the tables
-/// for light colour themes.
+/// A VS Code file icon theme: maps file names, extensions, language ids and folder names to SVGs
+/// through definition ids. A `light` section overrides the tables for light color themes.
 class IconTheme {
 public:
-    /// Reads a theme's JSON file. Icon paths in it are relative to that file.
+    // ---- Constructors
+    /// Icon paths in the JSON are relative to `file`.
     static std::optional<IconTheme> load(const std::filesystem::path& file);
 
-    /// The SVG for a file: its exact name, then its extension (the longest that matches: for
-    /// "a.test.js", "test.js" before "js"), then its language, then the theme's default file icon.
-    /// Empty when the theme has none for it.
+    // ---- Lookup
+    /// Tries exact name, then the longest matching extension ("test.js" before "js"), then language,
+    /// then the default file icon. Empty if none.
     std::filesystem::path iconForFile(const std::string& filename, const std::string& languageId, bool lightTheme) const;
-    /// The SVG for a folder by name (when open or closed), or the theme's folder icon; `root` is
-    /// the project folder itself.
+    /// `root` is the project folder itself.
     std::filesystem::path iconForFolder(const std::string& name, bool expanded, bool root, bool lightTheme) const;
 
-    /// Whether the theme asks for the explorer's disclosure arrows to be hidden.
+    // ---- Getters
     bool hidesExplorerArrows() const { return hidesExplorerArrows_; }
 
 private:
@@ -43,9 +41,11 @@ private:
         std::string rootFolderExpanded;
     };
 
+    // ---- Private functions
     std::filesystem::path pathForDefinition(const std::string& id) const;
     const Tables& tablesFor(bool lightTheme) const;
 
+    // ---- Private variables
     std::map<std::string, std::filesystem::path> definitions_;
     Tables dark_;
     Tables light_;

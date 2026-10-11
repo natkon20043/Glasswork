@@ -450,17 +450,22 @@ std::vector<const ToolCall*> Transcript::pendingPermissions() const {
     return pending;
 }
 
+namespace {
+
+/// Records in `change` that the message at `index` was added or changed.
+void markChanged(TranscriptChange& change, size_t index, bool added) {
+    change.changed = true;
+    change.addedMessage = added;
+    change.messageIndex = index;
+}
+
+}  // namespace
+
 TranscriptChange Transcript::apply(const Event& event) {
     TranscriptChange change;
     if (event.isSubAgent) {
         return change;  // the sub-agent's own chatter is summarised by its tool call
     }
-
-    auto touched = [&change](size_t index, bool added) {
-        change.changed = true;
-        change.addedMessage = added;
-        change.messageIndex = index;
-    };
 
     switch (event.kind) {
         case EventKind::SessionInit:
@@ -473,286 +478,58 @@ TranscriptChange Transcript::apply(const Event& event) {
             busy_ = true;
             break;
 
-        case EventKind::MessageStart: {
-            size_t index = startAssistantMessage(event.messageId);
-            touched(index, true);
+        case EventKind::MessageStart:
+            markChanged(change, startAssistantMessage(event.messageId), true);
             break;
-        }
 
-        case EventKind::BlockStart: {
-            if (streamingMessage_ < 0) {
-                startAssistantMessage(std::string());
-                change.addedMessage = true;
-            }
-            size_t index = static_cast<size_t>(streamingMessage_);
-            Block block;
-            block.streamIndex = event.blockIndex;
-            if (event.blockType == "thinking") {
-                block.kind = Block::Kind::Thinking;
-            } else if (event.blockType == "tool_use") {
-                block.kind = Block::Kind::Tool;
-                block.tool.id = event.toolId;
-                block.tool.name = event.toolName;
-            } else {
-                block.kind = Block::Kind::Text;
-            }
-            messages_[index].blocks.push_back(std::move(block));
-            touched(index, change.addedMessage);
+        case EventKind::BlockStart:
+            applyBlockStart(event, change);
             break;
-        }
 
         case EventKind::TextDelta:
-        case EventKind::ThinkingDelta: {
-            if (streamingMessage_ < 0) {
-                break;
-            }
-            size_t index = static_cast<size_t>(streamingMessage_);
-            Block* block = findStreamBlock(index, event.blockIndex);
-            if (block != nullptr) {
-                block->text += event.text;
-                touched(index, false);
-            }
+        case EventKind::ThinkingDelta:
+            applyTextDelta(event, change);
             break;
-        }
 
-        case EventKind::ToolInputDelta: {
-            if (streamingMessage_ < 0) {
-                break;
-            }
-            size_t index = static_cast<size_t>(streamingMessage_);
-            Block* block = findStreamBlock(index, event.blockIndex);
-            if (block != nullptr && block->kind == Block::Kind::Tool) {
-                block->tool.inputText += event.partialJson;
-                touched(index, false);
-            }
+        case EventKind::ToolInputDelta:
+            applyToolInputDelta(event, change);
             break;
-        }
 
-        case EventKind::BlockStop: {
-            if (streamingMessage_ < 0) {
-                break;
-            }
-            size_t index = static_cast<size_t>(streamingMessage_);
-            Block* block = findStreamBlock(index, event.blockIndex);
-            if (block != nullptr) {
-                block->finished = true;
-                if (block->kind == Block::Kind::Tool && !block->tool.inputComplete) {
-                    Json parsed = Json::parse(block->tool.inputText, nullptr, false);
-                    if (parsed.is_object()) {
-                        block->tool.input = parsed;
-                        block->tool.inputComplete = true;
-                    }
-                }
-                touched(index, false);
-            }
+        case EventKind::BlockStop:
+            applyBlockStop(event, change);
             break;
-        }
 
-        case EventKind::MessageStop: {
+        case EventKind::MessageStop:
             if (streamingMessage_ >= 0) {
                 size_t index = static_cast<size_t>(streamingMessage_);
                 messages_[index].streaming = false;
                 streamingMessage_ = -1;
-                touched(index, false);
+                markChanged(change, index, false);
             }
             break;
-        }
 
-        case EventKind::AssistantMessage: {
-            const Json& message = event.raw.contains("message") ? event.raw["message"] : Json::object();
-            if (!message.contains("content") || !message["content"].is_array()) {
-                break;
-            }
-
-            Message* target = messageWithId(event.messageId);
-            size_t index = 0;
-            bool added = false;
-            if (target == nullptr) {
-                index = startAssistantMessage(event.messageId);
-                added = true;
-                messages_[index].streaming = false;
-                streamingMessage_ = -1;
-            } else {
-                index = static_cast<size_t>(target - messages_.data());
-            }
-
-            for (const Json& part : message["content"]) {
-                std::string partType = stringField(part, "type");
-                Message& current = messages_[index];
-
-                if (partType == "text" || partType == "thinking") {
-                    Block::Kind kind = partType == "text" ? Block::Kind::Text : Block::Kind::Thinking;
-                    std::string text = stringField(part, partType == "text" ? "text" : "thinking");
-
-                    Block* open = nullptr;
-                    for (size_t position = current.blocks.size(); position-- > 0;) {
-                        Block& candidate = current.blocks[position];
-                        if (candidate.kind == kind && !candidate.finished) {
-                            open = &candidate;
-                            break;
-                        }
-                    }
-                    if (open != nullptr) {
-                        if (!text.empty()) {
-                            open->text = text;
-                        }
-                    } else if (!text.empty() || kind == Block::Kind::Thinking) {
-                        Block block;
-                        block.kind = kind;
-                        block.text = text;
-                        block.finished = true;
-                        current.blocks.push_back(std::move(block));
-                    }
-                } else if (partType == "tool_use") {
-                    std::string toolId = stringField(part, "id");
-                    ToolCall* existing = nullptr;
-                    for (Block& candidate : current.blocks) {
-                        if (candidate.kind == Block::Kind::Tool && candidate.tool.id == toolId) {
-                            existing = &candidate.tool;
-                        }
-                    }
-                    if (existing == nullptr) {
-                        Block block;
-                        block.kind = Block::Kind::Tool;
-                        block.tool.id = toolId;
-                        block.tool.name = stringField(part, "name");
-                        block.finished = true;
-                        current.blocks.push_back(std::move(block));
-                        existing = &current.blocks.back().tool;
-                    }
-                    if (part.contains("input")) {
-                        existing->input = part["input"];
-                        existing->inputText = part["input"].dump();
-                        existing->inputComplete = true;
-                    }
-                }
-            }
-            touched(index, added);
+        case EventKind::AssistantMessage:
+            applyAssistantMessage(event, change);
             break;
-        }
 
-        case EventKind::UserMessage: {
-            const Json& message = event.raw.contains("message") ? event.raw["message"] : Json::object();
-            if (!message.contains("content")) {
-                break;
-            }
-            const Json& content = message["content"];
-
-            // Plain text from the user (only present when replaying a saved session; while
-            // chatting, the UI already added what the user typed).
-            if (replayUserText_) {
-                std::string text;
-                if (content.is_string()) {
-                    text = content.get<std::string>();
-                } else if (content.is_array()) {
-                    for (const Json& part : content) {
-                        if (stringField(part, "type") == "text") {
-                            text += stringField(part, "text");
-                        }
-                    }
-                }
-                bool internalNote = !text.empty() && text[0] == '<';
-                if (!text.empty() && !internalNote) {
-                    TranscriptChange added = addUserMessage(text);
-                    touched(added.messageIndex, true);
-                }
-            }
-
-            if (content.is_array()) {
-                for (const Json& part : content) {
-                    if (stringField(part, "type") != "tool_result") {
-                        continue;
-                    }
-                    size_t messageIndex = 0;
-                    ToolCall* tool = findTool(stringField(part, "tool_use_id"), &messageIndex);
-                    if (tool == nullptr) {
-                        continue;
-                    }
-                    tool->hasResult = true;
-                    tool->resultIsError = booleanField(part, "is_error");
-                    tool->resultText = part.contains("content") ? textOfContent(part["content"]) : std::string();
-                    if (event.raw.contains("tool_use_result")) {
-                        tool->resultDetail = event.raw["tool_use_result"];
-                    } else if (event.raw.contains("toolUseResult")) {
-                        tool->resultDetail = event.raw["toolUseResult"];
-                    }
-                    if (tool->approval == Approval::Pending) {
-                        tool->approval = tool->resultIsError ? Approval::Denied : Approval::Allowed;
-                    }
-                    touched(messageIndex, false);
-                }
-            }
+        case EventKind::UserMessage:
+            applyUserMessage(event, change);
             break;
-        }
 
-        case EventKind::PermissionRequest: {
-            size_t messageIndex = 0;
-            ToolCall* tool = findTool(event.toolId, &messageIndex);
-            if (tool == nullptr) {
-                // The request came before we saw the tool call itself: show it anyway.
-                size_t index = startAssistantMessage(std::string());
-                messages_[index].streaming = false;
-                streamingMessage_ = -1;
-                Block block;
-                block.kind = Block::Kind::Tool;
-                block.tool.id = event.toolId;
-                block.tool.name = event.toolName;
-                block.tool.input = event.toolInput;
-                block.tool.inputText = event.toolInput.dump();
-                block.tool.inputComplete = true;
-                block.finished = true;
-                messages_[index].blocks.push_back(std::move(block));
-                tool = &messages_[index].blocks.back().tool;
-                messageIndex = index;
-                change.addedMessage = true;
-            }
-            tool->approval = Approval::Pending;
-            tool->permissionRequestId = event.requestId;
-            if (!event.toolInput.is_null()) {
-                tool->input = event.toolInput;
-                tool->inputComplete = true;
-            }
-            touched(messageIndex, change.addedMessage);
+        case EventKind::PermissionRequest:
+            applyPermissionRequest(event, change);
             break;
-        }
 
-        case EventKind::TurnResult: {
-            busy_ = false;
-            lastTurn_.isError = event.isError;
-            lastTurn_.costUsd = event.costUsd;
-            lastTurn_.durationMilliseconds = event.durationMilliseconds;
-            lastTurn_.outputTokens = event.outputTokens;
-            lastTurn_.stopReason = event.stopReason;
-            lastTurn_.resultText = event.text;
-            if (!event.sessionId.empty()) {
-                sessionId_ = event.sessionId;
-            }
-            // Anything still waiting for an answer was cut short by the end of the turn.
-            for (Message& message : messages_) {
-                for (Block& block : message.blocks) {
-                    if (block.kind == Block::Kind::Tool && block.tool.approval == Approval::Pending) {
-                        block.tool.approval = Approval::Denied;
-                    }
-                }
-                message.streaming = false;
-            }
-            streamingMessage_ = -1;
-            if (event.isError && !event.text.empty()) {
-                TranscriptChange added = addNotice(event.text, true);
-                touched(added.messageIndex, true);
-            }
-            change.changed = true;
-            change.turnFinished = true;
+        case EventKind::TurnResult:
+            applyTurnResult(event, change);
             break;
-        }
 
-        case EventKind::Notice: {
+        case EventKind::Notice:
             if (!event.text.empty()) {
                 TranscriptChange added = addNotice(event.text, event.isError);
-                touched(added.messageIndex, true);
+                markChanged(change, added.messageIndex, true);
             }
             break;
-        }
 
         case EventKind::RateLimit:
         case EventKind::ControlResponse:
@@ -760,6 +537,283 @@ TranscriptChange Transcript::apply(const Event& event) {
             break;
     }
     return change;
+}
+
+/// A new piece of the streaming reply begins: some text, some thinking or a tool call.
+void Transcript::applyBlockStart(const Event& event, TranscriptChange& change) {
+    if (streamingMessage_ < 0) {
+        startAssistantMessage(std::string());
+        change.addedMessage = true;
+    }
+    size_t index = static_cast<size_t>(streamingMessage_);
+    Block block;
+    block.streamIndex = event.blockIndex;
+    if (event.blockType == "thinking") {
+        block.kind = Block::Kind::Thinking;
+    } else if (event.blockType == "tool_use") {
+        block.kind = Block::Kind::Tool;
+        block.tool.id = event.toolId;
+        block.tool.name = event.toolName;
+    } else {
+        block.kind = Block::Kind::Text;
+    }
+    messages_[index].blocks.push_back(std::move(block));
+    markChanged(change, index, change.addedMessage);
+}
+
+/// More words arrived for a text or thinking block of the streaming reply.
+void Transcript::applyTextDelta(const Event& event, TranscriptChange& change) {
+    if (streamingMessage_ < 0) {
+        return;
+    }
+    size_t index = static_cast<size_t>(streamingMessage_);
+    Block* block = findStreamBlock(index, event.blockIndex);
+    if (block != nullptr) {
+        block->text += event.text;
+        markChanged(change, index, false);
+    }
+}
+
+/// More of a tool call's input (JSON, sent in pieces) arrived.
+void Transcript::applyToolInputDelta(const Event& event, TranscriptChange& change) {
+    if (streamingMessage_ < 0) {
+        return;
+    }
+    size_t index = static_cast<size_t>(streamingMessage_);
+    Block* block = findStreamBlock(index, event.blockIndex);
+    if (block != nullptr && block->kind == Block::Kind::Tool) {
+        block->tool.inputText += event.partialJson;
+        markChanged(change, index, false);
+    }
+}
+
+/// A piece of the streaming reply is complete. For a tool call, its input JSON is now whole.
+void Transcript::applyBlockStop(const Event& event, TranscriptChange& change) {
+    if (streamingMessage_ < 0) {
+        return;
+    }
+    size_t index = static_cast<size_t>(streamingMessage_);
+    Block* block = findStreamBlock(index, event.blockIndex);
+    if (block == nullptr) {
+        return;
+    }
+    block->finished = true;
+    if (block->kind == Block::Kind::Tool && !block->tool.inputComplete) {
+        Json parsed = Json::parse(block->tool.inputText, nullptr, false);
+        if (parsed.is_object()) {
+            block->tool.input = parsed;
+            block->tool.inputComplete = true;
+        }
+    }
+    markChanged(change, index, false);
+}
+
+/// The complete assistant message. While streaming we already have most of it; when replaying a
+/// saved session this is the only place the message appears.
+void Transcript::applyAssistantMessage(const Event& event, TranscriptChange& change) {
+    const Json& message = event.raw.contains("message") ? event.raw["message"] : Json::object();
+    if (!message.contains("content") || !message["content"].is_array()) {
+        return;
+    }
+
+    Message* existingMessage = messageWithId(event.messageId);
+    size_t index = 0;
+    bool added = false;
+    if (existingMessage == nullptr) {
+        index = startAssistantMessage(event.messageId);
+        added = true;
+        messages_[index].streaming = false;
+        streamingMessage_ = -1;
+    } else {
+        index = static_cast<size_t>(existingMessage - messages_.data());
+    }
+
+    for (const Json& part : message["content"]) {
+        std::string partType = stringField(part, "type");
+        Message& current = messages_[index];
+        if (partType == "text" || partType == "thinking") {
+            mergeTextPart(current, part, partType);
+        } else if (partType == "tool_use") {
+            mergeToolUsePart(current, part);
+        }
+    }
+    markChanged(change, index, added);
+}
+
+/// Puts a finished text or thinking part into the message, filling the block that was streaming
+/// in if there is one, or adding a new block.
+void Transcript::mergeTextPart(Message& message, const Json& part, const std::string& partType) {
+    Block::Kind kind = partType == "text" ? Block::Kind::Text : Block::Kind::Thinking;
+    std::string text = stringField(part, partType == "text" ? "text" : "thinking");
+
+    // The most recent block of this kind that hasn't been closed.
+    Block* open = nullptr;
+    for (size_t position = message.blocks.size(); position-- > 0;) {
+        Block& candidate = message.blocks[position];
+        if (candidate.kind == kind && !candidate.finished) {
+            open = &candidate;
+            break;
+        }
+    }
+    if (open != nullptr) {
+        if (!text.empty()) {
+            open->text = text;
+        }
+    } else if (!text.empty() || kind == Block::Kind::Thinking) {
+        Block block;
+        block.kind = kind;
+        block.text = text;
+        block.finished = true;
+        message.blocks.push_back(std::move(block));
+    }
+}
+
+/// Puts a finished tool call into the message, completing the one that was streaming in if any.
+void Transcript::mergeToolUsePart(Message& message, const Json& part) {
+    std::string toolId = stringField(part, "id");
+    ToolCall* existing = nullptr;
+    for (Block& candidate : message.blocks) {
+        if (candidate.kind == Block::Kind::Tool && candidate.tool.id == toolId) {
+            existing = &candidate.tool;
+        }
+    }
+    if (existing == nullptr) {
+        Block block;
+        block.kind = Block::Kind::Tool;
+        block.tool.id = toolId;
+        block.tool.name = stringField(part, "name");
+        block.finished = true;
+        message.blocks.push_back(std::move(block));
+        existing = &message.blocks.back().tool;
+    }
+    if (part.contains("input")) {
+        existing->input = part["input"];
+        existing->inputText = part["input"].dump();
+        existing->inputComplete = true;
+    }
+}
+
+/// A user message: either what the user typed (only when replaying a saved session) or the
+/// results of tool calls.
+void Transcript::applyUserMessage(const Event& event, TranscriptChange& change) {
+    const Json& message = event.raw.contains("message") ? event.raw["message"] : Json::object();
+    if (!message.contains("content")) {
+        return;
+    }
+    const Json& content = message["content"];
+
+    // Plain text from the user (only present when replaying a saved session; while
+    // chatting, the UI already added what the user typed).
+    if (replayUserText_) {
+        std::string text;
+        if (content.is_string()) {
+            text = content.get<std::string>();
+        } else if (content.is_array()) {
+            for (const Json& part : content) {
+                if (stringField(part, "type") == "text") {
+                    text += stringField(part, "text");
+                }
+            }
+        }
+        bool internalNote = !text.empty() && text[0] == '<';
+        if (!text.empty() && !internalNote) {
+            TranscriptChange added = addUserMessage(text);
+            markChanged(change, added.messageIndex, true);
+        }
+    }
+
+    if (!content.is_array()) {
+        return;
+    }
+    for (const Json& part : content) {
+        if (stringField(part, "type") != "tool_result") {
+            continue;
+        }
+        size_t messageIndex = 0;
+        ToolCall* tool = findTool(stringField(part, "tool_use_id"), &messageIndex);
+        if (tool == nullptr) {
+            continue;
+        }
+        recordToolResult(*tool, part, event.raw);
+        markChanged(change, messageIndex, false);
+    }
+}
+
+/// Stores what a tool call returned, and settles its approval: a call that was still waiting
+/// for an answer was allowed if it ran, denied if it failed.
+void Transcript::recordToolResult(ToolCall& tool, const Json& resultPart, const Json& wholeEvent) {
+    tool.hasResult = true;
+    tool.resultIsError = booleanField(resultPart, "is_error");
+    tool.resultText = resultPart.contains("content") ? textOfContent(resultPart["content"]) : std::string();
+    if (wholeEvent.contains("tool_use_result")) {
+        tool.resultDetail = wholeEvent["tool_use_result"];
+    } else if (wholeEvent.contains("toolUseResult")) {
+        tool.resultDetail = wholeEvent["toolUseResult"];
+    }
+    if (tool.approval == Approval::Pending) {
+        tool.approval = tool.resultIsError ? Approval::Denied : Approval::Allowed;
+    }
+}
+
+/// Claude asks whether it may run a tool.
+void Transcript::applyPermissionRequest(const Event& event, TranscriptChange& change) {
+    size_t messageIndex = 0;
+    ToolCall* tool = findTool(event.toolId, &messageIndex);
+    if (tool == nullptr) {
+        // The request came before we saw the tool call itself: show it anyway.
+        size_t index = startAssistantMessage(std::string());
+        messages_[index].streaming = false;
+        streamingMessage_ = -1;
+        Block block;
+        block.kind = Block::Kind::Tool;
+        block.tool.id = event.toolId;
+        block.tool.name = event.toolName;
+        block.tool.input = event.toolInput;
+        block.tool.inputText = event.toolInput.dump();
+        block.tool.inputComplete = true;
+        block.finished = true;
+        messages_[index].blocks.push_back(std::move(block));
+        tool = &messages_[index].blocks.back().tool;
+        messageIndex = index;
+        change.addedMessage = true;
+    }
+    tool->approval = Approval::Pending;
+    tool->permissionRequestId = event.requestId;
+    if (!event.toolInput.is_null()) {
+        tool->input = event.toolInput;
+        tool->inputComplete = true;
+    }
+    markChanged(change, messageIndex, change.addedMessage);
+}
+
+/// The turn is over: remember how it went and close everything that was still open.
+void Transcript::applyTurnResult(const Event& event, TranscriptChange& change) {
+    busy_ = false;
+    lastTurn_.isError = event.isError;
+    lastTurn_.costUsd = event.costUsd;
+    lastTurn_.durationMilliseconds = event.durationMilliseconds;
+    lastTurn_.outputTokens = event.outputTokens;
+    lastTurn_.stopReason = event.stopReason;
+    lastTurn_.resultText = event.text;
+    if (!event.sessionId.empty()) {
+        sessionId_ = event.sessionId;
+    }
+    // Anything still waiting for an answer was cut short by the end of the turn.
+    for (Message& message : messages_) {
+        for (Block& block : message.blocks) {
+            if (block.kind == Block::Kind::Tool && block.tool.approval == Approval::Pending) {
+                block.tool.approval = Approval::Denied;
+            }
+        }
+        message.streaming = false;
+    }
+    streamingMessage_ = -1;
+    if (event.isError && !event.text.empty()) {
+        TranscriptChange added = addNotice(event.text, true);
+        markChanged(change, added.messageIndex, true);
+    }
+    change.changed = true;
+    change.turnFinished = true;
 }
 
 // ---------------------------------------------------------------------------

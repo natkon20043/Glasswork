@@ -6,9 +6,8 @@
 
 namespace gw {
 
-/// A setting from a settings object by dotted name. VS Code settings may be written flat
-/// (`"a.b.c": 1`), nested (`{"a": {"b": {"c": 1}}}`) or both, and a section ("a.b") stands for
-/// everything beneath it, which comes back as one object. Null when nothing is set there.
+/// Looks up a dotted name in settings written flat, nested, or both. A section ("a.b") returns
+/// everything beneath it as one object. Null when unset.
 nlohmann::json settingsSection(const nlohmann::json& settings, const std::string& section);
 
 }  // namespace gw

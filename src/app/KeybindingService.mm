@@ -95,7 +95,8 @@ std::string ChordText(const gw::KeyChord &chord) {
                           @"// Commands are VS Code's ids (\"workbench.action.files.save\") or an extension's own.\n"
                           @"// A key can be a sequence: \"cmd+k cmd+s\". Start a command with \"-\" to remove a binding.\n"
                           @"[\n"
-                          @"    // { \"key\": \"cmd+shift+u\", \"command\": \"editor.action.transformToUppercase\", \"when\": \"editorTextFocus\" }\n"
+                          @"    // { \"key\": \"cmd+shift+u\", \"command\": \"editor.action.transformToUppercase\", \"when\": "
+                          @"\"editorTextFocus\" }\n"
                           @"]\n";
     [template_ writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
@@ -169,7 +170,8 @@ std::string ChordText(const gw::KeyChord &chord) {
             if (shown.length > 0) [shown appendString:@" "];
             [shown appendString:@(ChordText(pendingChord).c_str())];
         }
-        if (self.showStatus) self.showStatus([NSString stringWithFormat:@"(%@) was pressed. Waiting for the next key of the sequence…", shown]);
+        if (self.showStatus) self.showStatus([NSString stringWithFormat:@"(%@) was pressed. Waiting for the next key of the "
+                                                                        @"sequence…", shown]);
         return YES;
     }
     if (!_pending.empty()) {

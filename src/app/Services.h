@@ -11,71 +11,69 @@ NS_ASSUME_NONNULL_BEGIN
 
 extern NSNotificationName const GWThemeDidChangeNotification;
 extern NSNotificationName const GWExtensionsDidChangeNotification;
-/// Posted whenever settings.json changes (fonts, opacity, colours, toggles).
+/// Fonts, opacity, colors, toggles.
 extern NSNotificationName const GWEditorSettingsDidChangeNotification;
 
-/// App-wide services shared by every window: installed extensions, loaded grammars, the
-/// current theme, the user's settings and the stylist that colours code.
+/// App-wide services shared by every window: extensions, grammars, theme, settings and the code stylist.
 @interface GWServices : NSObject
 
+// ---- Constructors
 + (instancetype)shared;
 
+// ---- Startup
+/// Scans installed extensions and installs the default set in the background.
+- (void)bootstrap;
+
+// ---- Core objects
 - (gw::ExtensionManager &)extensions;
 - (gw::GrammarRegistry &)grammars;
 - (const gw::Theme &)theme;
-/// Colours a line of code: theme, user colour rules, rainbow variables, named colours.
+/// Theme, user color rules, rainbow variables, named colors.
 - (gw::Stylist &)stylist;
 
-// MARK: Settings
-
-/// The user's settings, read from settings.json.
+// ---- Settings
 - (const gw::EditorSettings &)settings;
-/// ~/Library/Application Support/Glasswork/settings.json
-@property (nonatomic, readonly) NSURL *settingsURL;
-/// Changes settings, saves settings.json and tells every window.
+/// Saves settings.json and tells every window.
 - (void)updateSettings:(void (^)(gw::EditorSettings &settings))change;
-/// Re-reads settings.json (it's also watched, so outside edits apply by themselves).
+/// The file is also watched, so outside edits apply by themselves.
 - (void)reloadSettings;
 
-@property (nonatomic, readonly, copy) NSString *themeLabel;
-/// How opaque the editor's backdrop is (0.3–1); the rest shows the glass behind it.
-@property (nonatomic) CGFloat editorOpacity;
-@property (nonatomic) CGFloat fontSize;
-/// True while first-launch extensions are downloading.
-@property (nonatomic, readonly) BOOL installingDefaults;
-
-// MARK: Extensions and themes
-
-/// Scans installed extensions and, in the background, installs the default set.
-- (void)bootstrap;
+// ---- Themes
 - (NSArray<NSString *> *)themeLabels;
 - (void)selectThemeNamed:(NSString *)label;
 
-/// Switches an installed extension on or off (by "publisher.name"). Its grammars, themes, snippets,
-/// icons, keybindings and code stop (or start) at once.
-- (void)setExtension:(NSString *)identifier enabled:(BOOL)enabled;
-/// Whether an installed extension is switched off.
-- (BOOL)isExtensionDisabled:(NSString *)identifier;
-
-/// The file icon theme in use (from an extension), or null for the built-in symbols.
+// ---- Icon themes
+/// Null means the built-in symbols.
 - (const gw::IconTheme *)iconTheme;
-/// Labels of the file icon themes extensions provide.
 - (NSArray<NSString *> *)iconThemeLabels;
-/// The label of the theme in use, or nil for the built-in icons.
-@property (nonatomic, readonly, copy, nullable) NSString *iconThemeLabel;
-/// Chooses a file icon theme by label; nil goes back to the built-in icons.
+/// Nil goes back to the built-in icons.
 - (void)selectIconThemeLabel:(nullable NSString *)label;
 
+// ---- Extensions
+/// `identifier` is "publisher.name". Grammars, themes, snippets, icons, keybindings and code stop or start at once.
+- (void)setExtension:(NSString *)identifier enabled:(BOOL)enabled;
+- (BOOL)isExtensionDisabled:(NSString *)identifier;
 - (void)installExtension:(NSString *)identifier
               completion:(void (^)(BOOL ok, NSString *message))completion;
 - (void)uninstallExtension:(NSString *)identifier;
 
-// MARK: Appearance helpers
-
-/// A workbench colour from the theme, e.g. "editor.background".
+// ---- Appearance helpers
+/// A workbench color such as "editor.background".
 - (NSColor *)color:(NSString *)key fallback:(NSColor *)fallback;
 - (NSColor *)color:(NSString *)key;
 - (NSFont *)editorFontBold:(BOOL)bold italic:(BOOL)italic;
+
+// ---- Properties
+/// ~/Library/Application Support/Glasswork/settings.json
+@property (nonatomic, readonly) NSURL *settingsURL;
+@property (nonatomic, readonly, copy) NSString *themeLabel;
+/// Nil for the built-in icons.
+@property (nonatomic, readonly, copy, nullable) NSString *iconThemeLabel;
+/// 0.3 to 1; the rest shows the glass behind.
+@property (nonatomic) CGFloat editorOpacity;
+@property (nonatomic) CGFloat fontSize;
+/// First-launch extensions are downloading.
+@property (nonatomic, readonly) BOOL installingDefaults;
 
 @end
 

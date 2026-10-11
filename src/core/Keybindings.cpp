@@ -1,4 +1,5 @@
 #include "Keybindings.hpp"
+#include "JsonText.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -266,7 +267,7 @@ void KeybindingTable::add(const nlohmann::json& entries, bool fromUser) {
             binding.removes = true;
         }
         binding.arguments = entry.contains("args") ? entry["args"] : nlohmann::json();
-        binding.when = entry.contains("when") && entry["when"].is_string() ? entry["when"].get<std::string>() : "";
+        binding.when = stringOr(entry, "when");
         (fromUser ? userBindings_ : bindings_).push_back(std::move(binding));
     }
 }

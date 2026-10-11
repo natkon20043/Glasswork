@@ -227,10 +227,13 @@ class Range {
     with(startOrChange, end) {
         let newStart = this.start;
         let newEnd = this.end;
-        if (startOrChange && startOrChange.start === undefined && startOrChange.end === undefined && startOrChange.line !== undefined) {
+        // `with` takes a Position as the new start, or a change object like `{ end: position }`.
+        const isPosition = startOrChange && startOrChange.start === undefined && startOrChange.end === undefined && startOrChange.line !== undefined;
+        const isChange = startOrChange && (startOrChange.start !== undefined || startOrChange.end !== undefined) && !(startOrChange instanceof Range && end);
+        if (isPosition) {
             newStart = startOrChange;
             newEnd = end || this.end;
-        } else if (startOrChange && (startOrChange.start !== undefined || startOrChange.end !== undefined) && !(startOrChange instanceof Range && end)) {
+        } else if (isChange) {
             if (startOrChange.start !== undefined) newStart = startOrChange.start;
             if (startOrChange.end !== undefined) newEnd = startOrChange.end;
         } else if (startOrChange) {
@@ -319,7 +322,13 @@ class SnippetString {
     }
 
     appendPlaceholder(value, number) {
-        const text = typeof value === 'function' ? (() => { const inner = new SnippetString(); value(inner); return inner.value; })() : value;
+        let text = value;
+        if (typeof value === 'function') {
+            // A function builds the placeholder's content with a nested snippet.
+            const inner = new SnippetString();
+            value(inner);
+            text = inner.value;
+        }
         this.value += `\${${number === undefined ? 1 : number}:${text}}`;
         return this;
     }
@@ -709,7 +718,10 @@ class SemanticTokensBuilder {
             type = tokenType;
             modifiers = tokenModifiers;
         }
-        const typeIndex = typeof type === 'string' && this.legend ? Math.max(0, this.legend.tokenTypes.indexOf(type)) : type || 0;
+        let typeIndex = type || 0;
+        if (typeof type === 'string' && this.legend) {
+            typeIndex = Math.max(0, this.legend.tokenTypes.indexOf(type));  // an unknown name becomes the first type
+        }
         let modifierBits = 0;
         if (Array.isArray(modifiers) && this.legend) {
             for (const modifier of modifiers) {
@@ -778,14 +790,20 @@ class FileSystemError extends Error {
     }
 }
 
-class TreeItem {
-    constructor(labelOrUri, collapsibleState) {
-        if (typeof labelOrUri === 'string' || (labelOrUri && labelOrUri.label !== undefined)) {
-            this.label = labelOrUri;
-        } else {
-            this.resourceUri = labelOrUri;
-        }
-        this.collapsibleState = collapsibleState === undefined ? TreeItemCollapsibleState.None : collapsibleState;
+// A function rather than a `class`: extensions compiled for older JavaScript subclass it with
+// `TreeItem.call(this, ...)`, which a class refuses.
+function TreeItem(labelOrUri, collapsibleState) {
+    if (typeof labelOrUri === 'string' || (labelOrUri && labelOrUri.label !== undefined)) {
+        this.label = labelOrUri;
+    } else {
+        this.resourceUri = labelOrUri;
+    }
+    this.collapsibleState = collapsibleState === undefined ? TreeItemCollapsibleState.None : collapsibleState;
+}
+
+class TabInputText {
+    constructor(uri) {
+        this.uri = uri;
     }
 }
 
@@ -940,6 +958,7 @@ module.exports = {
     MarkdownString,
     ThemeColor,
     ThemeIcon,
+    TabInputText,
     DiagnosticSeverity,
     DiagnosticTag,
     Diagnostic,

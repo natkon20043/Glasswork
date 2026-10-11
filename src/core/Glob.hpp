@@ -5,21 +5,22 @@
 
 namespace gw {
 
-/// A file glob as language servers and extensions write them: `*` matches within one path
-/// segment, `**` across segments (and zero of them), `?` one character, `{a,b}` alternatives and
-/// `[abc]` / `[!abc]` character classes. Matching is against a path relative to some base, with
-/// `/` separators.
+/// Glob as language servers and extensions write it: `*` within a path segment, `**` across segments,
+/// `?`, `{a,b}` and `[abc]` / `[!abc]`. Matches paths relative to a base with `/` separators.
 class GlobPattern {
 public:
+    // ---- Constructors
     explicit GlobPattern(const std::string& glob);
 
-    /// Whether the whole relative path matches. A pattern with no `/` in it also matches the file
-    /// name alone anywhere (`*.cpp` finds `src/a.cpp`), as VS Code does.
+    // ---- Matching
+    /// A pattern without `/` also matches the file name alone anywhere, as in VS Code.
     bool matches(const std::string& relativePath) const;
 
+    // ---- Getters
     const std::string& source() const { return source_; }
 
 private:
+    // ---- Private variables
     std::string source_;
     bool matchesNameAnywhere_ = false;
     std::regex regex_;
