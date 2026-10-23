@@ -1,5 +1,7 @@
 # Glasswork
-
+##
+ Fully vibecoded slop! I wanted a nice and cool ide and I am working on other stuff. I have been sloping this project and just like how it looks! I think its cool, hope you do too!
+##
 A native macOS code editor with a C++20 core and an Objective-C++ AppKit interface using Liquid Glass. It has a built-in Claude chat, Git, project search and a terminal. Requires macOS 26 or newer.
 
 Everything is native: no Electron, no web view, no JavaScript runtime. The text engine, TextMate tokenizer, diff, terminal emulator and Git layer are plain C++20 in `src/core`, tested without any UI.
