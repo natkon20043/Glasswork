@@ -131,7 +131,9 @@ TEST(scrollingFillsTheHistory) {
 
 TEST(historyHasALimit) {
     Screen screen(10, 2, 5);
-    for (int line = 0; line < 50; ++line) screen.write("line " + std::to_string(line) + "\r\n");
+    for (int line = 0; line < 50; ++line) {
+        screen.write("line " + std::to_string(line) + "\r\n");
+    }
     CHECK_EQ(screen.historyCount(), size_t(5));
 }
 
@@ -378,15 +380,21 @@ TEST(randomBytesNeverBreakTheScreen) {
         for (int index = 0; index < 400; ++index) {
             uint8_t byte = next();
             // Make control sequences likely.
-            if (byte % 11 == 0) bytes += '\x1b';
-            if (byte % 13 == 0) bytes += '[';
+            if (byte % 11 == 0) {
+                bytes += '\x1b';
+            }
+            if (byte % 13 == 0) {
+                bytes += '[';
+            }
             bytes += static_cast<char>(byte);
         }
         screen.write(bytes);
         CHECK(screen.cursorRow() >= 0 && screen.cursorRow() < screen.rows());
         CHECK(screen.cursorColumn() >= 0 && screen.cursorColumn() < screen.columns());
         CHECK(screen.historyCount() <= 50);
-        if (round % 40 == 0) screen.resize(10 + round % 30, 3 + round % 12);
+        if (round % 40 == 0) {
+            screen.resize(10 + round % 30, 3 + round % 12);
+        }
     }
     for (int row = 0; row < screen.rows(); ++row) {
         CHECK(screen.row(row).cells.size() <= static_cast<size_t>(screen.columns()) + 1);

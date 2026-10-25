@@ -35,13 +35,13 @@ struct GrammarInfo {
 };
 
 struct ThemeInfo {
+    bool dark() const { return uiTheme == "vs-dark" || uiTheme == "hc-black"; }
+
     std::string label;
     /// "vs-dark", "vs", "hc-black" or "hc-light".
     std::string uiTheme;
     std::filesystem::path path;
     std::string extensionId;
-
-    bool dark() const { return uiTheme == "vs-dark" || uiTheme == "hc-black"; }
 };
 
 struct IconThemeInfo {

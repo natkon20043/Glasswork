@@ -56,7 +56,10 @@ CommandResult toCommandResult(const ProcessResult& process, const std::string& p
         return result;
     }
     if (process.exitCode != 0) {
-        result.error = process.errorOutput.empty() ? process.output : process.errorOutput;
+        result.error = process.errorOutput;
+        if (result.error.empty()) {
+            result.error = process.output;
+        }
         if (result.error.empty()) {
             result.error = programName + " failed (exit code " + std::to_string(process.exitCode) + ").";
         }
@@ -171,10 +174,14 @@ Status parseStatus(const std::string& output, size_t limit) {
             // Header lines: "# branch.head main", "# branch.ab +1 -2" …
             if (record.rfind("# branch.oid ", 0) == 0) {
                 std::string value = record.substr(13);
-                status.headCommit = value == "(initial)" ? std::string() : value;
+                if (value != "(initial)") {
+                    status.headCommit = value;
+                }
             } else if (record.rfind("# branch.head ", 0) == 0) {
                 std::string value = record.substr(14);
-                status.branch = value == "(detached)" ? std::string() : value;
+                if (value != "(detached)") {
+                    status.branch = value;
+                }
             } else if (record.rfind("# branch.upstream ", 0) == 0) {
                 status.upstream = record.substr(18);
             } else if (record.rfind("# branch.ab ", 0) == 0) {
@@ -252,7 +259,10 @@ Status readStatus(const std::string& directory) {
         Status failed;
         failed.isRepository = true;
         failed.root = root;
-        failed.error = result.errorOutput.empty() ? "git status failed" : result.errorOutput;
+        failed.error = result.errorOutput;
+        if (failed.error.empty()) {
+            failed.error = "git status failed";
+        }
         return failed;
     }
     Status status = parseStatus(result.output);
@@ -337,7 +347,10 @@ std::vector<std::string> listFiles(const std::string& folder, bool* ok) {
     std::vector<std::string> files;
     ProcessOptions options = optionsFor(folder, 60);
     options.maxOutputBytes = 256 * 1024 * 1024;
-    ProcessResult result = runProcess({"git", "-c", "core.quotepath=false", "ls-files", "-z", "--cached", "--others", "--exclude-standard"}, options);
+    std::vector<std::string> command = {
+        "git", "-c", "core.quotepath=false", "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+    };
+    ProcessResult result = runProcess(command, options);
     if (ok != nullptr) {
         *ok = result.succeeded();
     }
@@ -547,11 +560,31 @@ CommandResult fetch(const std::string& root) {
     return runGitCommand(root, {"fetch", "--all", "--prune"}, kSlowTimeout);
 }
 
+namespace {
+
+/// A branch name typed as "-x" would be read by git as an option.
+std::optional<CommandResult> refuseOptionLikeName(const std::string& name) {
+    if (!name.empty() && name[0] != '-') {
+        return std::nullopt;
+    }
+    CommandResult refused;
+    refused.error = "Branch names can't be empty or start with \"-\".";
+    return refused;
+}
+
+}  // namespace
+
 CommandResult switchBranch(const std::string& root, const std::string& name) {
+    if (std::optional<CommandResult> refused = refuseOptionLikeName(name)) {
+        return *refused;
+    }
     return runGitCommand(root, {"switch", name});
 }
 
 CommandResult createBranch(const std::string& root, const std::string& name) {
+    if (std::optional<CommandResult> refused = refuseOptionLikeName(name)) {
+        return *refused;
+    }
     return runGitCommand(root, {"switch", "-c", name});
 }
 
@@ -613,8 +646,13 @@ std::string readOriginRepository(const std::string& root) {
 
 CommandResult publishToGitHub(const std::string& root, const std::string& name, bool isPrivate,
                               const std::string& description) {
-    std::vector<std::string> command = {"gh", "repo", "create", name, isPrivate ? "--private" : "--public",
-                                        "--source=.", "--remote=origin", "--push"};
+    std::string visibility = "--public";
+    if (isPrivate) {
+        visibility = "--private";
+    }
+    std::vector<std::string> command = {
+        "gh", "repo", "create", name, visibility, "--source=.", "--remote=origin", "--push",
+    };
     if (!description.empty()) {
         command.push_back("--description");
         command.push_back(description);

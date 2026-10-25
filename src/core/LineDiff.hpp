@@ -31,6 +31,8 @@ struct LineChange {
     size_t lineCount = 0;
 };
 
+// ---- Diffing
+
 /// Myers diff after trimming the common start and end. If an exact diff would be slow, the whole
 /// differing middle is reported as one replaced region.
 std::vector<DiffHunk> diffLines(const std::vector<std::string_view>& oldLines,
@@ -40,6 +42,8 @@ std::vector<DiffHunk> diffLines(const std::vector<std::string_view>& oldLines,
 std::vector<std::string_view> splitLines(std::string_view text);
 
 std::vector<LineChange> gutterChanges(const std::vector<DiffHunk>& hunks);
+
+// ---- Patches
 
 /// Unified-diff patch for `git apply`; `path` is relative to the repository root.
 std::string patchForHunk(const std::string& path, const std::vector<std::string_view>& oldLines,

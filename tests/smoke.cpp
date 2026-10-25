@@ -21,7 +21,9 @@ int main(int argc, char** argv) {
     for (const char* id : {"vscode.cpp", "vscode.theme-defaults"}) {
         auto result = gw::ExtensionManager::installFromOpenVSX(id, folder);
         std::printf("%s: %s\n", id, result.message.c_str());
-        if (!result.ok) return 1;
+        if (!result.ok) {
+            return 1;
+        }
     }
 
     gw::ExtensionManager extensions(folder);
@@ -41,7 +43,9 @@ int main(int argc, char** argv) {
     auto themes = extensions.themes();
     for (const auto& theme : themes) {
         std::printf("theme: %s (%s)\n", theme.label.c_str(), theme.uiTheme.c_str());
-        if (theme.label.find("Dark Modern") != std::string::npos) darkModern = &theme;
+        if (theme.label.find("Dark Modern") != std::string::npos) {
+            darkModern = &theme;
+        }
     }
     if (!darkModern) {
         std::printf("no Dark Modern theme\n");
@@ -75,7 +79,9 @@ int main(int argc, char** argv) {
         for (const auto& token : result.tokens) {
             auto style = theme->styleFor(token.scopes);
             std::string text = line.substr(token.start, token.end - token.start);
-            if (text.find_first_not_of(' ') == std::string::npos) continue;
+            if (text.find_first_not_of(' ') == std::string::npos) {
+                continue;
+            }
             std::printf("  %-22s #%06X  %s\n", ("'" + text + "'").c_str(), style.foreground >> 8,
                         token.scopes ? token.scopes->name.c_str() : "");
         }

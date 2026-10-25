@@ -4,6 +4,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// ---- Icons
+
 /// SF Symbol and tint by file name/extension, so sidebar, tabs and status bar agree.
 NSString *GWSymbolForFile(NSString *filename);
 NSColor *GWColorForFile(NSString *filename);

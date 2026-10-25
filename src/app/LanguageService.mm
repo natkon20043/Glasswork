@@ -1,4 +1,5 @@
 #import "LanguageService.h"
+#import "Strings.h"
 
 #import "Services.h"
 
@@ -99,10 +100,14 @@ gw::lsp::Json mergeAnswers(const std::string &method, const std::vector<gw::lsp:
         bool incomplete = false;
         for (const Json &answer : answers) {
             if (answer.is_array()) {
-                for (const Json &item : answer) items.push_back(item);
+                for (const Json &item : answer) {
+                    items.push_back(item);
+                }
             } else if (answer.is_object()) {
                 incomplete = incomplete || answer.value("isIncomplete", false);
-                for (const Json &item : answer.value("items", Json::array())) items.push_back(item);
+                for (const Json &item : answer.value("items", Json::array())) {
+                    items.push_back(item);
+                }
             }
         }
         return {{"isIncomplete", incomplete}, {"items", items}};
@@ -111,25 +116,37 @@ gw::lsp::Json mergeAnswers(const std::string &method, const std::vector<gw::lsp:
         std::vector<std::string> pieces;
         Json range;
         for (const Json &answer : answers) {
-            if (!answer.is_object() || !answer.contains("contents")) continue;
+            if (!answer.is_object() || !answer.contains("contents")) {
+                continue;
+            }
             collectHoverText(answer["contents"], pieces);
-            if (range.is_null() && answer.contains("range")) range = answer["range"];
+            if (range.is_null() && answer.contains("range")) {
+                range = answer["range"];
+            }
         }
-        if (pieces.empty()) return Json();
+        if (pieces.empty()) {
+            return Json();
+        }
         std::string joined;
         for (size_t index = 0; index < pieces.size(); ++index) {
-            if (index > 0) joined += "\n\n---\n\n";
+            if (index > 0) {
+                joined += "\n\n---\n\n";
+            }
             joined += pieces[index];
         }
         Json result = {{"contents", {{"kind", "markdown"}, {"value", joined}}}};
-        if (!range.is_null()) result["range"] = range;
+        if (!range.is_null()) {
+            result["range"] = range;
+        }
         return result;
     }
     // Everything else is a list (or a single location): concatenate.
     Json list = Json::array();
     for (const Json &answer : answers) {
         if (answer.is_array()) {
-            for (const Json &item : answer) list.push_back(item);
+            for (const Json &item : answer) {
+                list.push_back(item);
+            }
         } else if (answer.is_object()) {
             list.push_back(answer);
         }
@@ -148,9 +165,13 @@ void tagAnswer(const std::string &method, gw::lsp::Json &answer, const std::stri
         items = &answer["items"];
     }
     bool wantsTag = method == "textDocument/completion" || method == "textDocument/codeAction" || method == "textDocument/codeLens";
-    if (items == nullptr || !wantsTag) return;
+    if (items == nullptr || !wantsTag) {
+        return;
+    }
     for (Json &item : *items) {
-        if (item.is_object()) item["__gwServer"] = serverName;
+        if (item.is_object()) {
+            item["__gwServer"] = serverName;
+        }
     }
 }
 
@@ -202,7 +223,12 @@ void tagAnswer(const std::string &method, gw::lsp::Json &answer, const std::stri
         // Copies: a block would only hold a reference to `uri`, which is gone by the time it runs.
         auto sharedUri = std::make_shared<std::string>(uri);
         dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf receivedDiagnostics:*shared forUri:*sharedUri version:version fromServer:serverName];
+            // Problems with a range of an unexpected shape are dropped, rather than ending the app.
+            try {
+                [weakSelf receivedDiagnostics:*shared forUri:*sharedUri version:version fromServer:serverName];
+            } catch (const std::exception &problem) {
+                NSLog(@"Glasswork: couldn't use the problems %s reported: %s", serverName.c_str(), problem.what());
+            }
         });
     };
     server->onApplyEdit = [weakSelf](const gw::lsp::Json &edit, std::function<void(bool)> reply) {
@@ -213,46 +239,56 @@ void tagAnswer(const std::string &method, gw::lsp::Json &answer, const std::stri
                 reply(false);
                 return;
             }
-            strongSelf.onApplyEdit(*sharedEdit, ^(BOOL applied) {
-                reply(applied == YES);
-            });
+            // An edit of an unexpected shape is refused, rather than ending the app.
+            try {
+                strongSelf.onApplyEdit(*sharedEdit, ^(BOOL applied) {
+                    reply(applied == YES);
+                });
+            } catch (const std::exception &problem) {
+                NSLog(@"Glasswork: couldn't apply an edit a language server sent: %s", problem.what());
+                reply(false);
+            }
         });
     };
     // Things the server says on its own. The strings are copied: they are references that are
     // gone by the time the main thread runs the block.
     server->onShowMessage = [weakSelf, serverName](int type, const std::string &message) {
-        NSString *text = @(message.c_str());
+        NSString *text = StringFromUTF8(message);
         dispatch_async(dispatch_get_main_queue(), ^{
             GWLanguageService *strongSelf = weakSelf;
-            if (strongSelf.onServerMessage) strongSelf.onServerMessage(@(serverName.c_str()), type, text);
+            if (strongSelf.onServerMessage) {
+                strongSelf.onServerMessage(StringFromUTF8(serverName), type, text);
+            }
         });
     };
     server->onLogMessage = [weakSelf, serverName](int, const std::string &message) {
-        NSString *text = @(message.c_str());
+        NSString *text = StringFromUTF8(message);
         dispatch_async(dispatch_get_main_queue(), ^{
             GWLanguageService *strongSelf = weakSelf;
-            if (strongSelf.onServerLog) strongSelf.onServerLog(@(serverName.c_str()), text);
+            if (strongSelf.onServerLog) {
+                strongSelf.onServerLog(StringFromUTF8(serverName), text);
+            }
         });
     };
     server->onProgress = [weakSelf, serverName](const std::string &token, const std::string &kind, const std::string &title,
                                                 const std::string &message, int percentage) {
-        NSString *tokenText = @(token.c_str());
-        NSString *kindText = @(kind.c_str());
-        NSString *titleText = @(title.c_str());
-        NSString *messageText = @(message.c_str());
+        NSString *tokenText = StringFromUTF8(token);
+        NSString *kindText = StringFromUTF8(kind);
+        NSString *titleText = StringFromUTF8(title);
+        NSString *messageText = StringFromUTF8(message);
         dispatch_async(dispatch_get_main_queue(), ^{
             GWLanguageService *strongSelf = weakSelf;
             if (strongSelf.onServerProgress) {
-                strongSelf.onServerProgress(@(serverName.c_str()), tokenText, kindText, titleText, messageText, percentage);
+                strongSelf.onServerProgress(StringFromUTF8(serverName), tokenText, kindText, titleText, messageText, percentage);
             }
         });
     };
     server->onShowMessageRequest = [weakSelf, serverName](int, const std::string &message, const std::vector<std::string> &actions,
                                                           std::function<void(const std::string &)> reply) {
-        NSString *text = @(message.c_str());
+        NSString *text = StringFromUTF8(message);
         NSMutableArray<NSString *> *titles = [NSMutableArray array];
         for (const std::string &action : actions) {
-            [titles addObject:@(action.c_str())];
+            [titles addObject:StringFromUTF8(action)];
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             GWLanguageService *strongSelf = weakSelf;
@@ -260,7 +296,7 @@ void tagAnswer(const std::string &method, gw::lsp::Json &answer, const std::stri
                 reply("");
                 return;
             }
-            strongSelf.onServerQuestion(@(serverName.c_str()), text, titles, ^(NSString *chosen) {
+            strongSelf.onServerQuestion(StringFromUTF8(serverName), text, titles, ^(NSString *chosen) {
                 reply(chosen.UTF8String ?: "");
             });
         });
@@ -275,7 +311,9 @@ void tagAnswer(const std::string &method, gw::lsp::Json &answer, const std::stri
     server->onReady = [weakSelf]() {
         dispatch_async(dispatch_get_main_queue(), ^{
             GWLanguageService *strongSelf = weakSelf;
-            if (strongSelf.onStatusChanged) strongSelf.onStatusChanged();
+            if (strongSelf.onStatusChanged) {
+                strongSelf.onStatusChanged();
+            }
         });
     };
     gw::lsp::LanguageServer *rawServer = server;
@@ -308,10 +346,14 @@ void tagAnswer(const std::string &method, gw::lsp::Json &answer, const std::stri
         entry.failedToStart = true;
         entry.failureMessage = error;
         entry.server.reset();
-        if (self.onStatusChanged) self.onStatusChanged();
+        if (self.onStatusChanged) {
+            self.onStatusChanged();
+        }
         return nullptr;
     }
-    if (self.onStatusChanged) self.onStatusChanged();
+    if (self.onStatusChanged) {
+        self.onStatusChanged();
+    }
     return entry.server.get();
 }
 
@@ -329,7 +371,7 @@ static std::string extensionServerName(NSString *languageId) {
     }
     id<GWExtensionLanguageProvider> provider = self.extensionProvider;
     NSString *root = [self rootFolderOrHome];
-    NSString *rootURI = @(gw::lsp::fileURI(root.UTF8String).c_str());
+    NSString *rootURI = StringFromUTF8(gw::lsp::fileURI(root.UTF8String));
     std::unique_ptr<gw::lsp::ServerTransport> transport = [provider newTransportForLanguage:languageId rootURI:rootURI];
     if (transport == nullptr) {
         return nullptr;
@@ -345,7 +387,9 @@ static std::string extensionServerName(NSString *languageId) {
         entry.server.reset();
         return nullptr;
     }
-    if (self.onStatusChanged) self.onStatusChanged();
+    if (self.onStatusChanged) {
+        self.onStatusChanged();
+    }
     return entry.server.get();
 }
 
@@ -363,7 +407,9 @@ static std::string extensionServerName(NSString *languageId) {
             }
         }
     }
-    if (self.onStatusChanged) self.onStatusChanged();
+    if (self.onStatusChanged) {
+        self.onStatusChanged();
+    }
 }
 
 - (void)filesDidChange:(NSArray<NSString *> *)paths {
@@ -436,7 +482,7 @@ static bool hasExtensionAttachment(const Tracked &tracked) {
     if (!self.enabled || document == nullptr || !document->path() || document->readOnly) {
         return;
     }
-    NSString *languageId = @(document->languageId.c_str());
+    NSString *languageId = StringFromUTF8(document->languageId);
     const gw::lsp::ServerSpec *spec = [self specForLanguage:languageId];
     BOOL extensionsWanted = [self extensionsServeLanguage:languageId];
     std::string uri = gw::lsp::fileURI(document->path()->string());
@@ -501,7 +547,7 @@ static bool hasExtensionAttachment(const Tracked &tracked) {
     if (tracked.extensionsRequested) {
         return;
     }
-    NSString *languageId = @(tracked.languageId.c_str());
+    NSString *languageId = StringFromUTF8(tracked.languageId);
     if (hasExtensionAttachment(tracked)) {
         // Already attached: just make sure its server is still alive.
         Attachment *attachment = attachmentNamed(tracked, extensionServerName(languageId));
@@ -558,7 +604,9 @@ static bool hasExtensionAttachment(const Tracked &tracked) {
         attachment = &tracked.attachments.back();
     }
     attachment->sentVersion = document->version();
-    if (self.onStatusChanged) self.onStatusChanged();
+    if (self.onStatusChanged) {
+        self.onStatusChanged();
+    }
     [self requestInlayHintsForDocument:document];
 }
 
@@ -621,7 +669,7 @@ static bool hasExtensionAttachment(const Tracked &tracked) {
             // The server died: start a fresh one and open the file again.
             gw::lsp::LanguageServer *server = nullptr;
             if (attachment.fromExtensions) {
-                server = [self extensionServerForLanguage:@(tracked.languageId.c_str())];
+                server = [self extensionServerForLanguage:StringFromUTF8(tracked.languageId)];
             } else {
                 const gw::lsp::ServerSpec *spec = gw::lsp::serverForLanguage(_specs, tracked.languageId);
                 server = spec ? [self serverForSpec:*spec] : nullptr;
@@ -695,7 +743,9 @@ static bool hasExtensionAttachment(const Tracked &tracked) {
     [self closeDocumentOnServers:found->second];
     _tracked.erase(found);
     document->recordSyncEdits(false);
-    if (self.onDiagnosticsChanged) self.onDiagnosticsChanged(document);
+    if (self.onDiagnosticsChanged) {
+        self.onDiagnosticsChanged(document);
+    }
 }
 
 - (void)documentDidMove:(gw::Document *)document fromPath:(NSString *)oldPath {
@@ -753,7 +803,9 @@ static void mergeDiagnostics(Tracked &tracked) {
         }
         attachment->diagnostics = std::move(converted);
         mergeDiagnostics(tracked);
-        if (self.onDiagnosticsChanged) self.onDiagnosticsChanged(document);
+        if (self.onDiagnosticsChanged) {
+            self.onDiagnosticsChanged(document);
+        }
         // The server has just looked at the file, so its token colors and hints are fresh too.
         [self requestSemanticTokensForDocument:document];
         [self requestInlayHintsForDocument:document];
@@ -826,7 +878,9 @@ static void mergeDiagnostics(Tracked &tracked) {
             set->typeNames = *typeNames;
             set->modifierNames = *modifierNames;
             trackedEntry->second.semantic = set;
-            if (strongSelf.onSemanticTokensChanged) strongSelf.onSemanticTokensChanged(document);
+            if (strongSelf.onSemanticTokensChanged) {
+                strongSelf.onSemanticTokensChanged(document);
+            }
         });
     });
 }
@@ -841,7 +895,9 @@ static void mergeDiagnostics(Tracked &tracked) {
     if (!GWServices.shared.settings.inlayHints) {
         if (!tracked.inlayHints.empty()) {
             tracked.inlayHints.clear();
-            if (self.onInlayHintsChanged) self.onInlayHintsChanged(document);
+            if (self.onInlayHintsChanged) {
+                self.onInlayHintsChanged(document);
+            }
         }
         return;
     }
@@ -859,6 +915,9 @@ static void mergeDiagnostics(Tracked &tracked) {
     [self request:@"textDocument/inlayHint" params:params document:document requireSameVersion:YES
        completion:^(const gw::lsp::Json &result, NSString *error) {
         GWLanguageService *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
         auto stillTracked = strongSelf->_tracked.find(document);
         if (strongSelf == nil || error != nil || !result.is_array() || stillTracked == strongSelf->_tracked.end()) {
             return;
@@ -866,7 +925,9 @@ static void mergeDiagnostics(Tracked &tracked) {
         std::vector<GWInlayHint> hints;
         const gw::TextBuffer &current = document->buffer();
         for (const gw::lsp::Json &item : result) {
-            if (!item.is_object() || !item.contains("position") || !item.contains("label")) continue;
+            if (!item.is_object() || !item.contains("position") || !item.contains("label")) {
+                continue;
+            }
             GWInlayHint hint;
             try {
                 hint.position = gw::lsp::position(current, item["position"]);
@@ -881,16 +942,22 @@ static void mergeDiagnostics(Tracked &tracked) {
                     hint.label += part.value("value", "");
                 }
             }
-            if (hint.label.empty()) continue;
+            if (hint.label.empty()) {
+                continue;
+            }
             hint.isType = item.value("kind", 0) == 1;
             hint.padLeft = item.value("paddingLeft", false);
             hint.padRight = item.value("paddingRight", false);
             hints.push_back(std::move(hint));
-            if (hints.size() >= 5000) break;
+            if (hints.size() >= 5000) {
+                break;
+            }
         }
         std::stable_sort(hints.begin(), hints.end(), [](const GWInlayHint &a, const GWInlayHint &b) { return a.position < b.position; });
         stillTracked->second.inlayHints = std::move(hints);
-        if (strongSelf.onInlayHintsChanged) strongSelf.onInlayHintsChanged(document);
+        if (strongSelf.onInlayHintsChanged) {
+            strongSelf.onInlayHintsChanged(document);
+        }
     }];
 }
 
@@ -941,7 +1008,7 @@ static void mergeDiagnostics(Tracked &tracked) {
     const gw::lsp::ServerSpec *spec = [self specForLanguage:languageId];
     if (spec != nullptr) {
         auto found = _servers.find(spec->name);
-        NSString *name = @(spec->name.c_str());
+        NSString *name = StringFromUTF8(spec->name);
         text = name;
         if (found != _servers.end()) {
             const ServerEntry &entry = found->second;
@@ -978,7 +1045,7 @@ static void mergeDiagnostics(Tracked &tracked) {
         if (capabilities.contains("completionProvider") && capabilities["completionProvider"].contains("triggerCharacters")) {
             for (const gw::lsp::Json &trigger : capabilities["completionProvider"]["triggerCharacters"]) {
                 if (trigger.is_string()) {
-                    NSString *characters = @(trigger.get<std::string>().c_str());
+                    NSString *characters = StringFromUTF8(trigger.get<std::string>());
                     if (![result containsString:characters]) {
                         [result appendString:characters];
                     }
@@ -998,7 +1065,7 @@ static void mergeDiagnostics(Tracked &tracked) {
     if (found == _servers.end() || !found->second.failedToStart) {
         return nil;
     }
-    return @(found->second.failureMessage.c_str());
+    return StringFromUTF8(found->second.failureMessage);
 }
 
 - (BOOL)serverSupports:(NSString *)capability forDocument:(gw::Document *)document {
@@ -1156,7 +1223,10 @@ requireSameVersion:(BOOL)requireSameVersion
                 std::lock_guard<std::mutex> lock(gathered->mutex);
                 bool anySucceeded = gathered->errors.size() < gathered->answers.size();
                 if (!anySucceeded) {
-                    firstError = gathered->errors.empty() ? "Request failed" : gathered->errors.front();
+                    firstError = "Request failed";
+                    if (!gathered->errors.empty()) {
+                        firstError = gathered->errors.front();
+                    }
                 } else if (gathered->answers.size() == 1) {
                     combined = gathered->answers[0];
                 } else {
@@ -1176,8 +1246,17 @@ requireSameVersion:(BOOL)requireSameVersion
                 if (requireSameVersion && document->version() != versionAtRequest) {
                     return;
                 }
-                NSString *message = firstError.empty() ? nil : @(firstError.c_str());
-                copiedCompletion(*sharedResult, message);
+                NSString *message = nil;
+                if (!firstError.empty()) {
+                    message = StringFromUTF8(firstError);
+                }
+                // A reply of a shape the code using it doesn't expect is dropped and noted,
+                // rather than ending the app.
+                try {
+                    copiedCompletion(*sharedResult, message);
+                } catch (const std::exception &problem) {
+                    NSLog(@"Glasswork: couldn't use the reply to %s: %s", methodName.c_str(), problem.what());
+                }
             });
         });
     }

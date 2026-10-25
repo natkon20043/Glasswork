@@ -13,6 +13,8 @@ struct FuzzyMatch {
     std::vector<uint32_t> positions;
 };
 
+// ---- Matching
+
 /// Quick-open style matching: query characters must appear in order, ignoring case. Higher for
 /// word starts, consecutive runs, and hits in the file name. `nameStart` is where the file name
 /// begins in `candidate`. Nothing if no match.

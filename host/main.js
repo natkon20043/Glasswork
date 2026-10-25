@@ -140,7 +140,9 @@ function workspaceContains(pattern) {
     const skip = new Set(['node_modules', '.git', 'target', 'build', 'dist']);
     const regex = globToRegExp(pattern.startsWith('**') ? pattern : '**/' + pattern);
     function walk(folder, depth) {
-        if (depth > 4) return false;
+        if (depth > 4) {
+            return false;
+        }
         let entries;
         try {
             entries = fs.readdirSync(folder, { withFileTypes: true });
@@ -150,7 +152,9 @@ function workspaceContains(pattern) {
         for (const entry of entries) {
             const full = path.join(folder, entry.name);
             if (entry.isDirectory()) {
-                if (!skip.has(entry.name) && walk(full, depth + 1)) return true;
+                if (!skip.has(entry.name) && walk(full, depth + 1)) {
+                    return true;
+                }
             } else if (regex.test(full)) {
                 return true;
             }
@@ -253,7 +257,7 @@ connection.onRequest('commands/execute', async (params) => {
 
 // Files that changed on disk: [{uri, type}] with type 1 created, 2 changed, 3 deleted.
 connection.onNotification('workspace/fileEvents', (params) => {
-    const { matchesGlob, globToRegExp } = require('./api/documents');
+    const { matchesGlob } = require('./api/documents');
     const { Uri } = require('./api/uri');
     for (const event of params.events || []) {
         const uri = Uri.parse(event.uri);
@@ -264,14 +268,19 @@ connection.onNotification('workspace/fileEvents', (params) => {
                 // A RelativePattern: relative to its own folder.
                 const prefix = pattern.base.replace(/\/$/, '') + '/';
                 matches = uri.fsPath.startsWith(prefix) && matchesGlob(pattern.pattern, uri.fsPath.slice(prefix.length));
-                void globToRegExp;
             } else {
                 matches = matchesGlob(pattern, uri.fsPath);
             }
-            if (!matches) continue;
-            if (event.type === 1 && !watcher.ignoreCreateEvents) watcher.created.fire(uri);
-            else if (event.type === 2 && !watcher.ignoreChangeEvents) watcher.changed.fire(uri);
-            else if (event.type === 3 && !watcher.ignoreDeleteEvents) watcher.deleted.fire(uri);
+            if (!matches) {
+                continue;
+            }
+            if (event.type === 1 && !watcher.ignoreCreateEvents) {
+                watcher.created.fire(uri);
+            } else if (event.type === 2 && !watcher.ignoreChangeEvents) {
+                watcher.changed.fire(uri);
+            } else if (event.type === 3 && !watcher.ignoreDeleteEvents) {
+                watcher.deleted.fire(uri);
+            }
         }
     }
 });

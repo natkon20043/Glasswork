@@ -368,7 +368,9 @@ TEST(lineStoreMatchesAPlainVectorOfStrings) {
             size_t index = random() % (model.size() + 1);
             std::vector<std::string> added;
             size_t count = 1 + random() % 3;
-            for (size_t n = 0; n < count; ++n) added.push_back("new" + std::to_string(step) + "_" + std::to_string(n));
+            for (size_t n = 0; n < count; ++n) {
+                added.push_back("new" + std::to_string(step) + "_" + std::to_string(n));
+            }
             model.insert(model.begin() + static_cast<long>(index), added.begin(), added.end());
             store.insertOwned(index, std::move(added));
         } else if (action == 2 && model.size() > 2) {
@@ -396,20 +398,23 @@ TEST(tasksAreDetectedFromBuildFiles) {
     std::filesystem::path base = std::filesystem::temp_directory_path() / ("gw-tasks-" + std::to_string(::getpid()));
     std::filesystem::create_directories(base);
     std::ofstream(base / "CMakeLists.txt") << "project(x)\n";
-    std::ofstream(base / "package.json") << R"({"scripts": {"build": "tsc", "test": "jest", "lint": "eslint ."}})";
+    std::ofstream(base / "package.json") << R"({"scripts": {"build": "tsc", "test": "jest", "lint": "eslint .", "x; rm -rf ~": "true"}})";
     std::ofstream(base / "yarn.lock") << "";
     std::ofstream(base / "Makefile") << "all: main\nmain:\n\tcc x.c\ntest:\n\t./a.out\nCC := cc\n";
 
     std::vector<gw::Task> tasks = gw::detectTasks(base);
     auto find = [&](const std::string& command) {
         for (const gw::Task& task : tasks) {
-            if (task.command == command) return true;
+            if (task.command == command) {
+                return true;
+            }
         }
         return false;
     };
     CHECK(find("cmake --build build"));
-    CHECK(find("yarn run build"));      // the project uses yarn
-    CHECK(find("yarn run lint"));
+    CHECK(find("yarn run 'build'"));    // the project uses yarn
+    CHECK(find("yarn run 'lint'"));
+    CHECK(find("yarn run 'x; rm -rf ~'"));  // a script's name is never run as a command
     CHECK(find("make"));
     CHECK(find("make main"));
     CHECK(!find("make CC"));            // a variable, not a target
@@ -419,7 +424,10 @@ TEST(tasksAreDetectedFromBuildFiles) {
 
 TEST(runningASingleFile) {
     CHECK_EQ(gw::commandToRunFile("/p/a b.py", "python"), std::string("python3 '/p/a b.py'"));
-    CHECK(gw::commandToRunFile("/p/main.cpp", "cpp").find("clang++") == 0);
+    std::string compile = gw::commandToRunFile("/p/main.cpp", "cpp");
+    CHECK(compile.find("clang++") == 0);
+    CHECK(compile.find("${TMPDIR:-/tmp}/glasswork-run") != std::string::npos);  // not the shared /tmp
+    CHECK(compile.find(" /tmp/") == std::string::npos);
     CHECK(gw::commandToRunFile("/p/notes.txt", "plaintext").empty());
     CHECK_EQ(gw::shellQuote("it's"), std::string("'it'\\''s'"));
 }

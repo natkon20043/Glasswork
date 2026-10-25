@@ -54,6 +54,9 @@ std::string newestNvmBinFolder();
 /// Our PATH plus the usual extra install folders.
 std::string searchPathForChildren();
 
+/// A waitpid status as an exit code, or 128 + signal for a killed program; -1 if neither.
+int exitCodeFromStatus(int status);
+
 /// Waits and collects output. Blocking: call from a background queue.
 ProcessResult runProcess(const std::vector<std::string>& argv, const ProcessOptions& options = {});
 

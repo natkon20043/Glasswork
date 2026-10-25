@@ -1,4 +1,5 @@
 #import "EditorView.h"
+#import "Strings.h"
 
 #include "SelectionExpand.hpp"
 #include "TextTransforms.hpp"
@@ -17,6 +18,7 @@
 #include <optional>
 #include <unordered_map>
 
+#include "CursorSmear.hpp"
 #include "Folding.hpp"
 #include "RowMap.hpp"
 #include "Wrap.hpp"
@@ -116,7 +118,9 @@ struct LineLayout {
     ~LineLayout() { releaseLines(); }
 
     void releaseLines() {
-        if (line) CFRelease(line);
+        if (line) {
+            CFRelease(line);
+        }
         line = nullptr;
         for (CTLineRef rowLine : rowLines) {
             CFRelease(rowLine);
@@ -160,7 +164,9 @@ struct LineLayout {
 
     uint32_t unitForByte(size_t byte) const { return byteToUnit[std::min(byte, byteToUnit.size() - 1)]; }
     size_t byteForUnit(CFIndex unit) const {
-        if (unit < 0) return 0;
+        if (unit < 0) {
+            return 0;
+        }
         return unitToByte[std::min(static_cast<size_t>(unit), unitToByte.size() - 1)];
     }
 };
@@ -174,14 +180,24 @@ void buildOffsetMaps(std::string_view text, bool utf8, LineLayout &layout) {
         unsigned char lead = static_cast<unsigned char>(text[index]);
         size_t length = 1;
         if (utf8) {
-            if ((lead >> 5) == 0x6) length = 2;
-            else if ((lead >> 4) == 0xE) length = 3;
-            else if ((lead >> 3) == 0x1E) length = 4;
-            if (index + length > text.size()) length = 1;
+            if ((lead >> 5) == 0x6) {
+                length = 2;
+            } else if ((lead >> 4) == 0xE) {
+                length = 3;
+            } else if ((lead >> 3) == 0x1E) {
+                length = 4;
+            }
+            if (index + length > text.size()) {
+                length = 1;
+            }
         }
         uint32_t units = length == 4 ? 2 : 1;  // outside the BMP takes a surrogate pair
-        for (size_t k = 0; k < length; ++k) layout.byteToUnit[index + k] = unit;
-        for (uint32_t k = 0; k < units; ++k) layout.unitToByte.push_back(static_cast<uint32_t>(index));
+        for (size_t k = 0; k < length; ++k) {
+            layout.byteToUnit[index + k] = unit;
+        }
+        for (uint32_t k = 0; k < units; ++k) {
+            layout.unitToByte.push_back(static_cast<uint32_t>(index));
+        }
         unit += units;
         index += length;
     }
@@ -259,6 +275,12 @@ std::optional<size_t> indentColumns(std::string_view text, size_t tabSize) {
 
 @implementation GWGutterView
 
+/// Measured in from the gutter's right edge: the fold arrow's left edge, how far left of it a click
+/// still counts as on the arrow, and the strip at the edge where clicks go to the change bars.
+static constexpr CGFloat kFoldArrowInset = 18;
+static constexpr CGFloat kFoldArrowSlop = 6;
+static constexpr CGFloat kChangeBarClickWidth = 10;
+
 - (instancetype)initWithFrame:(NSRect)frameRect {
     if ((self = [super initWithFrame:frameRect])) {
         // Views don't clip their drawing by default (since macOS 14); without this the
@@ -277,7 +299,9 @@ std::optional<size_t> indentColumns(std::string_view text, size_t tabSize) {
     [editor.backgroundColor setFill];
     NSRectFillUsingOperation(NSIntersectionRect(dirtyRect, self.bounds), NSCompositingOperationSourceOver);
     gw::Document *document = editor.document;
-    if (!document) return;
+    if (!document) {
+        return;
+    }
 
     CGFloat lineHeight = editor.lineHeight;
     NSRect visible = editor.visibleRect;
@@ -355,13 +379,15 @@ std::optional<size_t> indentColumns(std::string_view text, size_t tabSize) {
     NSImage *image = [NSImage imageWithSystemSymbolName:folded ? @"chevron.right" : @"chevron.down" accessibilityDescription:nil];
     image = [image imageWithSymbolConfiguration:[sizeConfiguration configurationByApplyingConfiguration:colorConfiguration]];
     NSSize size = image.size;
-    NSRect target = NSMakeRect(NSWidth(self.bounds) - 22, top + (lineHeight - size.height) / 2, size.width, size.height);
+    CGFloat left = NSWidth(self.bounds) - kFoldArrowInset;
+    CGFloat arrowTop = top + (lineHeight - size.height) / 2;
+    NSRect target = NSMakeRect(left, arrowTop, size.width, size.height);
     [image drawInRect:target];
 }
 
 - (void)updateTrackingAreas {
     [super updateTrackingAreas];
-    for (NSTrackingArea *area in self.trackingAreas) {
+    for (NSTrackingArea *area in self.trackingAreas.copy) {
         [self removeTrackingArea:area];
     }
     NSTrackingAreaOptions options = NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect;
@@ -430,7 +456,9 @@ std::optional<size_t> indentColumns(std::string_view text, size_t tabSize) {
         }
     }
     // A click on the fold arrow folds or opens the block.
-    BOOL onFoldArrow = point.x >= NSWidth(self.bounds) - 28 && point.x < NSWidth(self.bounds) - 12;
+    CGFloat arrowClickLeft = NSWidth(self.bounds) - kFoldArrowInset - kFoldArrowSlop;
+    CGFloat arrowClickRight = NSWidth(self.bounds) - kChangeBarClickWidth;
+    BOOL onFoldArrow = point.x >= arrowClickLeft && point.x < arrowClickRight;
     if (onFoldArrow && editor.document != nullptr) {
         size_t clickedLine = [editor lineAtY:point.y + NSMinY(editor.visibleRect) subrow:nullptr];
         bool inRange = clickedLine < editor.document->buffer().lineCount();
@@ -439,7 +467,7 @@ std::optional<size_t> indentColumns(std::string_view text, size_t tabSize) {
             return;
         }
     }
-    if (editor.onChangeMarkerClick != nil && point.x >= NSWidth(self.bounds) - 14 && !editor.lineChanges.empty()) {
+    if (editor.onChangeMarkerClick != nil && point.x >= NSWidth(self.bounds) - kChangeBarClickWidth && !editor.lineChanges.empty()) {
         CGFloat lineHeight = editor.lineHeight;
         size_t line = [editor lineAtY:point.y + NSMinY(editor.visibleRect) subrow:nullptr];
         for (const gw::LineChange &change : editor.lineChanges) {
@@ -474,7 +502,9 @@ static constexpr CGFloat kMiniLine = 2.6;
 static constexpr CGFloat kMiniChar = 1.25;
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
-    if ((self = [super initWithFrame:frameRect])) self.clipsToBounds = YES;
+    if ((self = [super initWithFrame:frameRect])) {
+        self.clipsToBounds = YES;
+    }
     return self;
 }
 
@@ -488,7 +518,9 @@ static constexpr CGFloat kMiniChar = 1.25;
     GWEditorView *editor = self.editor;
     CGFloat total = lines * kMiniLine;
     CGFloat height = NSHeight(self.bounds);
-    if (total <= height) return 0;
+    if (total <= height) {
+        return 0;
+    }
     NSRect visible = editor.visibleRect;
     CGFloat scrollable = std::max(1.0, NSHeight(editor.frame) - NSHeight(visible));
     return std::min(1.0, NSMinY(visible) / scrollable) * (total - height);
@@ -497,7 +529,9 @@ static constexpr CGFloat kMiniChar = 1.25;
 - (void)drawRect:(NSRect)dirtyRect {
     GWEditorView *editor = self.editor;
     gw::Document *document = editor.document;
-    if (!document) return;
+    if (!document) {
+        return;
+    }
     const auto &buffer = document->buffer();
     size_t count = buffer.lineCount();
     CGFloat offset = [self offsetForLines:count];
@@ -509,7 +543,9 @@ static constexpr CGFloat kMiniChar = 1.25;
 
     for (size_t line = first; line <= last; ++line) {
         std::string_view text = buffer.line(line);
-        if (text.empty()) continue;
+        if (text.empty()) {
+            continue;
+        }
         CGFloat y = line * kMiniLine - offset;
         // Only use tokens the editor has already computed; the minimap never forces work.
         const std::vector<gw::tm::Token> *tokens =
@@ -524,7 +560,9 @@ static constexpr CGFloat kMiniChar = 1.25;
             size_t runStart = std::string::npos;
             for (size_t index = start; index <= end; ++index) {
                 bool visibleChar = index < end && text[index] != ' ' && text[index] != '\t';
-                if (visibleChar && runStart == std::string::npos) runStart = column;
+                if (visibleChar && runStart == std::string::npos) {
+                    runStart = column;
+                }
                 if (!visibleChar && runStart != std::string::npos) {
                     CGContextFillRect(context, CGRectMake(6 + runStart * kMiniChar, y, (column - runStart) * kMiniChar, kMiniLine * 0.72));
                     runStart = std::string::npos;
@@ -532,7 +570,9 @@ static constexpr CGFloat kMiniChar = 1.25;
                 if (index < end) {
                     column += text[index] == '\t' ? editor.tabSize : 1;
                 }
-                if (6 + column * kMiniChar > NSWidth(self.bounds)) break;
+                if (6 + column * kMiniChar > NSWidth(self.bounds)) {
+                    break;
+                }
             }
         };
         if (tokens) {
@@ -589,7 +629,7 @@ static constexpr CGFloat kMiniChar = 1.25;
         if (section.title.empty()) {
             continue;
         }
-        NSString *title = @(section.title.c_str());
+        NSString *title = StringFromUTF8(section.title);
         NSSize size = [title sizeWithAttributes:labelAttributes];
         NSRect label = NSMakeRect(3, y, std::min(size.width + 8, width - 6), size.height + 2);
         [[editor.backgroundColor colorWithAlphaComponent:0.9] setFill];
@@ -601,7 +641,9 @@ static constexpr CGFloat kMiniChar = 1.25;
 - (void)scrollToPoint:(NSPoint)point {
     GWEditorView *editor = self.editor;
     gw::Document *document = editor.document;
-    if (!document) return;
+    if (!document) {
+        return;
+    }
     size_t count = document->buffer().lineCount();
     CGFloat offset = [self offsetForLines:count];
     size_t line = static_cast<size_t>(std::max(0.0, (point.y + offset) / kMiniLine));
@@ -665,17 +707,20 @@ static constexpr CGFloat kMiniChar = 1.25;
     BOOL _vimEnabled;
     NSString *_vimShownStatus;
 
-    // The Vim cursor's smear. Four corners chase the cursor's new place at different speeds, the
-    // leading ones first, so the shape stretches and then catches up; how far back it reaches
-    // decides what is drawn behind the cursor: a copy of the box, then a tail tapering to a point.
-    CAShapeLayer *_smearLayer;      // the box copy
-    CAShapeLayer *_smearTailLayer;  // the tapering tail behind it
-    CADisplayLink *_smearLink;
-    CGPoint _smearCorners[4];
-    CGPoint _smearTargets[4];
-    CGPoint _smearHeading;     // unit vector of the way the cursor went
-    CGFloat _smearStreak;      // how many moves in a row came before the smear settled: the longer, the longer the tail
-
+    // The Vim cursor smears when it moves (see `gw::SpringSmear`): its corners spring toward the new
+    // place, stretching it into one shape that fades from a faint trail into the solid cursor and on
+    // into a faint glow ahead. The fade is drawn in the caret's color at full strength, cut to the
+    // smear's outline, and the group as a whole at the caret's own strength, so at the end it looks
+    // just like the caret. The real caret layer is hidden while the smear runs and takes over again at
+    // its end.
+    CALayer *_smearGroup;
+    CAGradientLayer *_smearFill;
+    CAShapeLayer *_smearOutline;  // the fill's mask
+    CADisplayLink *_glideLink;  // runs while the smear does
+    gw::SpringSmear _smear;
+    BOOL _smearing;
+    CFTimeInterval _lastSmearFrame;
+    BOOL _lastCaretWasBlock;           // the shape the caret had when it last moved: a block or the thin bar
     NSRect _lastCaretRect;
     BOOL _hasLastCaretRect;
 
@@ -781,34 +826,38 @@ static constexpr CGFloat kMiniChar = 1.25;
         _caretLayer.hidden = YES;
         [self.layer addSublayer:_caretLayer];
 
-        _smearLayer = [CAShapeLayer layer];
-        _smearLayer.zPosition = 9;  // just under the caret
-        _smearLayer.shadowRadius = 6;
-        _smearLayer.shadowOpacity = 0.7;
-        _smearLayer.shadowOffset = CGSizeZero;
-        _smearLayer.hidden = YES;
-        [self.layer addSublayer:_smearLayer];
-        _smearTailLayer = [CAShapeLayer layer];
-        _smearTailLayer.zPosition = 8;
-        _smearTailLayer.hidden = YES;
-        [self.layer addSublayer:_smearTailLayer];
+        // The smear's group glows like the caret, so the real one can take over from it unseen.
+        _smearGroup = [CALayer layer];
+        _smearGroup.anchorPoint = CGPointZero;
+        _smearGroup.allowsGroupOpacity = YES;
+        _smearGroup.shadowRadius = 6;
+        _smearGroup.shadowOpacity = 0.9;
+        _smearGroup.shadowOffset = CGSizeZero;
+        _smearGroup.zPosition = 10;
+        _smearGroup.hidden = YES;
+        _smearFill = [CAGradientLayer layer];
+        _smearFill.anchorPoint = CGPointZero;
+        _smearOutline = [CAShapeLayer layer];
+        _smearOutline.anchorPoint = CGPointZero;
+        _smearFill.mask = _smearOutline;
+        [_smearGroup addSublayer:_smearFill];
+        [self.layer addSublayer:_smearGroup];
 
         _vim.readClipboard = [] {
             NSString *text = [NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString];
             return std::string(text.UTF8String ?: "");
         };
         _vim.writeClipboard = [](const std::string &text) {
-            NSString *copied = [NSString stringWithUTF8String:text.c_str()];
-            if (copied != nil) {
-                [NSPasteboard.generalPasteboard clearContents];
-                [NSPasteboard.generalPasteboard setString:copied forType:NSPasteboardTypeString];
-            }
+            [NSPasteboard.generalPasteboard clearContents];
+            [NSPasteboard.generalPasteboard setString:StringFromUTF8(text) forType:NSPasteboardTypeString];
         };
         __weak GWEditorView *weakSelf = self;
         _vim.onCommand = [weakSelf](const std::string &command) -> std::string {
             GWEditorView *strongSelf = weakSelf;
-            if (strongSelf == nil || !strongSelf.onVimCommand) return "E492: Not an editor command: " + command;
-            NSString *error = strongSelf.onVimCommand(@(command.c_str()));
+            if (strongSelf == nil || !strongSelf.onVimCommand) {
+                return "E492: Not an editor command: " + command;
+            }
+            NSString *error = strongSelf.onVimCommand(StringFromUTF8(command));
             return error.length > 0 ? std::string(error.UTF8String) : std::string();
         };
         _vim.onAction = [weakSelf](gw::VimAction action) {
@@ -827,7 +876,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 }
 
 - (void)dealloc {
-    [_smearLink invalidate];
+    [_glideLink invalidate];
     [_blinkTimer invalidate];
     [NSNotificationCenter.defaultCenter removeObserver:self];
 }
@@ -840,7 +889,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 - (void)updateTrackingAreas {
     [super updateTrackingAreas];
-    for (NSTrackingArea *area in self.trackingAreas) {
+    for (NSTrackingArea *area in self.trackingAreas.copy) {
         [self removeTrackingArea:area];
     }
     NSTrackingAreaOptions options = NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect;
@@ -881,7 +930,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 
 /// The room a hint takes in its line: its text, the chip's padding and a gap.
 - (CGFloat)inlayWidthForHint:(const GWInlayHint &)hint {
-    NSString *label = @(hint.label.c_str());
+    NSString *label = StringFromUTF8(hint.label);
     CGFloat text = ceil([label sizeWithAttributes:[self inlayHintAttributes]].width);
     return text + kInlayChipPadding * 2 + kInlayGap * (hint.padLeft ? 2 : 1) + (hint.padRight ? kInlayGap : 0);
 }
@@ -952,7 +1001,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
                 x = spot - totalAtColumn[column] + usedAtColumn[column] + kInlayGap * (hint.padLeft ? 2 : 1);
                 usedAtColumn[column] += width;
             }
-            NSString *label = @(hint.label.c_str());
+            NSString *label = StringFromUTF8(hint.label);
             NSSize textSize = [label sizeWithAttributes:attributes];
             CGFloat top = [self yForLine:line];
             NSRect chip = NSMakeRect(x, top + 4, textSize.width + kInlayChipPadding * 2, _lineHeight - 8);
@@ -1101,8 +1150,12 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         const auto &buffer = document->buffer();
         for (size_t line = 0; line < std::min<size_t>(buffer.lineCount(), 2000); ++line) {
             std::string_view text = buffer.line(line);
-            if (!text.empty() && text[0] == '\t') ++tabs;
-            if (text.size() >= 2 && text[0] == ' ' && text[1] == ' ') ++spaces;
+            if (!text.empty() && text[0] == '\t') {
+                ++tabs;
+            }
+            if (text.size() >= 2 && text[0] == ' ' && text[1] == ' ') {
+                ++spaces;
+            }
         }
         _detectedUseTabs = tabs > spaces;
         _useTabs = _detectedUseTabs;
@@ -1134,7 +1187,9 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 }
 
 - (void)document:(gw::Document *)document changedFromLine:(size_t)line {
-    if (document != _document) return;
+    if (document != _document) {
+        return;
+    }
     _depthValid = std::min(_depthValid, line);
     _matchVersion = UINT64_MAX;
 }
@@ -1228,7 +1283,9 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     _longestLine = 0;
     if (_document) {
         const auto &buffer = _document->buffer();
-        for (size_t line = 0; line < buffer.lineCount(); ++line) _longestLine = std::max(_longestLine, buffer.line(line).size());
+        for (size_t line = 0; line < buffer.lineCount(); ++line) {
+            _longestLine = std::max(_longestLine, buffer.line(line).size());
+        }
     }
     [self updateFrameSize];
     self.needsDisplay = YES;
@@ -1241,7 +1298,9 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 - (void)viewDidMoveToSuperview {
     [super viewDidMoveToSuperview];
     NSScrollView *scrollView = self.enclosingScrollView;
-    if (!scrollView) return;
+    if (!scrollView) {
+        return;
+    }
     scrollView.contentView.postsBoundsChangedNotifications = YES;
     scrollView.contentView.postsFrameChangedNotifications = YES;
     [NSNotificationCenter.defaultCenter removeObserver:self name:NSViewFrameDidChangeNotification object:nil];
@@ -1292,9 +1351,13 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 
 - (void)updateFrameSize {
     NSScrollView *scrollView = self.enclosingScrollView;
-    if (!scrollView) return;
+    if (!scrollView) {
+        return;
+    }
     // The window lays the gutter out beside the scroll view; tell it when the width changes.
-    if (std::abs(NSWidth(_gutter.frame) - self.gutterWidth) > 0.5) _gutter.superview.needsLayout = YES;
+    if (std::abs(NSWidth(_gutter.frame) - self.gutterWidth) > 0.5) {
+        _gutter.superview.needsLayout = YES;
+    }
     NSSize clip = scrollView.contentView.bounds.size;
     if (_wrapEnabled) {
         uint32_t columns = [self computeWrapColumns];
@@ -1339,10 +1402,14 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     if (!columns) {
         std::optional<size_t> above, below;
         for (size_t look = line; look-- > 0 && line - look < 100;) {
-            if ((above = indentColumns(buffer.line(look), _tabSize))) break;
+            if ((above = indentColumns(buffer.line(look), _tabSize))) {
+                break;
+            }
         }
         for (size_t look = line + 1; look < count && look - line < 100; ++look) {
-            if ((below = indentColumns(buffer.line(look), _tabSize))) break;
+            if ((below = indentColumns(buffer.line(look), _tabSize))) {
+                break;
+            }
         }
         return std::min(above.value_or(0), below.value_or(0)) / _tabSize;
     }
@@ -1397,7 +1464,9 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     size_t levelsAbove = first > 0 ? [self indentLevelsForLine:first - 1] : 0;
     size_t levelsBelow = last + 1 < lineCount ? [self indentLevelsForLine:last + 1] : 0;
     size_t deepest = 0;
-    for (size_t value : levels) deepest = std::max(deepest, value);
+    for (size_t value : levels) {
+        deepest = std::max(deepest, value);
+    }
 
     // The block the caret is in, found from the caret outward so it doesn't depend on which
     // lines are being drawn: the guide level and the lines it covers.
@@ -1406,8 +1475,12 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     size_t activeLevel = caretLevels > 0 ? caretLevels - 1 : SIZE_MAX;
     size_t activeStart = caretLine, activeEnd = caretLine;
     if (activeLevel != SIZE_MAX) {
-        while (activeStart > 0 && caretLine - activeStart < 1500 && [self indentLevelsForLine:activeStart - 1] > activeLevel) --activeStart;
-        while (activeEnd + 1 < lineCount && activeEnd - caretLine < 1500 && [self indentLevelsForLine:activeEnd + 1] > activeLevel) ++activeEnd;
+        while (activeStart > 0 && caretLine - activeStart < 1500 && [self indentLevelsForLine:activeStart - 1] > activeLevel) {
+            --activeStart;
+        }
+        while (activeEnd + 1 < lineCount && activeEnd - caretLine < 1500 && [self indentLevelsForLine:activeEnd + 1] > activeLevel) {
+            ++activeEnd;
+        }
     }
     CGFloat tick = std::min<CGFloat>(5, step * 0.4);  // the short arms of the bracket
 
@@ -1422,7 +1495,9 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
             // A run of lines inside this block.
             size_t runStart = index;
             size_t runEnd = index;
-            while (runEnd + 1 < levels.size() && levels[runEnd + 1] > level) ++runEnd;
+            while (runEnd + 1 < levels.size() && levels[runEnd + 1] > level) {
+                ++runEnd;
+            }
             index = runEnd + 1;
 
             size_t firstLine = first + runStart;
@@ -1441,9 +1516,13 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
             guide.lineCapStyle = NSLineCapStyleButt;
             guide.lineJoinStyle = NSLineJoinStyleMiter;
             [guide moveToPoint:NSMakePoint(openAtTop ? x : x + tick, top)];
-            if (!openAtTop) [guide lineToPoint:NSMakePoint(x, top)];
+            if (!openAtTop) {
+                [guide lineToPoint:NSMakePoint(x, top)];
+            }
             [guide lineToPoint:NSMakePoint(x, bottom)];
-            if (!openAtBottom) [guide lineToPoint:NSMakePoint(x + tick, bottom)];
+            if (!openAtBottom) {
+                [guide lineToPoint:NSMakePoint(x + tick, bottom)];
+            }
             [guide stroke];
         }
     }
@@ -1458,7 +1537,9 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 /// Strings and comments: brackets inside them don't count.
 - (bool)isInert:(const gw::tm::ScopeNode *)scopes {
     auto found = _inertScopes.find(scopes);
-    if (found != _inertScopes.end()) return found->second;
+    if (found != _inertScopes.end()) {
+        return found->second;
+    }
     bool inert = false;
     for (const gw::tm::ScopeNode *node = scopes; node && !inert; node = node->parent) {
         inert = node->name.rfind("string", 0) == 0 || node->name.rfind("comment", 0) == 0;
@@ -1473,8 +1554,12 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     std::vector<bool> mask(text.size(), true);
     if (tokens) {
         for (const auto &token : *tokens) {
-            if (![self isInert:token.scopes]) continue;
-            for (size_t index = token.start; index < token.end && index < mask.size(); ++index) mask[index] = false;
+            if (![self isInert:token.scopes]) {
+                continue;
+            }
+            for (size_t index = token.start; index < token.end && index < mask.size(); ++index) {
+                mask[index] = false;
+            }
         }
     }
     return mask;
@@ -1492,16 +1577,23 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     while (_depthValid < line) {
         const std::vector<gw::tm::Token> *tokens = nullptr;
         if (hasGrammar) {
-            if (_depthValid >= _highlighter->validLines()) return std::nullopt;
+            if (_depthValid >= _highlighter->validLines()) {
+                return std::nullopt;
+            }
             tokens = _highlighter->tokens(buffer, _depthValid, 0);
         }
         std::string_view text = buffer.line(_depthValid);
         std::vector<bool> code = [self codeMaskForLine:_depthValid tokens:tokens];
         int depth = _depthAt[_depthValid];
         for (size_t index = 0; index < text.size(); ++index) {
-            if (!code[index]) continue;
-            if (isOpenerByte(text[index])) ++depth;
-            else if (isCloserByte(text[index])) depth = std::max(0, depth - 1);
+            if (!code[index]) {
+                continue;
+            }
+            if (isOpenerByte(text[index])) {
+                ++depth;
+            } else if (isCloserByte(text[index])) {
+                depth = std::max(0, depth - 1);
+            }
         }
         _depthAt[++_depthValid] = depth;
     }
@@ -1510,9 +1602,13 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 
 /// The matching pair when the caret touches a bracket.
 - (std::optional<std::pair<gw::Position, gw::Position>>)bracketMatch {
-    if (!_document || !_document->selection.empty()) return std::nullopt;
+    if (!_document || !_document->selection.empty()) {
+        return std::nullopt;
+    }
     gw::Position caret = _document->selection.caret;
-    if (_matchVersion == _document->version() && _matchCaret == caret) return _match;
+    if (_matchVersion == _document->version() && _matchCaret == caret) {
+        return _match;
+    }
     _matchVersion = _document->version();
     _matchCaret = caret;
     _match.reset();
@@ -1528,10 +1624,14 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     candidates.push_back(caret);
     for (gw::Position at : candidates) {
         std::string_view text = buffer.line(at.line);
-        if (at.column >= text.size()) continue;
+        if (at.column >= text.size()) {
+            continue;
+        }
         char bracket = text[at.column];
         char partner = matchingByte(bracket);
-        if (!partner || !codeMask(at.line)[at.column]) continue;
+        if (!partner || !codeMask(at.line)[at.column]) {
+            continue;
+        }
         bool forward = isOpenerByte(bracket);
         int depth = 0;
         long line = static_cast<long>(at.line);
@@ -1542,9 +1642,12 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
             std::vector<bool> code = codeMask(static_cast<size_t>(line));
             if (forward) {
                 for (long index = column; index < static_cast<long>(scan.size()); ++index) {
-                    if (!code[static_cast<size_t>(index)]) continue;
-                    if (scan[static_cast<size_t>(index)] == bracket) ++depth;
-                    else if (scan[static_cast<size_t>(index)] == partner && --depth == 0) {
+                    if (!code[static_cast<size_t>(index)]) {
+                        continue;
+                    }
+                    if (scan[static_cast<size_t>(index)] == bracket) {
+                        ++depth;
+                    } else if (scan[static_cast<size_t>(index)] == partner && --depth == 0) {
                         _match = std::make_pair(at, gw::Position{static_cast<size_t>(line), static_cast<size_t>(index)});
                         return _match;
                     }
@@ -1553,9 +1656,12 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
                 column = 0;
             } else {
                 for (long index = column; index >= 0; --index) {
-                    if (index >= static_cast<long>(scan.size()) || !code[static_cast<size_t>(index)]) continue;
-                    if (scan[static_cast<size_t>(index)] == bracket) ++depth;
-                    else if (scan[static_cast<size_t>(index)] == partner && --depth == 0) {
+                    if (index >= static_cast<long>(scan.size()) || !code[static_cast<size_t>(index)]) {
+                        continue;
+                    }
+                    if (scan[static_cast<size_t>(index)] == bracket) {
+                        ++depth;
+                    } else if (scan[static_cast<size_t>(index)] == partner && --depth == 0) {
                         _match = std::make_pair(gw::Position{static_cast<size_t>(line), static_cast<size_t>(index)}, at);
                         return _match;
                     }
@@ -1581,12 +1687,16 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         }
     }
     auto found = _layouts.find(index);
-    if (found != _layouts.end() && (found->second.highlighted || !tokens)) return &found->second;
+    if (found != _layouts.end() && (found->second.highlighted || !tokens)) {
+        return &found->second;
+    }
 
     std::string_view text = buffer.line(index);
     NSString *string = [[NSString alloc] initWithBytes:text.data() length:text.size() encoding:NSUTF8StringEncoding];
     bool utf8 = string != nil;
-    if (!string) string = [[NSString alloc] initWithBytes:text.data() length:text.size() encoding:NSISOLatin1StringEncoding];
+    if (!string) {
+        string = [[NSString alloc] initWithBytes:text.data() length:text.size() encoding:NSISOLatin1StringEncoding];
+    }
 
     LineLayout layout;
     buildOffsetMaps(text, utf8, layout);
@@ -1628,7 +1738,9 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         int level = *depth;
         NSUInteger count = _bracketColors.count;
         for (size_t byte = 0; byte < text.size(); ++byte) {
-            if (!code[byte]) continue;
+            if (!code[byte]) {
+                continue;
+            }
             char c = text[byte];
             if (isOpenerByte(c)) {
                 [attributed addAttribute:NSForegroundColorAttributeName value:_bracketColors[static_cast<NSUInteger>(level) % count]
@@ -1761,7 +1873,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
             if (!entry.showsNote || entry.look.afterText.empty()) {
                 continue;
             }
-            NSString *note = @(entry.look.afterText.c_str());
+            NSString *note = StringFromUTF8(entry.look.afterText);
             NSRange newline = [note rangeOfString:@"\n"];
             if (newline.location != NSNotFound) {
                 note = [note substringToIndex:newline.location];
@@ -1854,15 +1966,21 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 
 - (gw::Position)positionForPoint:(NSPoint)point {
     const auto &buffer = _document->buffer();
-    if (point.y < 0) return {0, 0};
+    if (point.y < 0) {
+        return {0, 0};
+    }
     size_t subrow = 0;
     size_t line = [self lineAtY:point.y subrow:&subrow];
-    if (line >= buffer.lineCount()) return buffer.end();
+    if (line >= buffer.lineCount()) {
+        return buffer.end();
+    }
     LineLayout *layout = [self layoutForLine:line];
     subrow = std::min(subrow, layout->rowCount() - 1);
     CGFloat x = point.x - self.textLeft - layout->indentForRow(subrow);
     CFIndex local = CTLineGetStringIndexForPosition(layout->lineForRow(subrow), CGPointMake(x, 0));
-    if (local == kCFNotFound) local = 0;
+    if (local == kCFNotFound) {
+        local = 0;
+    }
     uint32_t unit = layout->rowStart(subrow) + static_cast<uint32_t>(local);
     bool notLastRow = subrow + 1 < layout->rowCount();
     if (notLastRow) {
@@ -2002,7 +2120,9 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 
 /// Rows of the lines an edit touched changed length; keep the map in step.
 - (void)document:(gw::Document *)document changed:(const gw::Change &)change {
-    if (document != _document) return;
+    if (document != _document) {
+        return;
+    }
     _depthValid = std::min(_depthValid, change.firstLine);
     _matchVersion = UINT64_MAX;
 
@@ -2118,14 +2238,18 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     // drawing over old pixels would leave a faint echo of the previous text.
     [_backgroundColor setFill];
     NSRectFillUsingOperation(dirtyRect, NSCompositingOperationCopy);
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     _highlightBlocked = false;
 
     const auto &buffer = _document->buffer();
     size_t count = buffer.lineCount();
     size_t first = [self lineAtY:NSMinY(dirtyRect) subrow:nullptr];
     size_t last = std::min(count - 1, [self lineAtY:NSMaxY(dirtyRect) subrow:nullptr]);
-    if (first >= count) return;
+    if (first >= count) {
+        return;
+    }
     NSRect visible = self.visibleRect;
     gw::Range selection = _document->selection.range();
     gw::Position caretPosition = _document->selection.caret;
@@ -2182,7 +2306,9 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     CGContextRef context = NSGraphicsContext.currentContext.CGContext;
     CGContextSetTextMatrix(context, CGAffineTransformMakeScale(1, -1));  // flipped view
     for (size_t line = first; line <= last; ++line) {
-        if ([self isLineHidden:line]) continue;
+        if ([self isLineHidden:line]) {
+            continue;
+        }
         CGFloat y = [self yForLine:line];
         // Selections behind the text, with softly rounded ends.
         for (const gw::Range &covered : selectionRanges) {
@@ -2229,7 +2355,9 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     if (auto match = [self bracketMatch]) {
         [_matchColor setStroke];
         for (gw::Position at : {match->first, match->second}) {
-            if (at.line < first || at.line > last || [self isLineHidden:at.line]) continue;
+            if (at.line < first || at.line > last || [self isLineHidden:at.line]) {
+                continue;
+            }
             [self enumerateSegmentsInLine:at.line fromByte:at.column toByte:at.column + 1 continuesPastEnd:NO
                                     block:^(CGFloat left, CGFloat right, CGFloat top) {
                 NSBezierPath *box = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(left - 0.5, top + 3, right - left + 1, self->_lineHeight - 6)
@@ -2254,7 +2382,9 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 
 - (void)setDiagnostics:(std::vector<GWDiagnostic>)diagnostics {
     std::sort(diagnostics.begin(), diagnostics.end(), [](const GWDiagnostic &a, const GWDiagnostic &b) {
-        if (a.range.start.line != b.range.start.line) return a.range.start.line < b.range.start.line;
+        if (a.range.start.line != b.range.start.line) {
+            return a.range.start.line < b.range.start.line;
+        }
         return a.severity < b.severity;
     });
     _diagnostics = std::move(diagnostics);
@@ -2339,7 +2469,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 
 /// The problem's text after the end of the line, tinted like the squiggle (like Error Lens).
 - (void)drawInlineMessage:(const std::string &)message severity:(int)severity forLine:(size_t)line {
-    NSString *full = @(message.c_str());
+    NSString *full = StringFromUTF8(message);
     NSRange newline = [full rangeOfString:@"\n"];
     if (newline.location != NSNotFound) {
         full = [full substringToIndex:newline.location];
@@ -2621,12 +2751,16 @@ static bool isAccessLabel(std::string_view line) {
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(hoverTimerFired) object:nil];
     if (_hoverActive) {
         _hoverActive = NO;
-        if (self.onHoverEnd) self.onHoverEnd();
+        if (self.onHoverEnd) {
+            self.onHoverEnd();
+        }
     }
 }
 
 - (void)mouseMoved:(NSEvent *)event {
-    if (!_document || !self.onHoverRequest) return;
+    if (!_document || !self.onHoverRequest) {
+        return;
+    }
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
     if (point.x < self.textLeft) {
         [self cancelHover];
@@ -2659,7 +2793,9 @@ static bool isAccessLabel(std::string_view line) {
 }
 
 - (void)hoverTimerFired {
-    if (!_document || !self.onHoverRequest || _hoverWord.start.line == SIZE_MAX) return;
+    if (!_document || !self.onHoverRequest || _hoverWord.start.line == SIZE_MAX) {
+        return;
+    }
     _hoverActive = YES;
     self.onHoverRequest(_hoverWord.start, _hoverWord);
 }
@@ -2703,13 +2839,17 @@ static bool isAccessLabel(std::string_view line) {
 
 /// Folds the block that starts on `line`, or opens it if it is folded.
 - (void)toggleFoldAtLine:(size_t)line {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     if (_folds.isFoldHeader(line)) {
         _folds.unfold(line);
         [self rowLayoutChanged];
         return;
     }
-    if (![self isLineFoldable:line]) return;
+    if (![self isLineFoldable:line]) {
+        return;
+    }
     size_t end = gw::foldEnd(_document->buffer(), line, _tabSize);
     _folds.fold(line, end);
     [self moveCaretOutOfHiddenLines];
@@ -2746,7 +2886,9 @@ static bool isAccessLabel(std::string_view line) {
 }
 
 - (IBAction)foldCode:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     std::optional<size_t> line = [self foldableLineContaining:_document->selection.caret.line];
     if (!line) {
         NSBeep();
@@ -2762,21 +2904,27 @@ static bool isAccessLabel(std::string_view line) {
                 break;
             }
         }
-        if (!outer) return;
+        if (!outer) {
+            return;
+        }
         line = outer;
     }
     [self toggleFoldAtLine:*line];
 }
 
 - (IBAction)unfoldCode:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     if (_folds.unfoldContaining(_document->selection.caret.line)) {
         [self rowLayoutChanged];
     }
 }
 
 - (IBAction)foldAllCode:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     const auto &buffer = _document->buffer();
     _folds.clear();
     size_t line = 0;
@@ -2794,7 +2942,9 @@ static bool isAccessLabel(std::string_view line) {
 }
 
 - (IBAction)unfoldAllCode:(id)sender {
-    if (_folds.empty()) return;
+    if (_folds.empty()) {
+        return;
+    }
     _folds.clear();
     [self rowLayoutChanged];
 }
@@ -2868,7 +3018,9 @@ static bool isAccessLabel(std::string_view line) {
 /// Backgrounds from the user's color rules ("highlight this name", scope backgrounds).
 - (void)drawHighlightsFromLine:(size_t)first toLine:(size_t)last {
     for (size_t line = first; line <= last; ++line) {
-        if ([self isLineHidden:line]) continue;
+        if ([self isLineHidden:line]) {
+            continue;
+        }
         LineLayout *layout = [self layoutForLine:line];
         for (const LineLayout::Highlight &highlight : layout->highlights) {
             NSColor *color = GWColor(highlight.color);
@@ -2894,7 +3046,9 @@ static bool isAccessLabel(std::string_view line) {
     const auto &buffer = _document->buffer();
     [_occurrenceColor setFill];
     for (size_t line = first; line <= last; ++line) {
-        if ([self isLineHidden:line]) continue;
+        if ([self isLineHidden:line]) {
+            continue;
+        }
         std::string_view text = buffer.line(line);
         size_t found = text.find(word);
         while (found != std::string::npos) {
@@ -3056,7 +3210,7 @@ static bool isAccessLabel(std::string_view line) {
     NSMenu *menu = [NSMenu new];
     std::string word = [self wordAtCaret];
     if (!word.empty()) {
-        NSString *name = @(word.c_str());
+        NSString *name = StringFromUTF8(word);
         [menu addItemWithTitle:[NSString stringWithFormat:@"Color “%@”…", name] action:@selector(inspectColors:) keyEquivalent:@""];
         [menu addItemWithTitle:[NSString stringWithFormat:@"Highlight Every “%@”", name]
                         action:@selector(highlightName:)
@@ -3131,17 +3285,30 @@ static bool isAccessLabel(std::string_view line) {
     [_blinkTimer invalidate];
     _blinkTimer = nil;
     NSRect target = show ? self.caretRect : NSZeroRect;
-    // The Vim cursor smears when it moves; the real caret then jumps at once and the trail
-    // does the moving.
+    // The Vim cursor smears when it moves: the block glides to its new place with a trail behind it.
+    BOOL block = self.vimBlockCursor;
+    if (show && _hasLastCaretRect && block != _lastCaretWasBlock) {
+        // Going into or out of insert mode swaps the block for the thin bar (or back). Where the caret
+        // was is taken in the new shape, so what it leaves behind looks like the cursor it now is.
+        _lastCaretRect = NSMakeRect(NSMinX(_lastCaretRect), NSMidY(_lastCaretRect) - NSHeight(target) / 2,
+                                    NSWidth(target), NSHeight(target));
+    }
     BOOL smear = show && animated && _vimEnabled && GWServices.shared.settings.vimCursorSmear &&
                  _hasLastCaretRect && !NSEqualRects(_lastCaretRect, target);
     if (smear) {
-        [self startSmearFrom:_lastCaretRect to:target];
+        // Typing in insert mode keeps the caret on the character just typed, so only the block smears.
+        BOOL smears = block && gw::isRealMove(SmearRectOf(_lastCaretRect), SmearRectOf(target), _charWidth, _lineHeight);
+        if (smears) {
+            [self smearTo:target];
+        } else {
+            [self stopSmear];
+        }
     } else if (!show || !animated || !_vimEnabled) {
         [self stopSmear];
     }
     _lastCaretRect = target;
     _hasLastCaretRect = show;
+    _lastCaretWasBlock = block;
 
     [CATransaction begin];
     if (animated && !smear) {
@@ -3150,13 +3317,17 @@ static bool isAccessLabel(std::string_view line) {
     } else {
         [CATransaction setDisableActions:YES];
     }
-    _caretLayer.hidden = !show;
+    _caretLayer.hidden = !show || _smearing;  // the smear stands in for it
     _caretLayer.opacity = 1;
     // A block sits over a character, so it lets the character show through.
     _caretLayer.backgroundColor = (self.vimBlockCursor ? [_caretColor colorWithAlphaComponent:0.55] : _caretColor).CGColor;
-    if (show) _caretLayer.frame = target;
+    if (show) {
+        _caretLayer.frame = target;
+    }
     [CATransaction commit];
-    if (!show) return;
+    if (!show) {
+        return;
+    }
 
     // Blink with a gentle fade, twice a second; the text itself is never redrawn for it.
     __weak CALayer *caret = _caretLayer;
@@ -3170,160 +3341,121 @@ static bool isAccessLabel(std::string_view line) {
 
 // MARK: Cursor smear
 
-static void CornersOfRect(NSRect rect, CGPoint corners[4]) {
-    corners[0] = CGPointMake(NSMinX(rect), NSMinY(rect));
-    corners[1] = CGPointMake(NSMaxX(rect), NSMinY(rect));
-    corners[2] = CGPointMake(NSMaxX(rect), NSMaxY(rect));
-    corners[3] = CGPointMake(NSMinX(rect), NSMaxY(rect));
+static gw::SmearRect SmearRectOf(NSRect rect) {
+    return {rect.origin.x, rect.origin.y, rect.size.width, rect.size.height};
 }
 
-static CGPoint CenterOfCorners(const CGPoint corners[4]) {
-    return CGPointMake((corners[0].x + corners[1].x + corners[2].x + corners[3].x) / 4,
-                       (corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4);
-}
-
-- (void)startSmearFrom:(NSRect)from to:(NSRect)to {
-    if (self.window == nil) return;
-    CGPoint toCorners[4];
-    CornersOfRect(to, toCorners);
-    CGPoint start;
-    if (_smearLink == nil) {
-        CornersOfRect(from, _smearCorners);
-        _smearStreak = 0;
-        _smearLink = [self displayLinkWithTarget:self selector:@selector(smearStep:)];
-        [_smearLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
-    } else {
-        _smearStreak = std::min<CGFloat>(_smearStreak + 1, 14);  // still going from the last move: the tail grows
+/// Sends the smear toward `target`, starting it from where the caret is if it was at rest.
+- (void)smearTo:(NSRect)target {
+    _smear.setCharWidth(_charWidth);
+    if (!_smear.active()) {
+        _smear.jump(SmearRectOf(_lastCaretRect));
     }
-    start = CenterOfCorners(_smearCorners);
-    CGPoint end = CenterOfCorners(toCorners);
-    CGFloat distance = std::hypot(end.x - start.x, end.y - start.y);
-    if (distance > 0.5) {
-        _smearHeading = CGPointMake((end.x - start.x) / distance, (end.y - start.y) / distance);
+    CFTimeInterval now = CACurrentMediaTime();
+    _smear.moveTo(SmearRectOf(target), now);
+    if (_smearing) {
+        return; // already running: it carries on toward the new target
     }
-    CornersOfRect(to, _smearTargets);
-
-    NSColor *color = _caretColor;
-    _smearLayer.fillColor = [color colorWithAlphaComponent:0.5].CGColor;
-    _smearLayer.shadowColor = color.CGColor;
-    _smearTailLayer.fillColor = [color colorWithAlphaComponent:0.28].CGColor;
-    [self drawSmearPath];
-}
-
-- (void)stopSmear {
-    [_smearLink invalidate];
-    _smearLink = nil;
-    _smearStreak = 0;
-    _smearLayer.hidden = YES;
-    _smearTailLayer.hidden = YES;
-}
-
-/// Draws what the chasing corners add up to. Behind the cursor, along the way it came: one more
-/// box, half as strong, and behind that a tail that starts as wide as the box and narrows
-/// to a short edge, weaker still. How far back the corners lag decides how much of that shows.
-- (void)drawSmearPath {
-    NSRect head = NSMakeRect(_smearTargets[0].x, _smearTargets[0].y,
-                             _smearTargets[1].x - _smearTargets[0].x, _smearTargets[3].y - _smearTargets[0].y);
-    if (NSWidth(head) < _charWidth) {
-        head.size.width = _charWidth;  // the thin insert-mode bar smears as the whole character it stands for
-    }
-    CGPoint center = CGPointMake(NSMidX(head), NSMidY(head));
-    CGPoint heading = _smearHeading;
-    CGFloat width = NSWidth(head), height = NSHeight(head);
-    CGFloat boxLength = std::fabs(heading.x) * width + std::fabs(heading.y) * height;  // the box's size along the way it went
-
-    // How far behind the cursor's center the farthest corner still is.
-    CGFloat reach = 0;
-    for (int corner = 0; corner < 4; ++corner) {
-        reach = std::max(reach, (center.x - _smearCorners[corner].x) * heading.x + (center.y - _smearCorners[corner].y) * heading.y);
-    }
-    // A step sideways is a character wide and a step down is a whole line, so a sideways trail
-    // is stretched to the length the same number of steps would leave going down.
-    CGFloat aspect = std::min<CGFloat>(3, std::max<CGFloat>(1, height / width));
-    CGFloat stretch = 1 + (aspect - 1) * std::fabs(heading.x);
-    CGFloat beyond = (reach - boxLength / 2) * stretch;  // how much of the smear lies behind the cursor's back edge
-    reach = boxLength / 2 + beyond;
 
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
-    if (beyond < 1) {
-        _smearLayer.hidden = YES;
-        _smearTailLayer.hidden = YES;
-        [CATransaction commit];
+    _smearGroup.shadowColor = _caretColor.CGColor;
+    _smearGroup.opacity = 0.55;  // as a block caret is drawn: it lets the character show through
+    _smearGroup.hidden = NO;
+    _caretLayer.hidden = YES;
+    [CATransaction commit];
+    _smearing = YES;
+    _lastSmearFrame = now;
+    [self drawSmear];
+    if (self.window != nil && _glideLink == nil) {
+        _glideLink = [self displayLinkWithTarget:self selector:@selector(glideStep:)];
+        [_glideLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    }
+}
+
+/// Draws the smear as it is now. The group is fitted around it, so only that much is composited.
+- (void)drawSmear {
+    gw::SmearShape shape = _smear.shape();
+    if (shape.outline.empty()) {
         return;
     }
-
-    // The box copy: one cursor behind, or less while the smear is still short.
-    CGFloat offset = std::min(beyond, boxLength);
-    CGPathRef boxPath = CGPathCreateWithRect(CGRectOffset(head, -heading.x * offset, -heading.y * offset), nullptr);
-    _smearLayer.path = boxPath;
-    _smearLayer.hidden = NO;
-    CGPathRelease(boxPath);
-
-    // The tail: from the copy's far edge (its center is `offset` behind the cursor's, so its far edge is
-    // half a box farther) to the tip, as wide as the box at first and a quarter of that at the end.
-    CGFloat base = offset + boxLength / 2;
-    CGFloat tip = reach;
-    if (tip - base > 1.5) {
-        CGPoint across = CGPointMake(-heading.y, heading.x);
-        CGFloat half = (std::fabs(across.x) * width + std::fabs(across.y) * height) / 2;
-        CGPoint baseCenter = CGPointMake(center.x - heading.x * base, center.y - heading.y * base);
-        CGPoint tipCenter = CGPointMake(center.x - heading.x * tip, center.y - heading.y * tip);
-        CGFloat narrow = half * 0.25;
-        CGMutablePathRef tail = CGPathCreateMutable();
-        CGPathMoveToPoint(tail, nullptr, baseCenter.x + across.x * half, baseCenter.y + across.y * half);
-        CGPathAddLineToPoint(tail, nullptr, tipCenter.x + across.x * narrow, tipCenter.y + across.y * narrow);
-        CGPathAddLineToPoint(tail, nullptr, tipCenter.x - across.x * narrow, tipCenter.y - across.y * narrow);
-        CGPathAddLineToPoint(tail, nullptr, baseCenter.x - across.x * half, baseCenter.y - across.y * half);
-        CGPathCloseSubpath(tail);
-        _smearTailLayer.path = tail;
-        _smearTailLayer.hidden = NO;
-        CGPathRelease(tail);
-    } else {
-        _smearTailLayer.hidden = YES;
+    // (Not NSUnionRect: it skips empty rectangles, and a point is one.)
+    CGFloat left = INFINITY, top = INFINITY, right = -INFINITY, bottom = -INFINITY;
+    for (const gw::SmearPoint &corner : shape.outline) {
+        left = MIN(left, corner.x);
+        top = MIN(top, corner.y);
+        right = MAX(right, corner.x);
+        bottom = MAX(bottom, corner.y);
     }
+    NSRect bounds = NSMakeRect(left, top, right - left, bottom - top);
+    CGPoint origin = bounds.origin;
+    CGSize size = bounds.size;
+    CGMutablePathRef outline = CGPathCreateMutable();
+    CGPathMoveToPoint(outline, NULL, shape.outline[0].x - origin.x, shape.outline[0].y - origin.y);
+    for (size_t index = 1; index < shape.outline.size(); ++index) {
+        CGPathAddLineToPoint(outline, NULL, shape.outline[index].x - origin.x, shape.outline[index].y - origin.y);
+    }
+    CGPathCloseSubpath(outline);
+
+    NSMutableArray *colors = [NSMutableArray array];
+    NSMutableArray<NSNumber *> *locations = [NSMutableArray array];
+    for (const gw::SmearFade &fade : shape.fades) {
+        [colors addObject:(id)[_caretColor colorWithAlphaComponent:fade.opacity].CGColor];
+        [locations addObject:@(fade.at)];
+    }
+    // The fade's ends, as shares of the group's size.
+    auto unit = [&](const gw::SmearPoint &point) {
+        return CGPointMake((point.x - origin.x) / MAX(size.width, 1e-6), (point.y - origin.y) / MAX(size.height, 1e-6));
+    };
+
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    _smearGroup.frame = bounds;
+    _smearFill.frame = CGRectMake(0, 0, size.width, size.height);
+    _smearOutline.frame = _smearFill.bounds;
+    _smearOutline.path = outline;
+    _smearFill.colors = colors;
+    _smearFill.locations = locations;
+    _smearFill.startPoint = unit(shape.fadeStart);
+    _smearFill.endPoint = unit(shape.fadeEnd);
+    [CATransaction commit];
+    CGPathRelease(outline);
+}
+
+/// The smear is over (or was cut short): it goes and the real caret is back at its place.
+- (void)stopSmear {
+    BOOL wasSmearing = _smearing;
+    _smearing = NO;
+    _smear.stop();
+    [_glideLink invalidate];
+    _glideLink = nil;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    if (wasSmearing && _hasLastCaretRect) {
+        _caretLayer.frame = _lastCaretRect;
+        _caretLayer.opacity = 1;
+        _caretLayer.hidden = NO;
+    }
+    _smearGroup.hidden = YES;
     [CATransaction commit];
 }
 
-/// One frame: every corner moves part of the way to its target. A corner on the side the cursor
-/// is heading for moves fast and one on the far side slowly, which stretches the shape along the
-/// jump and then lets the tail catch up. While moves keep coming the far side gets slower still,
-/// so the tail keeps lengthening the longer the cursor keeps going.
-- (void)smearStep:(CADisplayLink *)link {
-    constexpr CGFloat kLeadingRate = 70;   // per second: about 50 ms to arrive
-    constexpr CGFloat kTrailingRate = 15;  // about 200 ms
-    CGFloat trailingRate = kTrailingRate / (1 + 0.2 * _smearStreak);
-
-    CFTimeInterval elapsed = std::max<CFTimeInterval>(link.targetTimestamp - link.timestamp, 1.0 / 240);
-    CGPoint currentCenter = CenterOfCorners(_smearCorners);
-    CGPoint targetCenter = CenterOfCorners(_smearTargets);
-    CGFloat headingX = targetCenter.x - currentCenter.x;
-    CGFloat headingY = targetCenter.y - currentCenter.y;
-    CGFloat heading = std::hypot(headingX, headingY);
-
-    CGFloat farthest = 0;
-    for (int corner = 0; corner < 4; ++corner) {
-        CGFloat offsetX = _smearTargets[corner].x - targetCenter.x;
-        CGFloat offsetY = _smearTargets[corner].y - targetCenter.y;
-        CGFloat length = std::hypot(offsetX, offsetY);
-        // -1 for a corner on the far side of the heading, +1 for one on the near side.
-        CGFloat facing = heading > 0.5 && length > 0 ? (headingX * offsetX + headingY * offsetY) / (heading * length) : 1;
-        CGFloat rate = trailingRate + (kLeadingRate - trailingRate) * (facing + 1) / 2;
-        CGFloat step = 1 - std::exp(-rate * elapsed);
-        _smearCorners[corner].x += (_smearTargets[corner].x - _smearCorners[corner].x) * step;
-        _smearCorners[corner].y += (_smearTargets[corner].y - _smearCorners[corner].y) * step;
-        farthest = std::max(farthest, std::hypot(_smearTargets[corner].x - _smearCorners[corner].x,
-                                                 _smearTargets[corner].y - _smearCorners[corner].y));
-    }
-    if (farthest < 0.4) {
-        [self stopSmear];
+/// One frame of the smear; the link stops with it.
+- (void)glideStep:(CADisplayLink *)link {
+    CFTimeInterval now = CACurrentMediaTime();
+    double elapsed = now - _lastSmearFrame;
+    _lastSmearFrame = now;
+    if (_smearing && _smear.advance(elapsed)) {
+        [self drawSmear];
         return;
     }
-    [self drawSmearPath];
+    [self stopSmear];
 }
 
 - (void)scrollCaretToVisible {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     NSRect target = NSInsetRect(self.caretRect, -_charWidth * 4, -_lineHeight * 2);
     target.origin.y -= self.stickyHeight;
     target.size.height += self.stickyHeight;
@@ -3332,7 +3464,9 @@ static CGPoint CenterOfCorners(const CGPoint corners[4]) {
 
 - (void)scrollToLineCentered:(size_t)line {
     NSClipView *clip = self.enclosingScrollView.contentView;
-    if (!clip) return;
+    if (!clip) {
+        return;
+    }
     CGFloat y = [self yForLine:line] - NSHeight(clip.bounds) / 2;
     y = std::max(0.0, std::min(y, NSHeight(self.frame) - NSHeight(clip.bounds)));
     [clip scrollToPoint:NSMakePoint(NSMinX(clip.bounds), y)];
@@ -3355,7 +3489,9 @@ static CGPoint CenterOfCorners(const CGPoint corners[4]) {
     [self updateCaretAnimated:YES];
     self.needsDisplay = YES;  // current-line band and bracket match
     _gutter.needsDisplay = YES;
-    if (self.onSelectionChange) self.onSelectionChange();
+    if (self.onSelectionChange) {
+        self.onSelectionChange();
+    }
 }
 
 - (void)didEdit {
@@ -3375,12 +3511,18 @@ static CGPoint CenterOfCorners(const CGPoint corners[4]) {
     NSString *typed = _pendingTyped;
     _pendingTyped = nil;
     [self selectionDidChange];
-    if (self.onEdit) self.onEdit();
-    if (self.onTypedText) self.onTypedText(typed);
+    if (self.onEdit) {
+        self.onEdit();
+    }
+    if (self.onTypedText) {
+        self.onTypedText(typed);
+    }
 }
 
 - (void)moveCaretTo:(gw::Position)position extend:(BOOL)extend {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     if (_multiDepth == 0) {
         _document->extraSelections.clear();
     }
@@ -3535,7 +3677,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 
 /// ⌥⌘↑ / ⌥⌘↓: another cursor on the line above or below, at the same column.
 - (void)addCursorInDirection:(long)direction {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     gw::Position caret = _document->selection.caret;
     double x = _document->preferredX.value_or([self xForPosition:caret]);
     double top = [self yForPosition:caret];
@@ -3564,7 +3708,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 
 /// ⌃⌘G: a cursor on every occurrence of the selected text (or the word at the caret).
 - (IBAction)selectAllOccurrences:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     const auto &buffer = _document->buffer();
     gw::Selection selection = _document->selection;
     std::string needle;
@@ -3608,12 +3754,16 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 // MARK: Mouse
 
 - (void)mouseDown:(NSEvent *)event {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     [self.window makeFirstResponder:self];
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
     const auto &buffer = _document->buffer();
     BOOL inGutter = point.x < NSMinX(self.visibleRect);  // clicks forwarded from the ruler
-    if (inGutter) point.x = NSMinX(self.visibleRect);
+    if (inGutter) {
+        point.x = NSMinX(self.visibleRect);
+    }
     gw::Position position = [self positionForPoint:point];
     _document->preferredX.reset();
 
@@ -3641,7 +3791,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
         return;
     }
 
-    if (event.modifierFlags & NSEventModifierFlagShift) anchor = _document->selection.anchor;
+    if (event.modifierFlags & NSEventModifierFlagShift) {
+        anchor = _document->selection.anchor;
+    }
     if (event.modifierFlags & NSEventModifierFlagOption) {
         // ⌥-click: keep what is selected and start another cursor here.
         _document->extraSelections.push_back(_document->selection);
@@ -3657,10 +3809,14 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
                                                  untilDate:NSDate.distantFuture
                                                     inMode:NSEventTrackingRunLoopMode
                                                    dequeue:YES];
-        if (next.type == NSEventTypeLeftMouseUp) break;
+        if (next.type == NSEventTypeLeftMouseUp) {
+            break;
+        }
         [self autoscroll:next];
         NSPoint dragPoint = [self convertPoint:next.locationInWindow fromView:nil];
-        if (inGutter) dragPoint.x = NSMinX(self.visibleRect);
+        if (inGutter) {
+            dragPoint.x = NSMinX(self.visibleRect);
+        }
         _document->selection = selectForClick([self positionForPoint:dragPoint]);
         [self selectionDidChange];
     }
@@ -3691,7 +3847,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
             selections.push_back(gw::Selection{first, second});
             previousLine = first.line;
         }
-        if (row == endRow) break;
+        if (row == endRow) {
+            break;
+        }
     }
 
     _document->selection = selections.back();
@@ -3709,7 +3867,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
                                                  untilDate:NSDate.distantFuture
                                                     inMode:NSEventTrackingRunLoopMode
                                                    dequeue:YES];
-        if (next.type == NSEventTypeLeftMouseUp) break;
+        if (next.type == NSEventTypeLeftMouseUp) {
+            break;
+        }
         [self autoscroll:next];
         NSPoint dragPoint = [self convertPoint:next.locationInWindow fromView:nil];
         [self selectColumnFrom:start to:dragPoint];
@@ -3719,21 +3879,27 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 // MARK: Keyboard
 
 - (void)keyDown:(NSEvent *)event {
-    if (!_document) return;
-    if (_vimEnabled && [self handleVimKeyEvent:event]) return;
+    if (!_document) {
+        return;
+    }
+    if (_vimEnabled && [self handleVimKeyEvent:event]) {
+        return;
+    }
     [self interpretKeyEvents:@[event]];
 }
 
 // MARK: Vim
 
 - (NSString *)vimStatus {
-    if (!_vimEnabled) return nil;
-    NSString *mode = @(_vim.modeName().c_str());
+    if (!_vimEnabled) {
+        return nil;
+    }
+    NSString *mode = StringFromUTF8(_vim.modeName());
     std::string pending = _vim.pending();
     if (_vim.mode() == gw::VimMode::Command) {
-        return @(pending.c_str());  // the command line: ":wq"
+        return StringFromUTF8(pending);  // the command line: ":wq"
     }
-    return pending.empty() ? mode : [NSString stringWithFormat:@"%@  %s", mode, pending.c_str()];
+    return pending.empty() ? mode : [NSString stringWithFormat:@"%@  %@", mode, StringFromUTF8(pending)];
 }
 
 - (BOOL)insertsText {
@@ -3742,9 +3908,13 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 
 - (void)vimStatusDidChange {
     NSString *status = self.vimStatus;
-    if (status == _vimShownStatus || [status isEqualToString:_vimShownStatus]) return;
+    if (status == _vimShownStatus || [status isEqualToString:_vimShownStatus]) {
+        return;
+    }
     _vimShownStatus = status;
-    if (self.onVimStatusChange) self.onVimStatusChange();
+    if (self.onVimStatusChange) {
+        self.onVimStatusChange();
+    }
 }
 
 /// Normal and visual mode draw a block over the character; insert mode draws the thin bar.
@@ -3757,7 +3927,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 - (BOOL)handleVimKeyEvent:(NSEvent *)event {
     NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
     BOOL inserting = _vim.mode() == gw::VimMode::Insert;
-    if ((flags & NSEventModifierFlagCommand) || _markedText.length > 0) return NO;
+    if ((flags & NSEventModifierFlagCommand) || _markedText.length > 0) {
+        return NO;
+    }
 
     std::string key;
     NSString *plain = event.charactersIgnoringModifiers;
@@ -3779,10 +3951,16 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
         key = "\x7f";
     } else {
         NSString *characters = event.characters;
-        if (characters.length == 0) return NO;
+        if (characters.length == 0) {
+            return NO;
+        }
         unichar first = [characters characterAtIndex:0];
-        if (first >= 0xF700 && first <= 0xF8FF) return NO;  // arrows and function keys
-        if (first < 0x20) return !inserting;                // Tab and the like
+        if (first >= 0xF700 && first <= 0xF8FF) {
+            return NO; // arrows and function keys
+        }
+        if (first < 0x20) {
+            return !inserting; // Tab and the like
+        }
         key = characters.UTF8String ?: "";
     }
 
@@ -3794,7 +3972,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
     }
     _vim.indentUnit = _useTabs ? "\t" : std::string(_tabSize, ' ');
     uint64_t version = _document->version();
-    if (!_vim.handleKey(*_document, key)) return NO;
+    if (!_vim.handleKey(*_document, key)) {
+        return NO;
+    }
     if (_document->version() != version) {
         [self didEdit];
     } else {
@@ -3908,15 +4088,21 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 - (void)moveToEndOfDocumentAndModifySelection:(id)sender { [self moveCaretTo:_document->buffer().end() extend:YES]; }
 
 - (void)selectAll:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     _document->extraSelections.clear();
     _document->selection = {{0, 0}, _document->buffer().end()};
     [self selectionDidChange];
 }
 
 - (void)cancelOperation:(id)sender {
-    if (!_document) return;
-    if (self.onHoverEnd) self.onHoverEnd();  // Escape closes a hint bubble
+    if (!_document) {
+        return;
+    }
+    if (self.onHoverEnd) {
+        self.onHoverEnd(); // Escape closes a hint bubble
+    }
     _document->endSnippet();
     if (!_document->extraSelections.empty()) {
         // Escape first goes back to a single cursor.
@@ -3948,13 +4134,17 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 }
 
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     GW_FOR_EACH_CURSOR([self insertText:string replacementRange:replacementRange];)
     _markedText = nil;
     NSString *plain = [string isKindOfClass:NSAttributedString.class] ? [(NSAttributedString *)string string] : string;
     _pendingTyped = plain;  // didEdit reports it to the completion popup
     std::string text = plain.UTF8String ? plain.UTF8String : "";
-    if (text.empty()) return;
+    if (text.empty()) {
+        return;
+    }
 
     gw::Selection selection = _document->selection;
     std::string next = [self textAround:selection.caret before:NO];
@@ -3968,7 +4158,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
         }
     }
     for (const auto &[open, close] : _configuration.autoClosingPairs) {
-        if (text != open) continue;
+        if (text != open) {
+            continue;
+        }
         if (!selection.empty() && selection.range().start.line == selection.range().end.line) {
             // Wrap the selection: (selected) / "selected".
             gw::Range range = selection.range();
@@ -3997,7 +4189,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 }
 
 - (void)insertNewline:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     GW_FOR_EACH_CURSOR([self insertNewline:sender];)
     gw::Position caret = _document->selection.range().start;
     std::string_view line = _document->buffer().line(caret.line);
@@ -4027,7 +4221,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 - (void)insertLineBreak:(id)sender { [self insertNewline:sender]; }
 
 - (void)insertTab:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     // While a snippet is being filled in, Tab moves to its next placeholder.
     if (_multiDepth == 0 && _document->jumpSnippetStop(+1)) {
         [self selectionDidChange];
@@ -4057,7 +4253,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 }
 
 - (void)deleteBackward:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     GW_FOR_EACH_CURSOR([self deleteBackward:sender];)
     const auto &buffer = _document->buffer();
     gw::Selection selection = _document->selection;
@@ -4067,7 +4265,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
         return;
     }
     gw::Position caret = selection.caret;
-    if (caret == gw::Position{0, 0}) return;
+    if (caret == gw::Position{0, 0}) {
+        return;
+    }
     // Backspace between an empty pair removes both halves: (|) → |
     std::string previous = [self textAround:caret before:YES];
     std::string next = [self textAround:caret before:NO];
@@ -4092,7 +4292,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 }
 
 - (void)deleteForward:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     GW_FOR_EACH_CURSOR([self deleteForward:sender];)
     gw::Position caret = _document->selection.caret;
     _document->deleteSelectionOr({caret, _document->buffer().nextCharacter(caret)});
@@ -4100,7 +4302,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 }
 
 - (void)deleteWordBackward:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     GW_FOR_EACH_CURSOR([self deleteWordBackward:sender];)
     gw::Position caret = _document->selection.caret;
     _document->deleteSelectionOr({_document->buffer().previousWordStart(caret), caret});
@@ -4108,7 +4312,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 }
 
 - (void)deleteWordForward:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     GW_FOR_EACH_CURSOR([self deleteWordForward:sender];)
     gw::Position caret = _document->selection.caret;
     _document->deleteSelectionOr({caret, _document->buffer().nextWordEnd(caret)});
@@ -4116,7 +4322,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 }
 
 - (void)deleteToBeginningOfLine:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     GW_FOR_EACH_CURSOR([self deleteToBeginningOfLine:sender];)
     gw::Position caret = _document->selection.caret;
     gw::Position start = caret.column == 0 ? _document->buffer().previousCharacter(caret) : gw::Position{caret.line, 0};
@@ -4130,7 +4338,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 - (std::pair<size_t, size_t>)selectedLines {
     gw::Range range = _document->selection.range();
     size_t last = range.end.line;
-    if (last > range.start.line && range.end.column == 0) --last;
+    if (last > range.start.line && range.end.column == 0) {
+        --last;
+    }
     return {range.start.line, last};
 }
 
@@ -4142,7 +4352,9 @@ static bool sameSelection(const gw::Selection &a, const gw::Selection &b) {
 
 /// ⌃⇧⌘→: selects the word, then what is inside the brackets, the brackets, the line, and so on outwards.
 - (IBAction)expandSelection:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     if (!sameSelection(_document->selection, _lastExpanded)) {
         _expandHistory.clear();  // the selection was changed by hand since
     }
@@ -4161,7 +4373,9 @@ static bool sameSelection(const gw::Selection &a, const gw::Selection &b) {
 
 /// ⌃⇧⌘←: goes back to the selection before the last Expand.
 - (IBAction)shrinkSelection:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     if (_expandHistory.empty() || !sameSelection(_document->selection, _lastExpanded)) {
         _expandHistory.clear();
         NSBeep();
@@ -4176,7 +4390,9 @@ static bool sameSelection(const gw::Selection &a, const gw::Selection &b) {
 
 /// ⇧⌘\: jumps to the bracket that pairs with the one at the caret.
 - (IBAction)goToMatchingBracket:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     auto match = [self bracketMatch];
     if (!match) {
         NSBeep();
@@ -4193,7 +4409,9 @@ static bool sameSelection(const gw::Selection &a, const gw::Selection &b) {
 /// text selected. With nothing selected the word at the caret is used, or with `wholeLines`
 /// every line the selection touches (an empty selection then does nothing).
 - (void)transformSelectedText:(std::string (*)(std::string_view))transform wholeLines:(BOOL)wholeLines {
-    if (!_document || _document->readOnly) return;
+    if (!_document || _document->readOnly) {
+        return;
+    }
     const auto &buffer = _document->buffer();
     gw::Range range = _document->selection.range();
     if (wholeLines) {
@@ -4208,8 +4426,12 @@ static bool sameSelection(const gw::Selection &a, const gw::Selection &b) {
         std::string_view line = buffer.line(caret.line);
         size_t start = std::min(caret.column, line.size());
         size_t end = start;
-        while (start > 0 && gw::isWordByte(static_cast<unsigned char>(line[start - 1]))) --start;
-        while (end < line.size() && gw::isWordByte(static_cast<unsigned char>(line[end]))) ++end;
+        while (start > 0 && gw::isWordByte(static_cast<unsigned char>(line[start - 1]))) {
+            --start;
+        }
+        while (end < line.size() && gw::isWordByte(static_cast<unsigned char>(line[end]))) {
+            ++end;
+        }
         if (start == end) {
             NSBeep();
             return;
@@ -4218,7 +4440,9 @@ static bool sameSelection(const gw::Selection &a, const gw::Selection &b) {
     }
     std::string original = buffer.text(range);
     std::string replacement = transform(original);
-    if (replacement == original) return;
+    if (replacement == original) {
+        return;
+    }
 
     _document->extraSelections.clear();
     _document->replace(range, replacement);
@@ -4240,7 +4464,9 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
 
 /// Joins the selected lines into one; with nothing selected, the caret's line and the next.
 - (IBAction)joinSelectedLines:(id)sender {
-    if (!_document || _document->readOnly) return;
+    if (!_document || _document->readOnly) {
+        return;
+    }
     if (_document->selection.empty()) {
         size_t line = _document->selection.caret.line;
         if (line + 1 >= _document->buffer().lineCount()) {
@@ -4254,13 +4480,17 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
 
 /// Rewrites whole lines as one undoable edit, then selects them if several were involved.
 - (void)transformLines:(std::string (^)(const std::string &line, size_t index))transform {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     auto [first, last] = [self selectedLines];
     const auto &buffer = _document->buffer();
     gw::Selection before = _document->selection;
     std::string replacement;
     for (size_t line = first; line <= last; ++line) {
-        if (line > first) replacement += "\n";
+        if (line > first) {
+            replacement += "\n";
+        }
         replacement += transform(std::string(buffer.line(line)), line);
     }
     size_t oldLength = buffer.line(first).size();
@@ -4299,7 +4529,9 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
 }
 
 - (IBAction)toggleLineComment:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     GW_FOR_EACH_CURSOR_LINE([self toggleLineComment:sender];)
     std::string marker = _configuration.lineComment;
     if (marker.empty()) {
@@ -4314,17 +4546,27 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
     for (size_t line = first; line <= last; ++line) {
         std::string_view text = buffer.line(line);
         size_t indent = buffer.indentEnd(line);
-        if (indent == text.size()) continue;
+        if (indent == text.size()) {
+            continue;
+        }
         minIndent = std::min(minIndent, indent);
-        if (text.compare(indent, marker.size(), marker) != 0) allCommented = false;
+        if (text.compare(indent, marker.size(), marker) != 0) {
+            allCommented = false;
+        }
     }
-    if (minIndent == std::string::npos) minIndent = 0;
+    if (minIndent == std::string::npos) {
+        minIndent = 0;
+    }
     [self transformLines:^std::string(const std::string &line, size_t) {
         size_t indent = line.find_first_not_of(" \t");
-        if (indent == std::string::npos) return line;  // blank lines stay blank
+        if (indent == std::string::npos) {
+            return line; // blank lines stay blank
+        }
         if (allCommented) {
             size_t length = marker.size();
-            if (line.size() > indent + length && line[indent + length] == ' ') ++length;
+            if (line.size() > indent + length && line[indent + length] == ' ') {
+                ++length;
+            }
             return line.substr(0, indent) + line.substr(indent + length);
         }
         return line.substr(0, minIndent) + marker + " " + line.substr(minIndent);
@@ -4348,10 +4590,14 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
 
 /// Moves the selected lines up one line (the line above goes below them).
 - (IBAction)moveLinesUp:(id)sender {
-    if (!_document || _document->readOnly) return;
+    if (!_document || _document->readOnly) {
+        return;
+    }
     _document->extraSelections.clear();
     auto [first, last] = [self selectedLines];
-    if (first == 0) return;
+    if (first == 0) {
+        return;
+    }
 
     gw::Selection before = _document->selection;
     const auto &buffer = _document->buffer();
@@ -4366,10 +4612,14 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
 
 /// Moves the selected lines down one line (the line below goes above them).
 - (IBAction)moveLinesDown:(id)sender {
-    if (!_document || _document->readOnly) return;
+    if (!_document || _document->readOnly) {
+        return;
+    }
     _document->extraSelections.clear();
     auto [first, last] = [self selectedLines];
-    if (last + 1 >= _document->buffer().lineCount()) return;
+    if (last + 1 >= _document->buffer().lineCount()) {
+        return;
+    }
 
     gw::Selection before = _document->selection;
     const auto &buffer = _document->buffer();
@@ -4384,7 +4634,9 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
 
 /// Copies the selected lines below themselves; the selection moves to the copy.
 - (IBAction)duplicateLinesDown:(id)sender {
-    if (!_document || _document->readOnly) return;
+    if (!_document || _document->readOnly) {
+        return;
+    }
     _document->extraSelections.clear();
     auto [first, last] = [self selectedLines];
     gw::Selection before = _document->selection;
@@ -4399,7 +4651,9 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
 
 /// Copies the selected lines above themselves; the selection stays on the original lines.
 - (IBAction)duplicateLinesUp:(id)sender {
-    if (!_document || _document->readOnly) return;
+    if (!_document || _document->readOnly) {
+        return;
+    }
     _document->extraSelections.clear();
     auto [first, last] = [self selectedLines];
     gw::Selection before = _document->selection;
@@ -4414,7 +4668,9 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
 
 /// Removes the selected lines entirely.
 - (IBAction)deleteLines:(id)sender {
-    if (!_document || _document->readOnly) return;
+    if (!_document || _document->readOnly) {
+        return;
+    }
     _document->extraSelections.clear();
     auto [first, last] = [self selectedLines];
     const auto &buffer = _document->buffer();
@@ -4439,7 +4695,9 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
 
 /// ⌘↩: start a new line below the current one, indented like it.
 - (IBAction)insertLineBelow:(id)sender {
-    if (!_document || _document->readOnly) return;
+    if (!_document || _document->readOnly) {
+        return;
+    }
     size_t line = _document->selection.range().end.line;
     gw::Position endOfLine = {line, _document->buffer().line(line).size()};
     _document->selection = {endOfLine, endOfLine};
@@ -4448,7 +4706,9 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
 
 /// ⇧⌘↩: start a new line above the current one, indented like it.
 - (IBAction)insertLineAbove:(id)sender {
-    if (!_document || _document->readOnly) return;
+    if (!_document || _document->readOnly) {
+        return;
+    }
     size_t line = _document->selection.range().start.line;
     const auto &buffer = _document->buffer();
     std::string indent(buffer.line(line).substr(0, buffer.indentEnd(line)));
@@ -4463,7 +4723,9 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
 /// ⌘D: with nothing selected, select the word at the caret; after that, each press adds the next
 /// place the selected text appears (wrapping around at the end of the file) as another cursor.
 - (IBAction)selectNextOccurrence:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     const auto &buffer = _document->buffer();
     gw::Selection selection = _document->selection;
 
@@ -4540,7 +4802,9 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
 }
 
 - (void)copy:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     std::string text;
     if (_document->extraSelections.empty()) {
         text = [self copyTextOfSelection:_document->selection];
@@ -4552,12 +4816,14 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
             if (!piece.empty() && piece.back() == '\n' && all[index].empty()) {
                 piece.pop_back();
             }
-            if (index > 0) text += "\n";
+            if (index > 0) {
+                text += "\n";
+            }
             text += piece;
         }
     }
     [NSPasteboard.generalPasteboard clearContents];
-    [NSPasteboard.generalPasteboard setString:@(text.c_str()) forType:NSPasteboardTypeString];
+    [NSPasteboard.generalPasteboard setString:StringFromUTF8(text) forType:NSPasteboardTypeString];
 }
 
 /// Removes the selection, or the whole line if nothing is selected.
@@ -4576,7 +4842,9 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
 }
 
 - (void)cut:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     [self copy:sender];
     if (_multiDepth == 0 && !_document->extraSelections.empty()) {
         [self forEachSelection:^{
@@ -4590,9 +4858,13 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
 }
 
 - (void)paste:(id)sender {
-    if (!_document) return;
+    if (!_document) {
+        return;
+    }
     NSString *string = [NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString];
-    if (!string.length) return;
+    if (!string.length) {
+        return;
+    }
     if (_multiDepth == 0 && !_document->extraSelections.empty()) {
         // As many lines as cursors: one line each, in order. Otherwise every cursor gets it all.
         NSArray<NSString *> *lines = [string componentsSeparatedByString:@"\n"];
@@ -4612,19 +4884,31 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
 }
 
 - (void)undo:(id)sender {
-    if (_document && _document->undo()) [self didEdit];
+    if (_document && _document->undo()) {
+        [self didEdit];
+    }
 }
 
 - (void)redo:(id)sender {
-    if (_document && _document->redo()) [self didEdit];
+    if (_document && _document->redo()) {
+        [self didEdit];
+    }
 }
 
 - (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item {
     SEL action = item.action;
-    if (!_document) return NO;
-    if (action == @selector(undo:)) return _document->canUndo();
-    if (action == @selector(redo:)) return _document->canRedo();
-    if (action == @selector(toggleLineComment:)) return !_configuration.lineComment.empty();
+    if (!_document) {
+        return NO;
+    }
+    if (action == @selector(undo:)) {
+        return _document->canUndo();
+    }
+    if (action == @selector(redo:)) {
+        return _document->canRedo();
+    }
+    if (action == @selector(toggleLineComment:)) {
+        return !_configuration.lineComment.empty();
+    }
     return [self respondsToSelector:action];
 }
 
@@ -4647,7 +4931,9 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
 - (NSRange)markedRange { return _markedText.length ? NSMakeRange(0, _markedText.length) : NSMakeRange(NSNotFound, 0); }
 
 - (NSRange)selectedRange {
-    if (!_document) return NSMakeRange(NSNotFound, 0);
+    if (!_document) {
+        return NSMakeRange(NSNotFound, 0);
+    }
     LineLayout *layout = [self layoutForLine:_document->selection.caret.line];
     return NSMakeRange(layout->unitForByte(_document->selection.caret.column), 0);
 }
@@ -4657,7 +4943,9 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
 - (NSUInteger)characterIndexForPoint:(NSPoint)point { return NSNotFound; }
 
 - (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(NSRangePointer)actualRange {
-    if (!_document) return NSZeroRect;
+    if (!_document) {
+        return NSZeroRect;
+    }
     NSRect inWindow = [self convertRect:self.caretRect toView:nil];
     return [self.window convertRectToScreen:inWindow];
 }

@@ -22,14 +22,18 @@ void Highlighter::didChange(const Change& change) {
             continue;
         }
         size_t inside = change.firstLine - island.first;
-        if (inside >= island.tokens.size()) continue;  // after the island: nothing to do
+        if (inside >= island.tokens.size()) {
+            continue; // after the island: nothing to do
+        }
         if (change.lineDelta > 0) {
             island.states.insert(island.states.begin() + static_cast<long>(inside), static_cast<size_t>(change.lineDelta), tm::State{});
             island.tokens.insert(island.tokens.begin() + static_cast<long>(inside), static_cast<size_t>(change.lineDelta),
                                  std::vector<tm::Token>{});
         } else if (change.lineDelta < 0) {
             size_t count = std::min(static_cast<size_t>(-change.lineDelta), island.tokens.size() - inside);
-            if (inside + count >= island.tokens.size()) count = island.tokens.size() - inside - 1;
+            if (inside + count >= island.tokens.size()) {
+                count = island.tokens.size() - inside - 1;
+            }
             long firstRemoved = static_cast<long>(inside);
             long afterRemoved = static_cast<long>(inside + count);
             island.states.erase(island.states.begin() + firstRemoved, island.states.begin() + afterRemoved);
@@ -62,7 +66,9 @@ void Highlighter::didChange(const Change& change) {
         tokens_.insert(tokens_.begin() + static_cast<long>(first), count, {});
     } else if (change.lineDelta < 0) {
         size_t count = std::min(static_cast<size_t>(-change.lineDelta), states_.size() - first);
-        if (first + count >= states_.size()) count = states_.size() > first ? states_.size() - first - 1 : 0;
+        if (first + count >= states_.size()) {
+            count = states_.size() > first ? states_.size() - first - 1 : 0;
+        }
         states_.erase(states_.begin() + static_cast<long>(first), states_.begin() + static_cast<long>(first + count));
         tokens_.erase(tokens_.begin() + static_cast<long>(first), tokens_.begin() + static_cast<long>(first + count));
     }
@@ -78,19 +84,27 @@ void Highlighter::didChange(const Change& change) {
 }
 
 const std::vector<tm::Token>* Highlighter::tokens(const TextBuffer& buffer, size_t line, size_t budget) {
-    if (!grammar_ || line >= buffer.lineCount()) return nullptr;
+    if (!grammar_ || line >= buffer.lineCount()) {
+        return nullptr;
+    }
     if (states_.size() > buffer.lineCount()) {
         states_.resize(buffer.lineCount());
         tokens_.resize(buffer.lineCount());
         valid_ = std::min(valid_, buffer.lineCount());
         reusableUntil_ = std::min(reusableUntil_, buffer.lineCount());
     }
-    if (line < valid_) return &tokens_[line];
-    if (line - valid_ >= kNearLines) return islandTokens(buffer, line);
+    if (line < valid_) {
+        return &tokens_[line];
+    }
+    if (line - valid_ >= kNearLines) {
+        return islandTokens(buffer, line);
+    }
 
     size_t work = 0;
     while (valid_ <= line) {
-        if (work >= budget) return nullptr;
+        if (work >= budget) {
+            return nullptr;
+        }
         auto result = tm::tokenizeLine(*grammar_, buffer.line(valid_),
                                        valid_ == 0 ? tm::initialState(*grammar_) : states_[valid_ - 1]);
         if (valid_ >= states_.size()) {
@@ -120,13 +134,17 @@ size_t Highlighter::chooseAnchor(const TextBuffer& buffer, size_t line) {
     size_t from = line > 12 ? line - 12 : 0;
     for (size_t candidate = from + 1; candidate-- > lowest;) {
         std::string_view text = buffer.line(candidate);
-        if (text.empty() || text[0] == ' ' || text[0] == '\t') continue;
+        if (text.empty() || text[0] == ' ' || text[0] == '\t') {
+            continue;
+        }
         bool afterBlank = candidate == 0;
         if (!afterBlank) {
             std::string_view above = buffer.line(candidate - 1);
             afterBlank = above.find_first_not_of(" \t") == std::string::npos;
         }
-        if (afterBlank) return candidate;
+        if (afterBlank) {
+            return candidate;
+        }
     }
     return line > 80 ? line - 80 : 0;
 }
@@ -145,7 +163,9 @@ const std::vector<tm::Token>* Highlighter::islandTokens(const TextBuffer& buffer
         }
     }
     if (found == islands_.size()) {
-        if (islands_.size() >= maxIslands) islands_.erase(islands_.begin());
+        if (islands_.size() >= maxIslands) {
+            islands_.erase(islands_.begin());
+        }
         Island fresh;
         fresh.first = chooseAnchor(buffer, line);
         islands_.push_back(std::move(fresh));

@@ -36,14 +36,20 @@ ByteSet highBytes() {
 
 ByteSet digits() {
     ByteSet set;
-    for (int c = '0'; c <= '9'; ++c) set.set(static_cast<size_t>(c));
+    for (int c = '0'; c <= '9'; ++c) {
+        set.set(static_cast<size_t>(c));
+    }
     return set;
 }
 
 ByteSet wordBytes() {
     ByteSet set = highBytes();
-    for (int c = 'a'; c <= 'z'; ++c) set.set(static_cast<size_t>(c));
-    for (int c = 'A'; c <= 'Z'; ++c) set.set(static_cast<size_t>(c));
+    for (int c = 'a'; c <= 'z'; ++c) {
+        set.set(static_cast<size_t>(c));
+    }
+    for (int c = 'A'; c <= 'Z'; ++c) {
+        set.set(static_cast<size_t>(c));
+    }
     set |= digits();
     set.set('_');
     return set;
@@ -51,31 +57,47 @@ ByteSet wordBytes() {
 
 ByteSet spaceBytes() {
     ByteSet set;
-    for (char c : {' ', '\t', '\n', '\r', '\f', '\v'}) set.set(static_cast<unsigned char>(c));
+    for (char c : {' ', '\t', '\n', '\r', '\f', '\v'}) {
+        set.set(static_cast<unsigned char>(c));
+    }
     return set;
 }
 
 ByteSet hexBytes() {
     ByteSet set = digits();
-    for (int c = 'a'; c <= 'f'; ++c) set.set(static_cast<size_t>(c));
-    for (int c = 'A'; c <= 'F'; ++c) set.set(static_cast<size_t>(c));
+    for (int c = 'a'; c <= 'f'; ++c) {
+        set.set(static_cast<size_t>(c));
+    }
+    for (int c = 'A'; c <= 'F'; ++c) {
+        set.set(static_cast<size_t>(c));
+    }
     return set;
 }
 
 /// Adds the other-case forms of every letter in the set.
 ByteSet withBothCases(ByteSet set) {
     for (int c = 'a'; c <= 'z'; ++c) {
-        if (set.test(static_cast<size_t>(c))) set.set(static_cast<size_t>(c - 'a' + 'A'));
-        if (set.test(static_cast<size_t>(c - 'a' + 'A'))) set.set(static_cast<size_t>(c));
+        if (set.test(static_cast<size_t>(c))) {
+            set.set(static_cast<size_t>(c - 'a' + 'A'));
+        }
+        if (set.test(static_cast<size_t>(c - 'a' + 'A'))) {
+            set.set(static_cast<size_t>(c));
+        }
     }
     return set;
 }
 
 /// The first byte of the UTF-8 encoding of a code point.
 unsigned char utf8LeadByte(unsigned long codePoint) {
-    if (codePoint < 0x80) return static_cast<unsigned char>(codePoint);
-    if (codePoint < 0x800) return static_cast<unsigned char>(0xC0 | (codePoint >> 6));
-    if (codePoint < 0x10000) return static_cast<unsigned char>(0xE0 | (codePoint >> 12));
+    if (codePoint < 0x80) {
+        return static_cast<unsigned char>(codePoint);
+    }
+    if (codePoint < 0x800) {
+        return static_cast<unsigned char>(0xC0 | (codePoint >> 6));
+    }
+    if (codePoint < 0x10000) {
+        return static_cast<unsigned char>(0xE0 | (codePoint >> 12));
+    }
     return static_cast<unsigned char>(0xF0 | (codePoint >> 18));
 }
 
@@ -106,7 +128,9 @@ private:
             if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
                 ++position_;
             } else if (c == '#') {
-                while (!atEnd() && peek() != '\n') ++position_;
+                while (!atEnd() && peek() != '\n') {
+                    ++position_;
+                }
             } else {
                 break;
             }
@@ -144,9 +168,13 @@ private:
         sequence.canBeEmpty = true;
         while (true) {
             skipExtendedSpace();
-            if (atEnd() || peek() == '|' || peek() == ')') break;
+            if (atEnd() || peek() == '|' || peek() == ')') {
+                break;
+            }
             Start piece = parseQuantified();
-            if (failed_) return sequence;
+            if (failed_) {
+                return sequence;
+            }
             if (sequence.canBeEmpty) {
                 sequence.bytes |= piece.bytes;
                 sequence.canBeEmpty = piece.canBeEmpty;
@@ -159,7 +187,9 @@ private:
         Start atom = parseAtom();
         while (!failed_) {
             skipExtendedSpace();
-            if (atEnd()) break;
+            if (atEnd()) {
+                break;
+            }
             char c = peek();
             if (c == '*' || c == '?') {
                 ++position_;
@@ -174,21 +204,29 @@ private:
                 if (quantifier) {
                     for (size_t index = position_ + 1; index < close; ++index) {
                         char q = source_[index];
-                        if (!std::isdigit(static_cast<unsigned char>(q)) && q != ',') quantifier = false;
+                        if (!std::isdigit(static_cast<unsigned char>(q)) && q != ',') {
+                            quantifier = false;
+                        }
                     }
                     if (quantifier) {
                         char first = source_[position_ + 1];
                         zeroMinimum = first == ',' || (first == '0' && (source_[position_ + 2] == ',' || source_[position_ + 2] == '}'));
                     }
                 }
-                if (!quantifier) break;
+                if (!quantifier) {
+                    break;
+                }
                 position_ = close + 1;
-                if (zeroMinimum) atom.canBeEmpty = true;
+                if (zeroMinimum) {
+                    atom.canBeEmpty = true;
+                }
             } else {
                 break;
             }
             // Lazy (?) and possessive (+) suffixes.
-            if (!atEnd() && (peek() == '?' || peek() == '+')) ++position_;
+            if (!atEnd() && (peek() == '?' || peek() == '+')) {
+                ++position_;
+            }
         }
         return atom;
     }
@@ -196,7 +234,9 @@ private:
     Start single(unsigned char byte) {
         Start start;
         start.bytes.set(byte);
-        if (ignoreCase_) start.bytes = withBothCases(start.bytes);
+        if (ignoreCase_) {
+            start.bytes = withBothCases(start.bytes);
+        }
         return start;
     }
 
@@ -317,8 +357,12 @@ private:
             }
             char kind = peek();
             if (kind == '#') {  // comment
-                while (!atEnd() && peek() != ')') ++position_;
-                if (!atEnd()) ++position_;
+                while (!atEnd() && peek() != ')') {
+                    ++position_;
+                }
+                if (!atEnd()) {
+                    ++position_;
+                }
                 return zeroWidth();
             }
             if (kind == '=' || kind == '!') {  // lookahead
@@ -340,11 +384,17 @@ private:
                 return inner;
             }
             if (kind == '<' || kind == '\'' || kind == 'P') {  // named group
-                if (kind == 'P') ++position_;
+                if (kind == 'P') {
+                    ++position_;
+                }
                 char closer = source_[position_] == '\'' ? '\'' : '>';
                 ++position_;
-                while (!atEnd() && peek() != closer) ++position_;
-                if (!atEnd()) ++position_;
+                while (!atEnd() && peek() != closer) {
+                    ++position_;
+                }
+                if (!atEnd()) {
+                    ++position_;
+                }
                 Start inner = parseAlternation();
                 consumeClose();
                 return inner;
@@ -421,7 +471,9 @@ private:
                 ByteSet result = negated ? ~set : set;
                 start.bytes = ignoreCase_ ? withBothCases(result) : result;
                 // A negated class can match a whole multi-byte character.
-                if (negated) start.bytes |= highBytes();
+                if (negated) {
+                    start.bytes |= highBytes();
+                }
                 return start;
             }
             first = false;
@@ -433,7 +485,9 @@ private:
                         return Start();
                     }
                     set |= wordBytes();  // POSIX classes: allow the generous "word" set plus punctuation
-                    for (int byte = 0x21; byte < 0x7F; ++byte) set.set(static_cast<size_t>(byte));
+                    for (int byte = 0x21; byte < 0x7F; ++byte) {
+                        set.set(static_cast<size_t>(byte));
+                    }
                     set |= spaceBytes();
                     position_ = close + 2;
                     continue;
@@ -468,8 +522,12 @@ private:
                     case 'H': set |= ~hexBytes(); continue;
                     case 'p': case 'P':
                         set |= everything();  // properties: anything
-                        while (!atEnd() && peek() != '}' && peek() != ']') ++position_;
-                        if (!atEnd() && peek() == '}') ++position_;
+                        while (!atEnd() && peek() != '}' && peek() != ']') {
+                            ++position_;
+                        }
+                        if (!atEnd() && peek() == '}') {
+                            ++position_;
+                        }
                         continue;
                     case 'n': low = '\n'; break;
                     case 't': low = '\t'; break;
@@ -525,7 +583,9 @@ private:
                     high = 0x7F;
                     set |= highBytes();
                 }
-                for (int byte = low; byte <= high; ++byte) set.set(static_cast<size_t>(byte));
+                for (int byte = low; byte <= high; ++byte) {
+                    set.set(static_cast<size_t>(byte));
+                }
                 continue;
             }
             set.set(low);

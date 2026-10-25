@@ -158,7 +158,9 @@ function activate(context) {
                 return item;
             },
             getChildren(element) {
-                if (!element) return fruit;
+                if (!element) {
+                    return fruit;
+                }
                 return [element + ':Red ' + element, element + ':Green ' + element];
             },
         },

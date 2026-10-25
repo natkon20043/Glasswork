@@ -28,6 +28,8 @@
 #include <filesystem>
 #include <fstream>
 #include <random>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <unistd.h>
 #include <functional>
 #include <string>
@@ -188,7 +190,9 @@ const char* kGrammar = R"json({
 /// The innermost scope covering byte `column`.
 std::string innermostScope(const gw::tm::LineResult& result, size_t column) {
     for (const auto& token : result.tokens) {
-        if (column >= token.start && column < token.end) return token.scopes ? token.scopes->name : "";
+        if (column >= token.start && column < token.end) {
+            return token.scopes ? token.scopes->name : "";
+        }
     }
     return "<none>";
 }
@@ -196,7 +200,9 @@ std::string innermostScope(const gw::tm::LineResult& result, size_t column) {
 TEST(tokenizerFindsKeywordsStringsAndCaptures) {
     auto grammar = gw::tm::Grammar::parse(kGrammar, nullptr);
     CHECK(grammar != nullptr);
-    if (!grammar) return;
+    if (!grammar) {
+        return;
+    }
     std::string line = "int x = f(\"a\\n\");";
     auto result = gw::tm::tokenizeLine(*grammar, line, gw::tm::initialState(*grammar));
     CHECK_EQ(innermostScope(result, 0), std::string("keyword.control.test"));
@@ -217,7 +223,9 @@ TEST(tokenizerFindsKeywordsStringsAndCaptures) {
 
 TEST(tokenizerCarriesRegionsAcrossLines) {
     auto grammar = gw::tm::Grammar::parse(kGrammar, nullptr);
-    if (!grammar) return;
+    if (!grammar) {
+        return;
+    }
     auto first = gw::tm::tokenizeLine(*grammar, "int a; /* starts", gw::tm::initialState(*grammar));
     CHECK_EQ(first.state.frames.size(), size_t(2));
     CHECK_EQ(innermostScope(first, 10), std::string("comment.block.test"));
@@ -230,7 +238,9 @@ TEST(tokenizerCarriesRegionsAcrossLines) {
 
 TEST(tokenizerFillsBackReferencesInEndPatterns) {
     auto grammar = gw::tm::Grammar::parse(kGrammar, nullptr);
-    if (!grammar) return;
+    if (!grammar) {
+        return;
+    }
     auto state = gw::tm::initialState(*grammar);
     auto begin = gw::tm::tokenizeLine(*grammar, "x = <<EOT", state);
     CHECK_EQ(begin.state.frames.size(), size_t(2));
@@ -249,14 +259,18 @@ TEST(tokenizerAnchorsBackslashGWhereTheRegionBegan) {
             { "match": "\\w+", "name": "word" } ] } ] })json";
     auto grammar = gw::tm::Grammar::parse(anchored, nullptr);
     CHECK(grammar != nullptr);
-    if (!grammar) return;
+    if (!grammar) {
+        return;
+    }
     auto first = gw::tm::tokenizeLine(*grammar, "fn name {", gw::tm::initialState(*grammar));
     CHECK_EQ(innermostScope(first, 4), std::string("meta.head"));
     auto second = gw::tm::tokenizeLine(*grammar, "body }", first.state);
     CHECK_EQ(innermostScope(second, 0), std::string("word"));
     const gw::tm::ScopeNode* scopes = nullptr;
     for (const auto& token : second.tokens) {
-        if (token.start == 0) scopes = token.scopes;
+        if (token.start == 0) {
+            scopes = token.scopes;
+        }
     }
     CHECK(scopes && scopes->parent && scopes->parent->name == "meta.fn");  // not meta.head
     CHECK_EQ(second.state.frames.size(), size_t(1));
@@ -268,7 +282,9 @@ TEST(tokenizerSurvivesPatternsThatMatchNothing) {
         { "begin": "(?=y)", "end": "(?=y)", "name": "empty.region" } ] })json";
     auto grammar = gw::tm::Grammar::parse(loopy, nullptr);
     CHECK(grammar != nullptr);
-    if (!grammar) return;
+    if (!grammar) {
+        return;
+    }
     auto result = gw::tm::tokenizeLine(*grammar, "xxyy", gw::tm::initialState(*grammar));
     CHECK(!result.tokens.empty());
     CHECK_EQ(size_t(result.tokens.back().end), size_t(4));
@@ -278,10 +294,14 @@ TEST(tokenizerSurvivesPatternsThatMatchNothing) {
 
 TEST(highlighterRedoesOnlyWhatAnEditAffects) {
     auto grammar = gw::tm::Grammar::parse(kGrammar, nullptr);
-    if (!grammar) return;
+    if (!grammar) {
+        return;
+    }
     gw::Document document;
     std::string text;
-    for (int index = 0; index < 200; ++index) text += "int value = f(1);\n";
+    for (int index = 0; index < 200; ++index) {
+        text += "int value = f(1);\n";
+    }
     document.replace({{0, 0}, {0, 0}}, text);
     gw::Highlighter highlighter(grammar.get());
     document.onChange = [&](const gw::Change& change) { highlighter.didChange(change); };
@@ -310,9 +330,13 @@ TEST(highlighterRedoesOnlyWhatAnEditAffects) {
 
 TEST(highlighterStopsAtItsBudget) {
     auto grammar = gw::tm::Grammar::parse(kGrammar, nullptr);
-    if (!grammar) return;
+    if (!grammar) {
+        return;
+    }
     std::string text;
-    for (int index = 0; index < 100; ++index) text += "return 1;\n";
+    for (int index = 0; index < 100; ++index) {
+        text += "return 1;\n";
+    }
     gw::TextBuffer buffer(text);
     gw::Highlighter highlighter(grammar.get());
     CHECK(highlighter.tokens(buffer, 90, 40) == nullptr);
@@ -340,7 +364,9 @@ TEST(themeResolvesColorsLikeVSCode) {
     std::string error;
     auto theme = gw::Theme::parse(kTheme, true, &error);
     CHECK(theme != nullptr);
-    if (!theme) return;
+    if (!theme) {
+        return;
+    }
     CHECK_EQ(theme->color("editor.background", 0), gw::Color(0x1E1E1EFF));
 
     auto comment = theme->styleFor(std::vector<std::string>{"source.cpp", "comment.line.double-slash.cpp"});
@@ -379,7 +405,9 @@ TEST(sectionsRecogniseMarksPragmasTodosAndFixmes) {
         "/* MARK: - Block */\n");
     auto sections = gw::findSections(buffer);
     CHECK_EQ(sections.size(), size_t(8));
-    if (sections.size() != 8) return;
+    if (sections.size() != 8) {
+        return;
+    }
 
     CHECK_EQ(sections[0].line, size_t(1));
     CHECK_EQ(sections[0].title, std::string("Networking"));
@@ -774,13 +802,17 @@ TEST(snippetEndsWhenTheCaretLeavesIt) {
 TEST(stylistColorsVariablesNamesAndScopes) {
     auto grammar = gw::tm::Grammar::parse(kGrammar, nullptr);
     auto theme = gw::Theme::parse(kTheme, true);
-    if (!grammar || !theme) return;
+    if (!grammar || !theme) {
+        return;
+    }
     std::string line = "int value = f(\"value\");";
     auto tokens = gw::tm::tokenizeLine(*grammar, line, gw::tm::initialState(*grammar)).tokens;
 
     auto styleAt = [](const std::vector<gw::StyledSpan>& spans, uint32_t byte) {
         for (const auto& span : spans) {
-            if (byte >= span.start && byte < span.end) return span.style;
+            if (byte >= span.start && byte < span.end) {
+                return span.style;
+            }
         }
         return gw::TextStyle{};
     };
@@ -889,8 +921,12 @@ TEST(settingsParseCommentedJsonAndRoundTrip) {
 
 /// Two token lists mean the same if they have the same spans and scopes.
 bool sameTokens(const std::vector<gw::tm::Token>* a, const std::vector<gw::tm::Token>* b) {
-    if (a == nullptr || b == nullptr) return a == b;
-    if (a->size() != b->size()) return false;
+    if (a == nullptr || b == nullptr) {
+        return a == b;
+    }
+    if (a->size() != b->size()) {
+        return false;
+    }
     for (size_t index = 0; index < a->size(); ++index) {
         if ((*a)[index].start != (*b)[index].start || (*a)[index].end != (*b)[index].end ||
             (*a)[index].scopes != (*b)[index].scopes) {
@@ -915,7 +951,9 @@ std::string testProgram(size_t functions) {
 TEST(highlightingFarIntoAFileMatchesTheExactResult) {
     auto grammar = gw::tm::Grammar::parse(kGrammar, nullptr);
     CHECK(grammar != nullptr);
-    if (!grammar) return;
+    if (!grammar) {
+        return;
+    }
     gw::TextBuffer buffer(testProgram(400));  // about 2800 lines
 
     gw::Highlighter exact(grammar.get());
@@ -931,7 +969,9 @@ TEST(highlightingFarIntoAFileMatchesTheExactResult) {
 
 TEST(editingInsideAnIslandStaysCorrect) {
     auto grammar = gw::tm::Grammar::parse(kGrammar, nullptr);
-    if (!grammar) return;
+    if (!grammar) {
+        return;
+    }
     gw::Document document;
     document.replace({{0, 0}, {0, 0}}, testProgram(300));
     gw::Highlighter fast(grammar.get());
@@ -984,6 +1024,63 @@ TEST(readOnlyDocumentsIgnoreEdits) {
     CHECK_EQ(document.buffer().line(0), std::string("one"));
     CHECK(!document.isDirty());
     CHECK(!document.undo());
+}
+
+TEST(invalidUtf8IsRepairedAndValidTextIsLeftAlone) {
+    std::string valid = "plain é 猫 😀";
+    CHECK_EQ(gw::withValidUtf8(valid), valid);
+    const std::string replacement = "\xEF\xBF\xBD";
+    CHECK_EQ(gw::withValidUtf8("a\xFF" "b"), "a" + replacement + "b");               // never valid
+    CHECK_EQ(gw::withValidUtf8("cut \xC3"), "cut " + replacement);               // cut off
+    CHECK_EQ(gw::withValidUtf8("\xC0\xAF"), replacement + replacement);         // overlong "/"
+    CHECK_EQ(gw::withValidUtf8("\xED\xA0\x80"), replacement + replacement + replacement);  // a surrogate
+    CHECK_EQ(gw::withValidUtf8("\x80x"), replacement + "x");                     // stray continuation
+}
+
+TEST(savingKeepsPermissionsAndFollowsSymbolicLinks) {
+    std::filesystem::path folder = std::filesystem::temp_directory_path() / ("glasswork-save-" + std::to_string(getpid()));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+
+    // An executable script stays executable.
+    std::filesystem::path script = folder / "run.sh";
+    { std::ofstream(script) << "echo one\n"; }
+    chmod(script.c_str(), 0755);
+    std::optional<gw::Document> opened = gw::Document::open(script);
+    CHECK(opened.has_value());
+    opened->replace({{0, 5}, {0, 8}}, "two");
+    CHECK(opened->save());
+    struct stat info;
+    CHECK(stat(script.c_str(), &info) == 0);
+    CHECK_EQ(info.st_mode & 0777, mode_t(0755));
+    CHECK(!std::filesystem::exists(folder / "run.sh.glasswork-save"));
+
+    // Through a link: the file it points to changes, and the link is still a link.
+    std::filesystem::path link = folder / "link.sh";
+    std::filesystem::create_symlink(script, link);
+    std::optional<gw::Document> linked = gw::Document::open(link);
+    CHECK(linked.has_value());
+    linked->replace({{0, 5}, {0, 8}}, "three");
+    CHECK(linked->save());
+    CHECK(std::filesystem::is_symlink(link));
+    std::ifstream reread(script);
+    std::string first;
+    std::getline(reread, first);
+    CHECK_EQ(first, std::string("echo three"));
+
+    // A save that can't be written leaves nothing behind.
+    std::filesystem::path locked = folder / "locked";
+    std::filesystem::create_directories(locked);
+    gw::Document fresh;
+    fresh.replace({{0, 0}, {0, 0}}, "text");
+    chmod(locked.c_str(), 0555);
+    std::string error;
+    CHECK(!fresh.saveAs(locked / "new.txt", &error));
+    CHECK(!error.empty());
+    chmod(locked.c_str(), 0755);
+    CHECK(!std::filesystem::exists(locked / "new.txt.glasswork-save"));
+
+    std::filesystem::remove_all(folder);
 }
 
 TEST(reloadFromDiskReplacesOnlyWhatChanged) {
@@ -1151,7 +1248,9 @@ TEST(syncEditsSurviveRandomEditing) {
             std::vector<size_t> boundaries;
             for (size_t byte = 0; byte <= text.size(); ++byte) {
                 bool isContinuation = byte < text.size() && (static_cast<unsigned char>(text[byte]) & 0xC0) == 0x80;
-                if (!isContinuation) boundaries.push_back(byte);
+                if (!isContinuation) {
+                    boundaries.push_back(byte);
+                }
             }
             size_t startColumn = boundaries[random() % boundaries.size()];
             size_t endColumn = boundaries[random() % boundaries.size()];
@@ -1162,8 +1261,12 @@ TEST(syncEditsSurviveRandomEditing) {
             }
             document.replace({{line, startColumn}, {endLine, endColumn}}, pieces[random() % 8]);
         }
-        if (random() % 6 == 0) document.undo();
-        if (random() % 9 == 0) document.redo();
+        if (random() % 6 == 0) {
+            document.undo();
+        }
+        if (random() % 9 == 0) {
+            document.redo();
+        }
 
         auto list = document.takeSyncEdits();
         CHECK(list.has_value());
@@ -1356,7 +1459,9 @@ TEST(snippetLibraryPicksSnippetsForALanguage) {
 
     auto prefixes = [&](const std::string& language) {
         std::vector<std::string> names;
-        for (const auto& definition : library.forLanguage(language)) names.push_back(definition.prefix);
+        for (const auto& definition : library.forLanguage(language)) {
+            names.push_back(definition.prefix);
+        }
         return names;
     };
     CHECK_EQ(prefixes("cpp").size(), size_t(2));         // main + todo
@@ -1647,6 +1752,40 @@ TEST(disabledExtensionsAreListedButContributeNothing) {
     manager.scan();
     CHECK_EQ(manager.extensions().size(), size_t(2));
     CHECK_EQ(manager.disabledExtensions().size(), size_t(0));
+    fs::remove_all(folder);
+}
+
+TEST(aBrokenExtensionManifestDoesNotStopTheOthers) {
+    namespace fs = std::filesystem;
+    fs::path folder = fs::temp_directory_path() / ("gw-ext-broken-" + std::to_string(getpid()));
+    fs::path good = folder / "demo.good-1.0.0";
+    fs::path broken = folder / "demo.broken-1.0.0";
+    fs::create_directories(good);
+    fs::create_directories(broken);
+    std::ofstream(good / "package.json") << R"json({"name": "good", "publisher": "demo", "version": "1.0.0",
+      "contributes": {"languages": [{"id": "goodlang", "extensions": [".good"], "configuration": "./lang.json"}]}})json";
+    // Brackets as objects with a number where a string belongs, and a comment pair that isn't one.
+    std::ofstream(good / "lang.json") << R"json({"comments": {"lineComment": "#", "blockComment": ["/*", 5]},
+      "autoClosingPairs": [{"open": "(", "close": ")"}, {"open": 1, "close": "]"}, ["{", "}"]]})json";
+    // A publisher that is a number, and a language id that is a list.
+    std::ofstream(broken / "package.json") << R"json({"name": "broken", "publisher": 7,
+      "contributes": {"languages": [{"id": ["x"]}]}})json";
+
+    gw::ExtensionManager manager(folder);
+    manager.scan();
+    CHECK_EQ(manager.extensions().size(), size_t(1));
+    CHECK_EQ(manager.extensions()[0].id, std::string("demo.good"));
+    gw::LanguageConfiguration configuration = manager.configuration("goodlang");
+    CHECK_EQ(configuration.lineComment, std::string("#"));
+    CHECK_EQ(configuration.autoClosingPairs.size(), size_t(2));
+
+    // Ids and versions that would reach outside the extensions folder are refused before
+    // anything is fetched or deleted.
+    fs::path outside = folder / "outside";
+    fs::create_directories(outside);
+    auto refused = gw::ExtensionManager::installFromOpenVSX("demo.x/../../outside", folder / "installed");
+    CHECK(!refused.ok);
+    CHECK(fs::exists(outside));
     fs::remove_all(folder);
 }
 

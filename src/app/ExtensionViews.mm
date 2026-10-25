@@ -1,4 +1,5 @@
 #import "ExtensionViews.h"
+#import "Strings.h"
 
 #import <objc/runtime.h>
 
@@ -11,7 +12,7 @@ using Json = gw::lsp::Json;
 namespace {
 
 NSString *StringFromJson(const Json &value) {
-    return value.is_string() ? @(value.get<std::string>().c_str()) : nil;
+    return value.is_string() ? StringFromUTF8(value.get<std::string>()) : nil;
 }
 
 /// VS Code's own icon set ("codicons") has no files here, so the common ones map to the nearest
@@ -73,12 +74,24 @@ BOOL ContainsAnyWord(NSString *text, NSArray<NSString *> *words) {
 /// the color words in its name. Nil when the name doesn't hint at a color.
 NSColor *ColorForThemeId(NSString *identifier) {
     NSString *lower = identifier.lowercaseString;
-    if (ContainsAnyWord(lower, @[@"red", @"error", @"failed"])) return NSColor.systemRedColor;
-    if (ContainsAnyWord(lower, @[@"green", @"passed", @"added"])) return NSColor.systemGreenColor;
-    if (ContainsAnyWord(lower, @[@"yellow", @"warning", @"modified"])) return NSColor.systemYellowColor;
-    if (ContainsAnyWord(lower, @[@"orange"])) return NSColor.systemOrangeColor;
-    if (ContainsAnyWord(lower, @[@"blue", @"info"])) return NSColor.systemBlueColor;
-    if (ContainsAnyWord(lower, @[@"purple", @"magenta"])) return NSColor.systemPurpleColor;
+    if (ContainsAnyWord(lower, @[@"red", @"error", @"failed"])) {
+        return NSColor.systemRedColor;
+    }
+    if (ContainsAnyWord(lower, @[@"green", @"passed", @"added"])) {
+        return NSColor.systemGreenColor;
+    }
+    if (ContainsAnyWord(lower, @[@"yellow", @"warning", @"modified"])) {
+        return NSColor.systemYellowColor;
+    }
+    if (ContainsAnyWord(lower, @[@"orange"])) {
+        return NSColor.systemOrangeColor;
+    }
+    if (ContainsAnyWord(lower, @[@"blue", @"info"])) {
+        return NSColor.systemBlueColor;
+    }
+    if (ContainsAnyWord(lower, @[@"purple", @"magenta"])) {
+        return NSColor.systemPurpleColor;
+    }
     return nil;
 }
 
@@ -254,7 +267,9 @@ static GWViewNode *NodeFromJson(const Json &json, GWViewNode *parent) {
 }
 
 - (void)clicked:(NSClickGestureRecognizer *)gesture {
-    if (self.onToggle) self.onToggle();
+    if (self.onToggle) {
+        self.onToggle();
+    }
 }
 
 - (void)showActions:(NSButton *)sender {
@@ -323,6 +338,9 @@ static GWViewNode *NodeFromJson(const Json &json, GWViewNode *parent) {
         __weak GWViewSection *weakSelf = self;
         _header.onToggle = ^{
             GWViewSection *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
             [strongSelf setExpanded:!strongSelf->_expanded];
         };
         _view = [NSStackView stackViewWithViews:@[_header]];
@@ -703,7 +721,14 @@ static GWViewNode *NodeFromJson(const Json &json, GWViewNode *parent) {
     if (node.iconPath != nil || (node.iconTheme == nil && node.resourcePath != nil)) {
         return nil;  // real pictures keep their own colors
     }
-    return (node.iconColor != nil ? ColorForThemeId(node.iconColor) : nil) ?: NSColor.secondaryLabelColor;
+    NSColor *themed = nil;
+    if (node.iconColor != nil) {
+        themed = ColorForThemeId(node.iconColor);
+    }
+    if (themed == nil) {
+        return NSColor.secondaryLabelColor;
+    }
+    return themed;
 }
 
 - (void)outlineViewItemWillExpand:(NSNotification *)notification {
@@ -792,12 +817,12 @@ static GWViewNode *NodeFromJson(const Json &json, GWViewNode *parent) {
         if (!when.empty() && !gw::evaluateWhenClause(when, context)) {
             continue;
         }
-        NSString *command = @(entry.value("command", "").c_str());
+        NSString *command = StringFromUTF8(entry.value("command", ""));
         NSString *title = [self.service titleForCommand:command];
         if (title == nil) {
             continue;
         }
-        NSString *group = @(entry.value("group", "").c_str());
+        NSString *group = StringFromUTF8(entry.value("group", ""));
         group = [group componentsSeparatedByString:@"@"].firstObject;
         if (lastGroup != nil && ![lastGroup isEqualToString:group] && menu.numberOfItems > 0) {
             [menu addItem:NSMenuItem.separatorItem];
@@ -999,7 +1024,8 @@ static GWViewNode *NodeFromJson(const Json &json, GWViewNode *parent) {
     }
     NSString *lastContainer = nil;
     for (GWContributedView *contributed in views) {
-        if (![contributed.containerIdentifier isEqualToString:lastContainer]) {
+        BOOL newContainer = lastContainer == nil || ![contributed.containerIdentifier isEqualToString:lastContainer];
+        if (newContainer) {
             lastContainer = contributed.containerIdentifier;
             [self addContainerCaption:contributed];
         }
@@ -1094,7 +1120,8 @@ static GWViewNode *NodeFromJson(const Json &json, GWViewNode *parent) {
 
 // MARK: GWExtensionViewsDelegate
 
-- (void)hostViewNotification:(NSString *)method params:(const Json &)params {
+- (void)hostViewNotification:(NSString *)method params:(const Json &)incoming {
+    Json params = incoming;  // a copy, so a missing key reads as null instead of undefined
     NSString *identifier = StringFromJson(params.value("id", Json()));
     NSString *handle = StringFromJson(params.value("handle", Json()));
 
@@ -1109,7 +1136,9 @@ static GWViewNode *NodeFromJson(const Json &json, GWViewNode *parent) {
                                      description:StringFromJson(params.value("description", Json()))
                                          message:StringFromJson(params.value("message", Json()))];
     } else if ([method isEqualToString:@"view/reveal"]) {
-        if (_onRevealSidebar) _onRevealSidebar();
+        if (_onRevealSidebar) {
+            _onRevealSidebar();
+        }
         GWViewSection *section = _sections[identifier];
         [section setExpanded:YES];
         if (handle != nil) {
@@ -1122,17 +1151,24 @@ static GWViewNode *NodeFromJson(const Json &json, GWViewNode *parent) {
     } else if ([method isEqualToString:@"webview/options"]) {
         [_webviews[handle] applyOptions:params.value("options", Json::object())];
     } else if ([method isEqualToString:@"webview/title"]) {
-        if (_onRetitlePanel && handle != nil) _onRetitlePanel(handle, StringFromJson(params.value("title", Json())) ?: @"");
+        if (_onRetitlePanel && handle != nil) {
+            _onRetitlePanel(handle, StringFromJson(params.value("title", Json())) ?: @"");
+        }
     } else if ([method isEqualToString:@"webview/reveal"]) {
-        if (_onRevealPanel && handle != nil) _onRevealPanel(handle);
+        if (_onRevealPanel && handle != nil) {
+            _onRevealPanel(handle);
+        }
     } else if ([method isEqualToString:@"webview/dispose"]) {
         [_panelHandles removeObject:handle];
         [_webviews removeObjectForKey:handle];
-        if (_onClosePanel && handle != nil) _onClosePanel(handle);
+        if (_onClosePanel && handle != nil) {
+            _onClosePanel(handle);
+        }
     }
 }
 
-- (void)createPanelWithParams:(const Json &)params {
+- (void)createPanelWithParams:(const Json &)incoming {
+    Json params = incoming;  // a copy, so a missing key reads as null instead of undefined
     NSString *handle = StringFromJson(params.value("handle", Json()));
     if (handle == nil) {
         return;
@@ -1147,7 +1183,8 @@ static GWViewNode *NodeFromJson(const Json &json, GWViewNode *parent) {
     }
 }
 
-- (void)hostViewRequest:(NSString *)method params:(const Json &)params reply:(void (^)(const Json &))reply {
+- (void)hostViewRequest:(NSString *)method params:(const Json &)incoming reply:(void (^)(const Json &))reply {
+    Json params = incoming;  // a copy, so a missing key reads as null instead of undefined
     if ([method isEqualToString:@"webview/postMessage"]) {
         GWWebviewController *controller = _webviews[StringFromJson(params.value("handle", Json())) ?: @""];
         if (controller == nil) {
@@ -1167,7 +1204,9 @@ static GWViewNode *NodeFromJson(const Json &json, GWViewNode *parent) {
         [section reset];
     }
     for (NSString *handle in [_panelHandles copy]) {
-        if (_onClosePanel) _onClosePanel(handle);
+        if (_onClosePanel) {
+            _onClosePanel(handle);
+        }
     }
     [_panelHandles removeAllObjects];
     [_webviews removeAllObjects];

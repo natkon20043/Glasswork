@@ -16,7 +16,9 @@ namespace {
 
 std::optional<std::string> readFile(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::binary);
-    if (!file) return std::nullopt;
+    if (!file) {
+        return std::nullopt;
+    }
     std::ostringstream contents;
     contents << file.rdbuf();
     return contents.str();
@@ -33,13 +35,17 @@ std::vector<std::string> split(const std::string& text, char separator) {
     std::string current;
     for (char character : text) {
         if (character == separator) {
-            if (!current.empty()) parts.push_back(current);
+            if (!current.empty()) {
+                parts.push_back(current);
+            }
             current.clear();
         } else if (!(separator == ' ' && (character == '\t' || character == '\n'))) {
             current += character;
         }
     }
-    if (!current.empty()) parts.push_back(current);
+    if (!current.empty()) {
+        parts.push_back(current);
+    }
     return parts;
 }
 
@@ -52,31 +58,45 @@ std::string trim(const std::string& text) {
 }  // namespace
 
 std::optional<Color> parseColor(const std::string& text) {
-    if (text.size() < 4 || text[0] != '#') return std::nullopt;
+    if (text.size() < 4 || text[0] != '#') {
+        return std::nullopt;
+    }
     std::string hex = text.substr(1);
     for (char character : hex) {
-        if (!std::isxdigit(static_cast<unsigned char>(character))) return std::nullopt;
+        if (!std::isxdigit(static_cast<unsigned char>(character))) {
+            return std::nullopt;
+        }
     }
     if (hex.size() == 3 || hex.size() == 4) {  // #RGB / #RGBA
         std::string expanded;
-        for (char character : hex) expanded += std::string(2, character);
+        for (char character : hex) {
+            expanded += std::string(2, character);
+        }
         hex = expanded;
     }
-    if (hex.size() == 6) hex += "FF";
-    if (hex.size() != 8) return std::nullopt;
+    if (hex.size() == 6) {
+        hex += "FF";
+    }
+    if (hex.size() != 8) {
+        return std::nullopt;
+    }
     return static_cast<Color>(std::stoul(hex, nullptr, 16));
 }
 
 std::unique_ptr<Theme> Theme::load(const std::filesystem::path& path, bool dark, std::string* error) {
     auto text = readFile(path);
     if (!text) {
-        if (error) *error = "Couldn't read theme " + path.string();
+        if (error) {
+            *error = "Couldn't read theme " + path.string();
+        }
         return nullptr;
     }
     std::unique_ptr<Theme> theme(new Theme());
     theme->dark_ = dark;
     theme->defaults_.foreground = dark ? 0xD4D4D4FF : 0x000000FF;
-    if (!theme->merge(*text, path.parent_path(), 0, error)) return nullptr;
+    if (!theme->merge(*text, path.parent_path(), 0, error)) {
+        return nullptr;
+    }
     theme->defaults_.foreground = theme->color("editor.foreground", theme->defaults_.foreground);
     return theme;
 }
@@ -85,7 +105,9 @@ std::unique_ptr<Theme> Theme::parse(const std::string& text, bool dark, std::str
     std::unique_ptr<Theme> theme(new Theme());
     theme->dark_ = dark;
     theme->defaults_.foreground = dark ? 0xD4D4D4FF : 0x000000FF;
-    if (!theme->merge(text, {}, 0, error)) return nullptr;
+    if (!theme->merge(text, {}, 0, error)) {
+        return nullptr;
+    }
     theme->defaults_.foreground = theme->color("editor.foreground", theme->defaults_.foreground);
     return theme;
 }
@@ -93,7 +115,9 @@ std::unique_ptr<Theme> Theme::parse(const std::string& text, bool dark, std::str
 bool Theme::merge(const std::string& text, const std::filesystem::path& directory, int depth, std::string* error) {
     json document = parseJsonc(text);
     if (document.is_discarded() || !document.is_object()) {
-        if (error) *error = "Theme isn't valid JSON.";
+        if (error) {
+            *error = "Theme isn't valid JSON.";
+        }
         return false;
     }
     // A theme may build on another: load that first, then layer this one on top.
@@ -103,18 +127,28 @@ bool Theme::merge(const std::string& text, const std::filesystem::path& director
             merge(*parent, includePath.parent_path(), depth + 1, nullptr);
         }
     }
-    if (document.contains("name") && document["name"].is_string()) name_ = document["name"].get<std::string>();
-    if (document.contains("type") && document["type"].is_string()) dark_ = document["type"] != "light";
+    if (document.contains("name") && document["name"].is_string()) {
+        name_ = document["name"].get<std::string>();
+    }
+    if (document.contains("type") && document["type"].is_string()) {
+        dark_ = document["type"] != "light";
+    }
 
     if (document.contains("colors") && document["colors"].is_object()) {
         for (const auto& [key, value] : document["colors"].items()) {
-            if (!value.is_string()) continue;
-            if (auto color = parseColor(value.get<std::string>())) colors_[key] = *color;
+            if (!value.is_string()) {
+                continue;
+            }
+            if (auto color = parseColor(value.get<std::string>())) {
+                colors_[key] = *color;
+            }
         }
     }
     if (document.contains("tokenColors") && document["tokenColors"].is_array()) {
         for (const auto& entry : document["tokenColors"]) {
-            if (!entry.is_object() || !entry.contains("settings")) continue;
+            if (!entry.is_object() || !entry.contains("settings")) {
+                continue;
+            }
             Rule rule;
             rule.order = rules_.size();
             const json& settings = entry["settings"];
@@ -130,7 +164,9 @@ bool Theme::merge(const std::string& text, const std::filesystem::path& director
                     scopes = split(entry["scope"].get<std::string>(), ',');
                 } else if (entry["scope"].is_array()) {
                     for (const auto& scope : entry["scope"]) {
-                        if (scope.is_string()) scopes.push_back(scope.get<std::string>());
+                        if (scope.is_string()) {
+                            scopes.push_back(scope.get<std::string>());
+                        }
                     }
                 }
             }
@@ -140,7 +176,9 @@ bool Theme::merge(const std::string& text, const std::filesystem::path& director
             }
             if (rule.selectors.empty() && !entry.contains("scope")) {
                 // Global settings: the default foreground for every token.
-                if (rule.foreground) colors_.try_emplace("editor.foreground", *rule.foreground);
+                if (rule.foreground) {
+                    colors_.try_emplace("editor.foreground", *rule.foreground);
+                }
                 continue;
             }
             rules_.push_back(std::move(rule));
@@ -157,7 +195,9 @@ Color Theme::color(const std::string& key, Color fallback) const {
 TextStyle Theme::styleFor(const tm::ScopeNode* scopes) const {
     {
         std::lock_guard lock(cacheMutex_);
-        if (auto found = cache_.find(scopes); found != cache_.end()) return found->second;
+        if (auto found = cache_.find(scopes); found != cache_.end()) {
+            return found->second;
+        }
     }
     TextStyle style = styleFor(scopes ? scopes->path() : std::vector<std::string>{});
     std::lock_guard lock(cacheMutex_);

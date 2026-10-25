@@ -26,12 +26,16 @@ struct SemanticTokenSet {
     std::vector<std::string> modifierNames;
 };
 
+// ---- Decoding
+
 /// Five numbers per token, each position relative to the previous token. Malformed data ends the list early.
 std::vector<SemanticToken> decodeSemanticTokens(const std::vector<uint32_t>& data);
 
 /// "function" -> entity.name.function. Empty for kinds the grammar already colors well or that
 /// would fight per-name coloring (variables, parameters, properties).
 std::string scopeForSemanticType(const std::string& typeName, const std::vector<std::string>& modifiers);
+
+// ---- Editing
 
 /// Tokens on edited lines go until the server sends new ones; later ones move with their lines.
 /// `firstLine`..`lastLineBefore` are the replaced lines numbered before the edit.

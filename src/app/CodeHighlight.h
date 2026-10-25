@@ -4,6 +4,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// ---- Highlighting
+
 /// Chat fence tag ("cpp", "c++", "py", "sh", "js"...) -> editor language id, or empty if unknown.
 NSString *GWLanguageForFenceTag(NSString *tag);
 

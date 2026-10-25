@@ -36,6 +36,8 @@ std::string defaultShell() {
 Pty::Pty() = default;
 
 Pty::~Pty() {
+    // The reader stops waiting for the screen to catch up, and makes sure the program ends.
+    stopping_.store(true);
     terminate();
     if (reader_.joinable()) {
         if (reader_.get_id() == std::this_thread::get_id()) {
@@ -52,24 +54,33 @@ Pty::~Pty() {
 
 bool Pty::start(const PtyOptions& options, std::string* error) {
     if (running_.load()) {
-        if (error != nullptr) *error = "already running";
+        if (error != nullptr) {
+            *error = "already running";
+        }
         return false;
     }
 
     // Everything the child needs is prepared before forking: after a fork, only very simple
     // calls are safe.
-    std::string program = options.program.empty() ? defaultShell() : options.program;
+    std::string program = options.program;
+    if (program.empty()) {
+        program = defaultShell();
+    }
     std::vector<std::string> argumentStrings = {program};
     if (options.program.empty() && options.arguments.empty()) {
         argumentStrings.push_back("-l");  // a login shell, so the usual profile (PATH, brew…) applies
     }
     argumentStrings.insert(argumentStrings.end(), options.arguments.begin(), options.arguments.end());
     std::vector<char*> arguments;
-    for (std::string& argument : argumentStrings) arguments.push_back(argument.data());
+    for (std::string& argument : argumentStrings) {
+        arguments.push_back(argument.data());
+    }
     arguments.push_back(nullptr);
 
     std::vector<std::string> environmentStrings;
-    for (char** entry = environ; entry != nullptr && *entry != nullptr; ++entry) environmentStrings.emplace_back(*entry);
+    for (char** entry = environ; entry != nullptr && *entry != nullptr; ++entry) {
+        environmentStrings.emplace_back(*entry);
+    }
     auto setVariable = [&environmentStrings](const std::string& name, const std::string& value) {
         std::string prefix = name + "=";
         for (std::string& entry : environmentStrings) {
@@ -92,21 +103,31 @@ bool Pty::start(const PtyOptions& options, std::string* error) {
     setVariable("TERM", "xterm-256color");
     setVariable("COLORTERM", "truecolor");
     setVariable("TERM_PROGRAM", "Glasswork");
-    if (std::getenv("LANG") == nullptr) setVariable("LANG", "en_US.UTF-8");
+    if (std::getenv("LANG") == nullptr) {
+        setVariable("LANG", "en_US.UTF-8");
+    }
     setVariable("PATH", searchPathForChildren());
     // Not meaningful inside a new terminal.
     removeVariable("TERM_SESSION_ID");
     removeVariable("GLASSWORK_TIMING");
     removeVariable("GLASSWORK_BENCH");
-    for (const auto& [name, value] : options.environment) setVariable(name, value);
+    for (const auto& [name, value] : options.environment) {
+        setVariable(name, value);
+    }
     std::vector<char*> environment;
-    for (std::string& entry : environmentStrings) environment.push_back(entry.data());
+    for (std::string& entry : environmentStrings) {
+        environment.push_back(entry.data());
+    }
     environment.push_back(nullptr);
 
     std::string folder = options.workingDirectory;
     if (folder.empty()) {
         const char* home = std::getenv("HOME");
-        folder = home != nullptr ? home : "/";
+        if (home != nullptr) {
+            folder = home;
+        } else {
+            folder = "/";
+        }
     }
 
     struct winsize size = {};
@@ -116,7 +137,9 @@ bool Pty::start(const PtyOptions& options, std::string* error) {
     int master = -1;
     pid_t child = forkpty(&master, nullptr, nullptr, &size);
     if (child < 0) {
-        if (error != nullptr) *error = std::string("could not open a terminal: ") + std::strerror(errno);
+        if (error != nullptr) {
+            *error = std::string("could not open a terminal: ") + std::strerror(errno);
+        }
         return false;
     }
     if (child == 0) {
@@ -131,6 +154,7 @@ bool Pty::start(const PtyOptions& options, std::string* error) {
     master_ = master;
     processId_ = child;
     unacknowledged_.store(0);
+    stopping_.store(false);
     running_.store(true);
     reader_ = std::thread([this] { readLoop(); });
     return true;
@@ -138,7 +162,9 @@ bool Pty::start(const PtyOptions& options, std::string* error) {
 
 void Pty::write(std::string_view bytes) {
     std::lock_guard<std::mutex> lock(writeMutex_);
-    if (master_ < 0 || !running_.load()) return;
+    if (master_ < 0 || !running_.load()) {
+        return;
+    }
     size_t written = 0;
     while (written < bytes.size()) {
         ssize_t count = ::write(master_, bytes.data() + written, bytes.size() - written);
@@ -153,7 +179,9 @@ void Pty::write(std::string_view bytes) {
 }
 
 void Pty::resize(int columns, int rows, int pixelWidth, int pixelHeight) {
-    if (master_ < 0) return;
+    if (master_ < 0) {
+        return;
+    }
     struct winsize size = {};
     size.ws_col = static_cast<unsigned short>(std::max(1, columns));
     size.ws_row = static_cast<unsigned short>(std::max(1, rows));
@@ -171,24 +199,40 @@ void Pty::terminate() {
 void Pty::acknowledge(size_t bytes) {
     size_t current = unacknowledged_.load();
     while (true) {
-        size_t next = current > bytes ? current - bytes : 0;
-        if (unacknowledged_.compare_exchange_weak(current, next)) break;
+        size_t next = 0;
+        if (current > bytes) {
+            next = current - bytes;
+        }
+        if (unacknowledged_.compare_exchange_weak(current, next)) {
+            break;
+        }
     }
 }
 
 std::string Pty::foregroundProcessName() const {
-    if (master_ < 0) return std::string();
+    if (master_ < 0) {
+        return std::string();
+    }
     pid_t group = tcgetpgrp(master_);
-    if (group <= 0) return std::string();
+    if (group <= 0) {
+        return std::string();
+    }
     char name[64] = {0};
-    if (proc_name(group, name, sizeof name) <= 0) return std::string();
+    if (proc_name(group, name, sizeof name) <= 0) {
+        return std::string();
+    }
     return name;
 }
 
 std::string Pty::currentDirectory() const {
-    if (processId_ <= 0) return std::string();
+    if (processId_ <= 0) {
+        return std::string();
+    }
     struct proc_vnodepathinfo info;
-    if (proc_pidinfo(processId_, PROC_PIDVNODEPATHINFO, 0, &info, sizeof info) != sizeof info) return std::string();
+    int filled = proc_pidinfo(processId_, PROC_PIDVNODEPATHINFO, 0, &info, sizeof info);
+    if (filled != sizeof info) {
+        return std::string();
+    }
     return info.pvi_cdir.vip_path;
 }
 
@@ -197,9 +241,10 @@ void Pty::readLoop() {
     int status = 0;
     bool exited = false;
 
-    while (true) {
-        // Pause while the screen is far behind.
-        while (unacknowledged_.load() > kMaxUnacknowledged) {
+    while (!stopping_.load()) {
+        // Pause while the screen is far behind (but not once the terminal is going away: nothing
+        // will catch up then).
+        while (unacknowledged_.load() > kMaxUnacknowledged && !stopping_.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
         pollfd watched = {master_, POLLIN, 0};
@@ -208,20 +253,30 @@ void Pty::readLoop() {
             ssize_t count = read(master_, buffer.data(), buffer.size());
             if (count > 0) {
                 unacknowledged_.fetch_add(static_cast<size_t>(count));
-                if (onOutput) onOutput(std::string_view(buffer.data(), static_cast<size_t>(count)));
+                if (onOutput) {
+                    onOutput(std::string_view(buffer.data(), static_cast<size_t>(count)));
+                }
                 continue;
             }
-            if (count == 0 || (errno != EINTR && errno != EAGAIN)) break;  // the program closed its end
+            bool closed = count == 0 || (errno != EINTR && errno != EAGAIN);
+            if (closed) {
+                break;  // the program closed its end
+            }
         }
         if (!exited && waitpid(processId_, &status, WNOHANG) == processId_) {
             exited = true;
         }
-        if (exited && ready <= 0) break;
-        if (ready < 0 && errno != EINTR) break;
+        if (exited && ready <= 0) {
+            break;
+        }
+        if (ready < 0 && errno != EINTR) {
+            break;
+        }
     }
 
     if (!exited) {
-        // The program closed the terminal; collect it (it may need a moment to finish).
+        // The program closed the terminal, or the terminal is going away; collect it (it may need
+        // a moment to finish), and end it if it won't.
         for (int attempt = 0; attempt < 50 && !exited; ++attempt) {
             if (waitpid(processId_, &status, WNOHANG) == processId_) {
                 exited = true;
@@ -235,8 +290,9 @@ void Pty::readLoop() {
         }
     }
     running_.store(false);
-    int code = WIFEXITED(status) ? WEXITSTATUS(status) : (WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1);
-    if (onExit) onExit(code);
+    if (onExit) {
+        onExit(exitCodeFromStatus(status));
+    }
 }
 
 }  // namespace gw

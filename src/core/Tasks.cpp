@@ -44,9 +44,13 @@ void addNodeTasks(const std::filesystem::path& folder, std::vector<Task>& tasks)
         return;
     }
     std::string runner = "npm run";
-    if (pathExists(folder / "pnpm-lock.yaml")) runner = "pnpm run";
-    else if (pathExists(folder / "yarn.lock")) runner = "yarn run";
-    else if (pathExists(folder / "bun.lockb") || pathExists(folder / "bun.lock")) runner = "bun run";
+    if (pathExists(folder / "pnpm-lock.yaml")) {
+        runner = "pnpm run";
+    } else if (pathExists(folder / "yarn.lock")) {
+        runner = "yarn run";
+    } else if (pathExists(folder / "bun.lockb") || pathExists(folder / "bun.lock")) {
+        runner = "bun run";
+    }
 
     nlohmann::json document = parseJsonc(readFile(manifest));
     if (document.is_discarded() || !document.is_object() || !document.contains("scripts") || !document["scripts"].is_object()) {
@@ -57,10 +61,15 @@ void addNodeTasks(const std::filesystem::path& folder, std::vector<Task>& tasks)
             continue;
         }
         Task::Kind kind = Task::Kind::Other;
-        if (name == "build" || name.rfind("build:", 0) == 0) kind = Task::Kind::Build;
-        else if (name == "start" || name == "dev" || name == "serve") kind = Task::Kind::Run;
-        else if (name == "test" || name.rfind("test:", 0) == 0) kind = Task::Kind::Test;
-        add(tasks, "npm script: " + name, runner + " " + name, kind);
+        if (name == "build" || name.rfind("build:", 0) == 0) {
+            kind = Task::Kind::Build;
+        } else if (name == "start" || name == "dev" || name == "serve") {
+            kind = Task::Kind::Run;
+        } else if (name == "test" || name.rfind("test:", 0) == 0) {
+            kind = Task::Kind::Test;
+        }
+        // Quoted: a script name is only a name, whatever characters it has.
+        add(tasks, "npm script: " + name, runner + " " + shellQuote(name), kind);
     }
 }
 
@@ -88,8 +97,12 @@ void addMakeTasks(const std::filesystem::path& folder, std::vector<Task>& tasks)
             if (name == "all" || name == ".PHONY" || name == "default") {
                 continue;
             }
-            Task::Kind kind = name == "test" || name == "check" ? Task::Kind::Test : Task::Kind::Other;
-            if (name == "run") kind = Task::Kind::Run;
+            Task::Kind kind = Task::Kind::Other;
+            if (name == "test" || name == "check") {
+                kind = Task::Kind::Test;
+            } else if (name == "run") {
+                kind = Task::Kind::Run;
+            }
             add(tasks, "make " + name, "make " + name, kind);
             ++added;
         }
@@ -113,8 +126,8 @@ std::string shellQuote(const std::string& text) {
 std::vector<Task> detectTasks(const std::filesystem::path& folder) {
     std::vector<Task> tasks;
     if (pathExists(folder / "CMakeLists.txt")) {
-        add(tasks, "Build (CMake)", "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build "
-                                    "build", Task::Kind::Build);
+        add(tasks, "Build (CMake)", "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build",
+            Task::Kind::Build);
         add(tasks, "Build again (CMake)", "cmake --build build", Task::Kind::Build);
         add(tasks, "Test (CTest)", "ctest --test-dir build --output-on-failure", Task::Kind::Test);
     }
@@ -138,10 +151,8 @@ std::vector<Task> detectTasks(const std::filesystem::path& folder) {
         add(tasks, "Build (Xcode)", "xcodebuild build", Task::Kind::Build);
         add(tasks, "Test (Xcode)", "xcodebuild test", Task::Kind::Test);
     }
-    if (pathExists(folder / "pyproject.toml") || pathExists(folder / "pytest.ini") || pathExists(folder / "tests")) {
-        if (pathExists(folder / "pyproject.toml") || pathExists(folder / "pytest.ini")) {
-            add(tasks, "Test (pytest)", "python3 -m pytest", Task::Kind::Test);
-        }
+    if (pathExists(folder / "pyproject.toml") || pathExists(folder / "pytest.ini")) {
+        add(tasks, "Test (pytest)", "python3 -m pytest", Task::Kind::Test);
     }
     addNodeTasks(folder, tasks);
     addMakeTasks(folder, tasks);
@@ -155,25 +166,49 @@ std::vector<Task> detectTasks(const std::filesystem::path& folder) {
 
 std::string commandToRunFile(const std::filesystem::path& file, const std::string& languageId) {
     std::string path = shellQuote(file.string());
+    // Compiled programs go in the user's own temporary folder, not the shared /tmp, where
+    // another account could put its own file in their place.
+    const std::string program = "\"${TMPDIR:-/tmp}/glasswork-run\"";
+    const std::string thenRun = " -o " + program + " && " + program;
     std::string extension = file.extension().string();
-    if (languageId == "python") return "python3 " + path;
-    if (languageId == "javascript" || languageId == "javascriptreact") return "node " + path;
-    if (languageId == "typescript" || languageId == "typescriptreact") return "npx tsx " + path;
-    if (languageId == "swift") return "swift " + path;
-    if (languageId == "shellscript") return "bash " + path;
-    if (languageId == "ruby") return "ruby " + path;
-    if (languageId == "lua") return "lua " + path;
-    if (languageId == "perl") return "perl " + path;
-    if (languageId == "php") return "php " + path;
-    if (languageId == "go") return "go run " + path;
+    if (languageId == "python") {
+        return "python3 " + path;
+    }
+    if (languageId == "javascript" || languageId == "javascriptreact") {
+        return "node " + path;
+    }
+    if (languageId == "typescript" || languageId == "typescriptreact") {
+        return "npx tsx " + path;
+    }
+    if (languageId == "swift") {
+        return "swift " + path;
+    }
+    if (languageId == "shellscript") {
+        return "bash " + path;
+    }
+    if (languageId == "ruby") {
+        return "ruby " + path;
+    }
+    if (languageId == "lua") {
+        return "lua " + path;
+    }
+    if (languageId == "perl") {
+        return "perl " + path;
+    }
+    if (languageId == "php") {
+        return "php " + path;
+    }
+    if (languageId == "go") {
+        return "go run " + path;
+    }
     if (languageId == "rust") {
-        return "rustc " + path + " -o /tmp/glasswork-run && /tmp/glasswork-run";
+        return "rustc " + path + thenRun;
     }
     if (languageId == "cpp" && (extension == ".cpp" || extension == ".cc" || extension == ".cxx" || extension == ".mm")) {
-        return "clang++ -std=c++20 -Wall " + path + " -o /tmp/glasswork-run && /tmp/glasswork-run";
+        return "clang++ -std=c++20 -Wall " + path + thenRun;
     }
     if (languageId == "c" && extension == ".c") {
-        return "clang -Wall " + path + " -o /tmp/glasswork-run && /tmp/glasswork-run";
+        return "clang -Wall " + path + thenRun;
     }
     return std::string();
 }

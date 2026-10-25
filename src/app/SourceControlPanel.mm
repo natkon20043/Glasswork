@@ -1,4 +1,5 @@
 #import "SourceControlPanel.h"
+#import "Strings.h"
 
 #import "FileIcons.h"
 #import "GitRepository.h"
@@ -675,7 +676,7 @@ NSTextField *label(NSString *text, CGFloat size, NSFontWeight weight, NSColor *c
         _publishButton.hidden = YES;
     } else if (!status.error.empty()) {
         _emptyTitle.stringValue = @"Git isn't available";
-        _emptyText.stringValue = @(status.error.c_str());
+        _emptyText.stringValue = StringFromUTF8(status.error);
         _initializeButton.hidden = YES;
         _publishButton.hidden = YES;
     } else {
@@ -688,8 +689,8 @@ NSTextField *label(NSString *text, CGFloat size, NSFontWeight weight, NSColor *c
 
 - (void)updateBranchButton {
     const gw::git::Status &status = _repository.status;
-    NSString *name = status.branch.empty() ? [NSString stringWithFormat:@"Detached at %@", @(status.headCommit.substr(0, 7).c_str())]
-                                           : @(status.branch.c_str());
+    NSString *name = status.branch.empty() ? [NSString stringWithFormat:@"Detached at %@", StringFromUTF8(status.headCommit.substr(0, 7))]
+                                           : StringFromUTF8(status.branch);
     if (!status.hasCommits() && status.branch.empty()) {
         name = @"No commits yet";
     }
@@ -823,7 +824,7 @@ NSTextField *label(NSString *text, CGFloat size, NSFontWeight weight, NSColor *c
             row.kind = GWSCRowKindFile;
             row.sectionId = identifier;
             row.staged = isStaged;
-            row.path = @(change->path.c_str());
+            row.path = StringFromUTF8(change->path);
             row.title = row.path.lastPathComponent;
             row.detail = row.path.stringByDeletingLastPathComponent;
             gw::git::ChangeKind kind = change->isConflicted() ? gw::git::ChangeKind::Conflicted
@@ -863,10 +864,10 @@ NSTextField *label(NSString *text, CGFloat size, NSFontWeight weight, NSColor *c
                 GWSCRow *row = [GWSCRow new];
                 row.kind = GWSCRowKindCommit;
                 row.sectionId = @"commits";
-                row.title = @(entry.subject.c_str());
-                row.detail = [NSString stringWithFormat:@"%@  ·  %@  ·  %@", @(entry.shortHash.c_str()), @(entry.author.c_str()),
-                                                        @(entry.relativeDate.c_str())];
-                row.commitHash = @(entry.hash.c_str());
+                row.title = StringFromUTF8(entry.subject);
+                row.detail = [NSString stringWithFormat:@"%@  ·  %@  ·  %@", StringFromUTF8(entry.shortHash), StringFromUTF8(entry.author),
+                                                        StringFromUTF8(entry.relativeDate)];
+                row.commitHash = StringFromUTF8(entry.hash);
                 [rows addObject:row];
             }
         }
@@ -1141,7 +1142,7 @@ NSTextField *label(NSString *text, CGFloat size, NSFontWeight weight, NSColor *c
         return;
     }
     if (self.onError) {
-        self.onError(title, @(result.error.c_str()));
+        self.onError(title, StringFromUTF8(result.error));
     }
 }
 
@@ -1375,12 +1376,12 @@ NSTextField *label(NSString *text, CGFloat size, NSFontWeight weight, NSColor *c
     BOOL staged = _repository.status.stagedCount() > 0;
     NSMutableString *recent = [NSMutableString string];
     for (size_t index = 0; index < std::min<size_t>(_repository.log.size(), 8); ++index) {
-        [recent appendFormat:@"- %s\n", _repository.log[index].subject.c_str()];
+        [recent appendFormat:@"- %@\n", StringFromUTF8(_repository.log[index].subject)];
     }
 
     [_repository read:^id(NSString *root) {
         std::string diff = gw::git::readFullDiff(root.UTF8String, staged);
-        return @{@"root": root, @"diff": @(diff.c_str())};
+        return @{@"root": root, @"diff": StringFromUTF8(diff)};
     } completion:^(id result) {
         NSDictionary *info = result;
         NSString *root = info[@"root"];
@@ -1391,7 +1392,7 @@ NSTextField *label(NSString *text, CGFloat size, NSFontWeight weight, NSColor *c
             return;
         }
         if (diff.length > 40000) {
-            diff = [[diff substringToIndex:40000] stringByAppendingString:@"\n… (the diff was cut here because it is very long)"];
+            diff = [PrefixOfString(diff, 40000) stringByAppendingString:@"\n… (the diff was cut here because it is very long)"];
         }
         NSString *prompt = [NSString stringWithFormat:
             @"Write a git commit message for the change below.\n\n"
@@ -1407,7 +1408,7 @@ NSTextField *label(NSString *text, CGFloat size, NSFontWeight weight, NSColor *c
             std::string error;
             std::string answer = gw::claude::askOnce(promptText, folder, "haiku", &error);
             dispatch_async(dispatch_get_main_queue(), ^{
-                [self finishGenerating:answer.empty() ? nil : @(answer.c_str()) error:@(error.c_str())];
+                [self finishGenerating:answer.empty() ? nil : StringFromUTF8(answer) error:StringFromUTF8(error)];
             });
         });
     }];
@@ -1539,7 +1540,7 @@ NSTextField *label(NSString *text, CGFloat size, NSFontWeight weight, NSColor *c
     NSAlert *alert = [NSAlert new];
     alert.messageText = @"Publish to GitHub";
     alert.informativeText = [NSString stringWithFormat:@"Creates a repository on GitHub as %@ and uploads this project.",
-                                                       @(github.user.c_str())];
+                                                       StringFromUTF8(github.user)];
     NSTextField *name = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
     name.stringValue = folder.lastPathComponent;
     NSTextField *description = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
@@ -1612,7 +1613,7 @@ NSTextField *label(NSString *text, CGFloat size, NSFontWeight weight, NSColor *c
 
 - (void)offerToOpenPublishedRepository:(const std::string &)output {
     // `gh` prints the new repository's address.
-    NSString *text = @(output.c_str());
+    NSString *text = StringFromUTF8(output);
     NSRange range = [text rangeOfString:@"https://github.com/[^\\s]+" options:NSRegularExpressionSearch];
     if (range.location == NSNotFound) {
         return;
@@ -1689,10 +1690,10 @@ NSTextField *label(NSString *text, CGFloat size, NSFontWeight weight, NSColor *c
     }
 
     NSAlert *alert = [NSAlert new];
-    alert.messageText = [NSString stringWithFormat:@"Open a pull request for “%s”", status.branch.c_str()];
+    alert.messageText = [NSString stringWithFormat:@"Open a pull request for “%@”", StringFromUTF8(status.branch)];
     alert.informativeText = @"The branch is pushed first if it needs to be.";
     NSTextField *title = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 300, 24)];
-    title.stringValue = _repository.log.empty() ? @"" : @(_repository.log.front().subject.c_str());
+    title.stringValue = _repository.log.empty() ? @"" : StringFromUTF8(_repository.log.front().subject);
     NSTextField *body = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 300, 24)];
     body.placeholderString = @"Optional";
     NSStackView *form = [NSStackView stackViewWithViews:@[[self formRow:@"Title" field:title], [self formRow:@"Description" field:body]]];
@@ -1742,7 +1743,7 @@ NSTextField *label(NSString *text, CGFloat size, NSFontWeight weight, NSColor *c
     [_repository read:^id(NSString *root) {
         NSMutableArray *branches = [NSMutableArray array];
         for (const gw::git::Branch &branch : gw::git::readBranches(root.UTF8String)) {
-            [branches addObject:@{@"name": @(branch.name.c_str()), @"current": @(branch.isCurrent), @"remote": @(branch.isRemote)}];
+            [branches addObject:@{@"name": StringFromUTF8(branch.name), @"current": @(branch.isCurrent), @"remote": @(branch.isRemote)}];
         }
         return branches;
     } completion:^(id result) {
@@ -1853,7 +1854,7 @@ NSTextField *label(NSString *text, CGFloat size, NSFontWeight weight, NSColor *c
     if (!status.hasRemote) {
         add(@"Publish to GitHub…", @selector(menuPublish:));
     }
-    NSString *origin = @(gw::git::readOriginRepository(status.root).c_str());
+    NSString *origin = StringFromUTF8(gw::git::readOriginRepository(status.root));
     if (origin.length > 0) {
         [menu addItem:NSMenuItem.separatorItem];
         NSMenuItem *open = add([NSString stringWithFormat:@"Open %@ on GitHub", origin], @selector(menuOpenOnGitHub:));

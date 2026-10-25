@@ -1,4 +1,5 @@
 #import "CodeHighlight.h"
+#import "Strings.h"
 
 #import "Services.h"
 
@@ -44,11 +45,15 @@ NSString *GWLanguageForFenceTag(NSString *tag) {
 NSAttributedString *GWHighlightedCode(NSString *code, NSString *language, CGFloat pointSize) {
     GWServices *services = GWServices.shared;
 
-    NSFont *editorFont = [services editorFontBold:NO italic:NO];
-    NSFont *regular = [NSFont fontWithDescriptor:editorFont.fontDescriptor size:pointSize] ?: [NSFont monospacedSystemFontOfSize:pointSize weight:NSFontWeightRegular];
-    NSFont *bold = [NSFont fontWithDescriptor:[[services editorFontBold:YES italic:NO] fontDescriptor] size:pointSize] ?: regular;
-    NSFont *italic = [NSFont fontWithDescriptor:[[services editorFontBold:NO italic:YES] fontDescriptor] size:pointSize] ?: regular;
-    NSFont *boldItalic = [NSFont fontWithDescriptor:[[services editorFontBold:YES italic:YES] fontDescriptor] size:pointSize] ?: regular;
+    // The editor's font in each style, at this size; the plain one stands in for any that is missing.
+    auto editorFont = [&](BOOL isBold, BOOL isItalic) {
+        NSFontDescriptor *descriptor = [services editorFontBold:isBold italic:isItalic].fontDescriptor;
+        return [NSFont fontWithDescriptor:descriptor size:pointSize];
+    };
+    NSFont *regular = editorFont(NO, NO) ?: [NSFont monospacedSystemFontOfSize:pointSize weight:NSFontWeightRegular];
+    NSFont *bold = editorFont(YES, NO) ?: regular;
+    NSFont *italic = editorFont(NO, YES) ?: regular;
+    NSFont *boldItalic = editorFont(YES, YES) ?: regular;
 
     NSColor *foreground = [services color:@"editor.foreground" fallback:NSColor.labelColor];
     NSDictionary *plain = @{NSFontAttributeName: regular, NSForegroundColorAttributeName: foreground};
@@ -57,7 +62,10 @@ NSAttributedString *GWHighlightedCode(NSString *code, NSString *language, CGFloa
     if (languageId.length == 0) {
         languageId = language;
     }
-    gw::tm::Grammar *grammar = languageId.length > 0 ? services.grammars.forLanguage(languageId.UTF8String) : nullptr;
+    gw::tm::Grammar *grammar = nullptr;
+    if (languageId.length > 0) {
+        grammar = services.grammars.forLanguage(languageId.UTF8String);
+    }
     if (grammar == nullptr) {
         return [[NSAttributedString alloc] initWithString:code attributes:plain];
     }
@@ -73,7 +81,8 @@ NSAttributedString *GWHighlightedCode(NSString *code, NSString *language, CGFloa
         std::string_view text = buffer.line(line);
         const std::vector<gw::tm::Token> *tokens = highlighter.tokens(buffer, line);
         if (tokens == nullptr || text.empty()) {
-            [result appendAttributedString:[[NSAttributedString alloc] initWithString:@(std::string(text).c_str()) attributes:plain]];
+            NSString *lineText = StringFromUTF8(std::string(text));
+            [result appendAttributedString:[[NSAttributedString alloc] initWithString:lineText attributes:plain]];
             continue;
         }
 
@@ -98,7 +107,9 @@ NSAttributedString *GWHighlightedCode(NSString *code, NSString *language, CGFloa
             } else if (span.style.italic) {
                 font = italic;
             }
-            NSMutableDictionary *attributes = [@{NSFontAttributeName: font, NSForegroundColorAttributeName: GWColor(span.style.foreground)} mutableCopy];
+            NSMutableDictionary *attributes = [NSMutableDictionary dictionary];
+            attributes[NSFontAttributeName] = font;
+            attributes[NSForegroundColorAttributeName] = GWColor(span.style.foreground);
             if (span.style.underline) {
                 attributes[NSUnderlineStyleAttributeName] = @(NSUnderlineStyleSingle);
             }

@@ -10,6 +10,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL isDirectory;
 @end
 
+// ---- Naming
+
 /// Files on another machine are named with ssh:// URLs: ssh://user@host/absolute/path.
 NSURL *GWRemoteURL(NSString *destination, NSString *path);
 BOOL GWIsRemoteURL(NSURL *_Nullable url);
@@ -19,6 +21,8 @@ NSString *GWRemoteDestination(NSURL *url);
 /// path below it, so the file keeps its name and extension (which choose its language).
 NSString *GWLocalCopyPathForRemoteURL(NSURL *url);
 
+// ---- Reading and writing (each blocks until the machine answers)
+
 /// The entries of a remote folder, or nil with `error` set. Blocks until the machine answers.
 NSArray<GWRemoteItem *> *_Nullable GWListRemoteFolder(NSURL *folder, NSString *_Nullable *_Nullable error);
 /// The remote file's text, or nil with `error` set.
@@ -27,6 +31,8 @@ NSData *_Nullable GWReadRemoteFile(NSURL *file, NSString *_Nullable *_Nullable e
 BOOL GWWriteRemoteFile(NSURL *file, NSData *contents, NSString *_Nullable *_Nullable error);
 /// A folder given as "~", "~/code" or an absolute path, made absolute on the remote machine.
 NSString *_Nullable GWResolveRemotePath(NSString *destination, NSString *path, NSString *_Nullable *_Nullable error);
+// ---- Terminal
+
 /// The command line (for a terminal) that opens a shell in a remote folder.
 NSString *GWRemoteShellCommand(NSURL *folder);
 

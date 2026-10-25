@@ -11,7 +11,9 @@ namespace gw {
 
 Position endOfInsertion(Position start, std::string_view text) {
     size_t newlines = static_cast<size_t>(std::count(text.begin(), text.end(), '\n'));
-    if (newlines == 0) return {start.line, start.column + text.size()};
+    if (newlines == 0) {
+        return {start.line, start.column + text.size()};
+    }
     size_t lastBreak = text.rfind('\n');
     return {start.line + newlines, text.size() - lastBreak - 1};
 }
@@ -43,12 +45,19 @@ bool readWholeFile(const std::filesystem::path& path, std::string& contents) {
     return true;
 }
 
+long long modifiedNanoseconds(const struct stat& info) {
+    long long seconds = static_cast<long long>(info.st_mtimespec.tv_sec);
+    return seconds * 1000000000LL + info.st_mtimespec.tv_nsec;
+}
+
 }  // namespace
 
 std::optional<Document> Document::open(const std::filesystem::path& path, std::string* error) {
     std::string contents;
     if (!readWholeFile(path, contents)) {
-        if (error) *error = "Couldn't open " + path.string();
+        if (error) {
+            *error = "Couldn't open " + path.string();
+        }
         return std::nullopt;
     }
     Document document;
@@ -74,7 +83,7 @@ void Document::rememberDiskState() {
     }
     struct stat info;
     if (stat(path_->c_str(), &info) == 0) {
-        diskModifiedNanoseconds_ = static_cast<long long>(info.st_mtimespec.tv_sec) * 1000000000LL + info.st_mtimespec.tv_nsec;
+        diskModifiedNanoseconds_ = modifiedNanoseconds(info);
         diskSize_ = static_cast<long long>(info.st_size);
     }
 }
@@ -87,18 +96,23 @@ bool Document::fileChangedOnDisk() const {
     if (stat(path_->c_str(), &info) != 0) {
         return false;  // deleted or unreadable: not something we can reload
     }
-    long long modified = static_cast<long long>(info.st_mtimespec.tv_sec) * 1000000000LL + info.st_mtimespec.tv_nsec;
-    return modified != diskModifiedNanoseconds_ || static_cast<long long>(info.st_size) != diskSize_;
+    bool modifiedChanged = modifiedNanoseconds(info) != diskModifiedNanoseconds_;
+    bool sizeChanged = static_cast<long long>(info.st_size) != diskSize_;
+    return modifiedChanged || sizeChanged;
 }
 
 Document::ReloadResult Document::reloadFromDisk(std::string* error) {
     if (!path_) {
-        if (error) *error = "This document has no file.";
+        if (error) {
+            *error = "This document has no file.";
+        }
         return ReloadResult::Failed;
     }
     std::string contents;
     if (!readWholeFile(*path_, contents)) {
-        if (error) *error = "Couldn't read " + path_->string();
+        if (error) {
+            *error = "Couldn't read " + path_->string();
+        }
         return ReloadResult::Failed;
     }
 
@@ -169,33 +183,60 @@ Document::ReloadResult Document::reloadFromDisk(std::string* error) {
 
 bool Document::save(std::string* error) {
     if (!path_) {
-        if (error) *error = "This document has no file yet.";
+        if (error) {
+            *error = "This document has no file yet.";
+        }
         return false;
     }
     return saveAs(*path_, error);
 }
 
 bool Document::saveAs(const std::filesystem::path& path, std::string* error) {
-    // Write to a temporary file and rename, so a failed save never truncates the original.
-    std::filesystem::path temporary = path;
-    temporary += ".glasswork-save";
-    {
-        std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
-        if (!file) {
-            if (error) *error = "Couldn't write " + path.string();
-            return false;
-        }
-        std::string text = buffer_.text();
-        file.write(text.data(), static_cast<std::streamsize>(text.size()));
-        if (!file) {
-            if (error) *error = "Couldn't write " + path.string();
-            return false;
+    // Saving through a symbolic link changes the file it points to, and leaves the link a link.
+    std::filesystem::path target = path;
+    std::error_code linkError;
+    if (std::filesystem::is_symlink(path, linkError)) {
+        std::filesystem::path resolved = std::filesystem::canonical(path, linkError);
+        if (!linkError) {
+            target = resolved;
         }
     }
-    std::error_code code;
-    std::filesystem::rename(temporary, path, code);
-    if (code) {
-        if (error) *error = code.message();
+
+    // Write to a temporary file and rename, so a failed save never truncates the original.
+    std::filesystem::path temporary = target;
+    temporary += ".glasswork-save";
+    bool written = false;
+    {
+        std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+        if (file) {
+            std::string text = buffer_.text();
+            file.write(text.data(), static_cast<std::streamsize>(text.size()));
+            file.flush();
+            written = static_cast<bool>(file);
+        }
+    }
+    std::error_code removeError;
+    if (!written) {
+        std::filesystem::remove(temporary, removeError);
+        if (error) {
+            *error = "Couldn't write " + path.string();
+        }
+        return false;
+    }
+
+    // The new file keeps the old one's permissions (an executable script stays executable).
+    struct stat original;
+    if (stat(target.c_str(), &original) == 0) {
+        chmod(temporary.c_str(), original.st_mode & 07777);
+    }
+
+    std::error_code renameError;
+    std::filesystem::rename(temporary, target, renameError);
+    if (renameError) {
+        std::filesystem::remove(temporary, removeError);
+        if (error) {
+            *error = renameError.message();
+        }
         return false;
     }
     path_ = path;
@@ -213,7 +254,10 @@ std::string Document::displayName() const {
     if (!title.empty()) {
         return title;
     }
-    return path_ ? path_->filename().string() : std::string("Untitled");
+    if (path_) {
+        return path_->filename().string();
+    }
+    return "Untitled";
 }
 
 namespace {
@@ -351,11 +395,12 @@ void Document::followEditInSnippet(Position at, Position removedEnd, Position en
 void Document::startSnippet(Position start, const ParsedSnippet& snippet) {
     endSnippet();
     std::vector<std::vector<Range>> stops;
+    std::string_view text = snippet.text;
     for (const std::vector<SnippetSpan>& spans : snippet.stops) {
         std::vector<Range> ranges;
         for (const SnippetSpan& span : spans) {
-            Position rangeStart = endOfInsertion(start, std::string_view(snippet.text).substr(0, span.offset));
-            Position rangeEnd = endOfInsertion(start, std::string_view(snippet.text).substr(0, span.offset + span.length));
+            Position rangeStart = endOfInsertion(start, text.substr(0, span.offset));
+            Position rangeEnd = endOfInsertion(start, text.substr(0, span.offset + span.length));
             ranges.push_back(Range{rangeStart, rangeEnd});
         }
         stops.push_back(std::move(ranges));
@@ -423,7 +468,9 @@ Position positionAfterEdit(Position p, Position at, Position removedEnd, Positio
 }
 
 void Document::notify(size_t firstLine, long lineDelta, size_t lastLine) {
-    if (onChange) onChange(Change{firstLine, lineDelta, lastLine});
+    if (onChange) {
+        onChange(Change{firstLine, lineDelta, lastLine});
+    }
 }
 
 Position Document::replace(Range range, std::string_view text, bool coalesceTyping) {
@@ -441,7 +488,10 @@ Position Document::replace(Range range, std::string_view text, bool coalesceTypi
     edit.selectionBefore = selection;
     edit.time = std::chrono::steady_clock::now();
     edit.typing = coalesceTyping && groupDepth_ == 0;
-    edit.group = groupDepth_ > 0 ? currentGroup_ : 0;
+    edit.group = 0;
+    if (groupDepth_ > 0) {
+        edit.group = currentGroup_;
+    }
 
     Position end = apply(edit.at, edit.removed, edit.inserted);
     selection = {end, end};
@@ -473,7 +523,11 @@ void Document::typeText(std::string_view text) {
 }
 
 void Document::deleteSelectionOr(Range fallback) {
-    replace(selection.empty() ? fallback : selection.range(), "");
+    if (selection.empty()) {
+        replace(fallback, "");
+    } else {
+        replace(selection.range(), "");
+    }
 }
 
 void Document::beginUndoGroup() {
@@ -490,7 +544,9 @@ void Document::endUndoGroup() {
 }
 
 bool Document::undo() {
-    if (readOnly || undoStack_.empty()) return false;
+    if (readOnly || undoStack_.empty()) {
+        return false;
+    }
     // A group comes off together: keep going while the edits belong to the same one.
     uint64_t group = undoStack_.back().group;
     do {
@@ -507,7 +563,9 @@ bool Document::undo() {
 }
 
 bool Document::redo() {
-    if (readOnly || redoStack_.empty()) return false;
+    if (readOnly || redoStack_.empty()) {
+        return false;
+    }
     uint64_t group = redoStack_.back().group;
     do {
         Edit edit = std::move(redoStack_.back());

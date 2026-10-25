@@ -31,18 +31,34 @@ std::vector<SemanticToken> decodeSemanticTokens(const std::vector<uint32_t>& dat
 
 std::string scopeForSemanticType(const std::string& typeName, const std::vector<std::string>& modifiers) {
     (void)modifiers;
-    if (typeName == "namespace") return "entity.name.namespace";
-    if (typeName == "class") return "entity.name.type.class";
+    if (typeName == "namespace") {
+        return "entity.name.namespace";
+    }
+    if (typeName == "class") {
+        return "entity.name.type.class";
+    }
     if (typeName == "struct" || typeName == "type" || typeName == "interface" || typeName == "typeParameter" ||
         typeName == "concept") {
         return "entity.name.type";
     }
-    if (typeName == "enum") return "entity.name.type.enum";
-    if (typeName == "function" || typeName == "method") return "entity.name.function";
-    if (typeName == "macro") return "entity.name.function.preprocessor";
-    if (typeName == "enumMember") return "variable.other.enummember";
-    if (typeName == "decorator") return "entity.name.function.decorator";
-    if (typeName == "event") return "entity.name.function";
+    if (typeName == "enum") {
+        return "entity.name.type.enum";
+    }
+    if (typeName == "function" || typeName == "method") {
+        return "entity.name.function";
+    }
+    if (typeName == "macro") {
+        return "entity.name.function.preprocessor";
+    }
+    if (typeName == "enumMember") {
+        return "variable.other.enummember";
+    }
+    if (typeName == "decorator") {
+        return "entity.name.function.decorator";
+    }
+    if (typeName == "event") {
+        return "entity.name.function";
+    }
     return std::string();
 }
 

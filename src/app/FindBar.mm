@@ -1,4 +1,5 @@
 #import "FindBar.h"
+#import "Strings.h"
 
 #import "EditorView.h"
 
@@ -257,7 +258,7 @@
     if (!_matcher->valid()) {
         _countLabel.stringValue = @"Invalid";
         _countLabel.textColor = NSColor.systemRedColor;
-        _countLabel.toolTip = @(_matcher->error().c_str());
+        _countLabel.toolTip = StringFromUTF8(_matcher->error());
         [_editor setFindMatches:{} current:-1];
         return;
     }
@@ -413,9 +414,7 @@
 
 - (void)controlTextDidChange:(NSNotification *)notification {
     if (notification.object == _findField) {
-        gw::Document *document = _editor.currentDocument;
         // Typing refines the search from where it started.
-        (void)document;
         [self recomputeAndSelect:YES];
     }
 }

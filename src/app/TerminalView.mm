@@ -1,4 +1,5 @@
 #import "TerminalView.h"
+#import "Strings.h"
 
 #import "Services.h"
 #import "TerminalSession.h"
@@ -54,7 +55,9 @@ struct RowDrawing {
     RowDrawing& operator=(RowDrawing&& other) noexcept = default;
     ~RowDrawing() {
         for (TextRun& run : runs) {
-            if (run.line != nullptr) CFRelease(run.line);
+            if (run.line != nullptr) {
+                CFRelease(run.line);
+            }
         }
     }
 };
@@ -177,8 +180,12 @@ static BOOL pointBefore(GWTermPoint a, GWTermPoint b) {
 - (instancetype)initWithFrame:(NSRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
-        for (int index = 0; index < 4; ++index) _fonts[index] = nullptr;
-        for (int index = 0; index < 256; ++index) _palette[index] = nullptr;
+        for (int index = 0; index < 4; ++index) {
+            _fonts[index] = nullptr;
+        }
+        for (int index = 0; index < 256; ++index) {
+            _palette[index] = nullptr;
+        }
         self.wantsLayer = YES;
         self.layer.backgroundColor = NSColor.clearColor.CGColor;
         [self registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
@@ -197,20 +204,34 @@ static BOOL pointBefore(GWTermPoint a, GWTermPoint b) {
 
 - (void)releaseAppearance {
     for (int index = 0; index < 4; ++index) {
-        if (_fonts[index]) CFRelease(_fonts[index]);
+        if (_fonts[index]) {
+            CFRelease(_fonts[index]);
+        }
         _fonts[index] = nullptr;
     }
     for (int index = 0; index < 256; ++index) {
-        if (_palette[index]) CGColorRelease(_palette[index]);
+        if (_palette[index]) {
+            CGColorRelease(_palette[index]);
+        }
         _palette[index] = nullptr;
     }
-    if (_foreground) CGColorRelease(_foreground);
-    if (_background) CGColorRelease(_background);
-    if (_cursorColor) CGColorRelease(_cursorColor);
-    if (_selectionColor) CGColorRelease(_selectionColor);
+    if (_foreground) {
+        CGColorRelease(_foreground);
+    }
+    if (_background) {
+        CGColorRelease(_background);
+    }
+    if (_cursorColor) {
+        CGColorRelease(_cursorColor);
+    }
+    if (_selectionColor) {
+        CGColorRelease(_selectionColor);
+    }
     _foreground = _background = _cursorColor = _selectionColor = nullptr;
     _cache.clear();
-    for (auto &entry : _dimmedColors) CGColorRelease(entry.second);
+    for (auto &entry : _dimmedColors) {
+        CGColorRelease(entry.second);
+    }
     _dimmedColors.clear();
 }
 
@@ -222,7 +243,8 @@ static BOOL pointBefore(GWTermPoint a, GWTermPoint b) {
 
 - (void)appearanceChanged:(NSNotification *)notification { [self reloadAppearance]; }
 
-static CGColorRef makeColor(NSColor *color) {
+/// A new color, which the caller releases (as with createRGB below).
+static CGColorRef createColor(NSColor *color) {
     NSColor *rgb = [color colorUsingColorSpace:NSColorSpace.sRGBColorSpace] ?: color;
     CGFloat components[4] = {rgb.redComponent, rgb.greenComponent, rgb.blueComponent, rgb.alphaComponent};
     CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
@@ -231,7 +253,7 @@ static CGColorRef makeColor(NSColor *color) {
     return result;
 }
 
-static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
+static CGColorRef createRGB(uint8_t red, uint8_t green, uint8_t blue) {
     CGFloat components[4] = {red / 255.0, green / 255.0, blue / 255.0, 1};
     CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     CGColorRef result = CGColorCreate(space, components);
@@ -285,27 +307,27 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
                                                       blue:fallback[index][2] / 255.0 alpha:1];
         NSColor *color = [services color:[@"terminal.ansi" stringByAppendingString:names[static_cast<NSUInteger>(index)]]
                                 fallback:fallbackColor];
-        _palette[index] = makeColor(color);
+        _palette[index] = createColor(color);
     }
     // 6x6x6 color cube, then 24 greys.
     for (int index = 16; index < 232; ++index) {
         int value = index - 16;
         auto level = [](int step) -> uint8_t { return step == 0 ? 0 : static_cast<uint8_t>(55 + step * 40); };
-        _palette[index] = makeRGB(level(value / 36), level((value / 6) % 6), level(value % 6));
+        _palette[index] = createRGB(level(value / 36), level((value / 6) % 6), level(value % 6));
     }
     for (int index = 232; index < 256; ++index) {
         uint8_t grey = static_cast<uint8_t>(8 + (index - 232) * 10);
-        _palette[index] = makeRGB(grey, grey, grey);
+        _palette[index] = createRGB(grey, grey, grey);
     }
     NSColor *foreground = [services color:@"terminal.foreground"
                                  fallback:[services color:@"editor.foreground" fallback:NSColor.labelColor]];
     NSColor *background = [services color:@"terminal.background"
                                  fallback:[services color:@"editor.background" fallback:NSColor.blackColor]];
-    _foreground = makeColor(foreground);
-    _background = makeColor(background);
-    _cursorColor = makeColor([services color:@"terminalCursor.foreground" fallback:NSColor.controlAccentColor]);
+    _foreground = createColor(foreground);
+    _background = createColor(background);
+    _cursorColor = createColor([services color:@"terminalCursor.foreground" fallback:NSColor.controlAccentColor]);
     _selectionNSColor = [services color:@"terminal.selectionBackground" fallback:[NSColor.controlAccentColor colorWithAlphaComponent:0.35]];
-    _selectionColor = makeColor(_selectionNSColor);
+    _selectionColor = createColor(_selectionNSColor);
 
     if (_session) {
         NSColor *fg = [foreground colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
@@ -352,7 +374,9 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
     long history = static_cast<long>(_session.screen.historyCount());
     if (_scrollOffset > 0) {
         _scrollOffset = std::min(_scrollOffset + (history - _lastHistoryCount), history);
-        if (_scrollOffset < 0) _scrollOffset = 0;
+        if (_scrollOffset < 0) {
+            _scrollOffset = 0;
+        }
     }
     _lastHistoryCount = history;
     if (_cache.size() > 3000) {
@@ -408,18 +432,24 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
 - (CGColorRef)colorForTerm:(TermColor)color isForeground:(BOOL)isForeground bold:(BOOL)bold {
     if (color.isIndexed()) {
         uint8_t index = color.index();
-        if (isForeground && bold && index < 8) index += 8;  // bold text is bright
+        if (isForeground && bold && index < 8) {
+            index += 8; // bold text is bright
+        }
         return _palette[index];
     }
     if (color.isRgb()) {
         // A one-off color; cached by value in a small map so it lives long enough to draw.
         static NSMutableDictionary<NSNumber *, id> *custom;
-        if (custom == nil) custom = [NSMutableDictionary dictionary];
-        if (custom.count > 2000) [custom removeAllObjects];
+        if (custom == nil) {
+            custom = [NSMutableDictionary dictionary];
+        }
+        if (custom.count > 2000) {
+            [custom removeAllObjects];
+        }
         NSNumber *key = @(color.packed);
         id existing = custom[key];
         if (existing == nil) {
-            CGColorRef made = makeRGB(color.red(), color.green(), color.blue());
+            CGColorRef made = createRGB(color.red(), color.green(), color.blue());
             existing = CFBridgingRelease(made);
             custom[key] = existing;
         }
@@ -451,7 +481,9 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
     Style runStyle;
     NSMutableString *runText = [NSMutableString string];
     auto finishRun = [&](int endColumn) {
-        if (runStart < 0) return;
+        if (runStart < 0) {
+            return;
+        }
         bool onlySpaces = true;
         for (NSUInteger index = 0; index < runText.length; ++index) {
             if ([runText characterAtIndex:index] != ' ') {
@@ -690,16 +722,28 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
             CGContextFillRect(context, CGRectMake(midX - floor(lineThickness / 2), fromY, lineThickness, toY - fromY));
         }
     };
-    if (lines.left) horizontal(x, midX + overlap, lines.left);
-    if (lines.right) horizontal(midX - overlap, x + w, lines.right);
-    if (lines.up) vertical(y, midY + overlap, lines.up);
-    if (lines.down) vertical(midY - overlap, y + h, lines.down);
+    if (lines.left) {
+        horizontal(x, midX + overlap, lines.left);
+    }
+    if (lines.right) {
+        horizontal(midX - overlap, x + w, lines.right);
+    }
+    if (lines.up) {
+        vertical(y, midY + overlap, lines.up);
+    }
+    if (lines.down) {
+        vertical(midY - overlap, y + h, lines.down);
+    }
 }
 
 - (BOOL)selectionContainsRow:(long)row column:(int)column {
-    if (!_hasSelection) return NO;
+    if (!_hasSelection) {
+        return NO;
+    }
     GWTermPoint start = _selectionAnchor, end = _selectionHead;
-    if (pointBefore(end, start)) std::swap(start, end);
+    if (pointBefore(end, start)) {
+        std::swap(start, end);
+    }
     GWTermPoint here = {row, column};
     return !pointBefore(here, start) && pointBefore(here, {end.row, end.column + 1});
 }
@@ -734,7 +778,9 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
             int spanStart = -1;
             for (int column = 0; column <= columns; ++column) {
                 BOOL inside = column < columns && [self selectionContainsRow:rowIndex column:column];
-                if (inside && spanStart < 0) spanStart = column;
+                if (inside && spanStart < 0) {
+                    spanStart = column;
+                }
                 if (!inside && spanStart >= 0) {
                     CGContextFillRect(context, CGRectMake(kPadding + spanStart * _cellWidth, y, (column - spanStart) * _cellWidth, _cellHeight));
                     spanStart = -1;
@@ -748,8 +794,12 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
             CTLineDraw(run.line, context);
             if (run.underline || run.strike) {
                 CGContextSetFillColorWithColor(context, run.color);
-                if (run.underline) CGContextFillRect(context, CGRectMake(x, y + _baseline + 2, run.width * _cellWidth, 1));
-                if (run.strike) CGContextFillRect(context, CGRectMake(x, y + _cellHeight / 2, run.width * _cellWidth, 1));
+                if (run.underline) {
+                    CGContextFillRect(context, CGRectMake(x, y + _baseline + 2, run.width * _cellWidth, 1));
+                }
+                if (run.strike) {
+                    CGContextFillRect(context, CGRectMake(x, y + _cellHeight / 2, run.width * _cellWidth, 1));
+                }
             }
         }
         for (const BoxCell &box : drawing.boxes) {
@@ -808,14 +858,18 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
 
 - (BOOL)becomeFirstResponder {
     _focused = YES;
-    if (_session && _session.screen.focusReporting()) [_session sendBytes:std::string("\x1b[I")];
+    if (_session && _session.screen.focusReporting()) {
+        [_session sendBytes:std::string("\x1b[I")];
+    }
     self.needsDisplay = YES;
     return YES;
 }
 
 - (BOOL)resignFirstResponder {
     _focused = NO;
-    if (_session && _session.screen.focusReporting()) [_session sendBytes:std::string("\x1b[O")];
+    if (_session && _session.screen.focusReporting()) {
+        [_session sendBytes:std::string("\x1b[O")];
+    }
     self.needsDisplay = YES;
     return YES;
 }
@@ -848,13 +902,27 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
     bool applicationKeys = _session.screen.applicationCursorKeys();
 
     // xterm's numbers for modifiers: 1 + shift 1 + alt 2 + control 4.
-    int modifier = 1 + (shift ? 1 : 0) + (option ? 2 : 0) + (control ? 4 : 0);
+    int modifier = 1;
+    if (shift) {
+        modifier += 1;
+    }
+    if (option) {
+        modifier += 2;
+    }
+    if (control) {
+        modifier += 4;
+    }
+    // Arrows, Home (H) and End (F).
     auto arrow = [&](char letter) {
-        if (modifier > 1) return "\x1b[1;" + std::to_string(modifier) + letter;
+        if (modifier > 1) {
+            return "\x1b[1;" + std::to_string(modifier) + letter;
+        }
         return std::string(applicationKeys ? "\x1bO" : "\x1b[") + letter;
     };
     auto tilde = [&](int number) {
-        if (modifier > 1) return "\x1b[" + std::to_string(number) + ";" + std::to_string(modifier) + "~";
+        if (modifier > 1) {
+            return "\x1b[" + std::to_string(number) + ";" + std::to_string(modifier) + "~";
+        }
         return "\x1b[" + std::to_string(number) + "~";
     };
 
@@ -882,8 +950,8 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
         case 125: return arrow('B');
         case 124: return arrow('C');
         case 123: return arrow('D');
-        case 115: return modifier > 1 ? "\x1b[1;" + std::to_string(modifier) + "H" : std::string(applicationKeys ? "\x1bOH" : "\x1b[H");
-        case 119: return modifier > 1 ? "\x1b[1;" + std::to_string(modifier) + "F" : std::string(applicationKeys ? "\x1bOF" : "\x1b[F");
+        case 115: return arrow('H');
+        case 119: return arrow('F');
         case 116: return tilde(5);
         case 121: return tilde(6);
         case 117: return tilde(3);
@@ -912,8 +980,12 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
         NSString *characters = event.charactersIgnoringModifiers;
         if (characters.length == 1) {
             unichar c = [characters characterAtIndex:0];
-            if (c >= 'a' && c <= 'z') return std::string(1, static_cast<char>(c - 'a' + 1));
-            if (c >= 'A' && c <= 'Z') return std::string(1, static_cast<char>(c - 'A' + 1));
+            if (c >= 'a' && c <= 'z') {
+                return std::string(1, static_cast<char>(c - 'a' + 1));
+            }
+            if (c >= 'A' && c <= 'Z') {
+                return std::string(1, static_cast<char>(c - 'A' + 1));
+            }
             switch (c) {
                 case ' ': case '@': case '2': return std::string(1, '\0');
                 case '[': case '3': return "\x1b";
@@ -1007,15 +1079,21 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
 }
 
 - (NSString *)selectedString {
-    if (!_hasSelection) return nil;
+    if (!_hasSelection) {
+        return nil;
+    }
     GWTermPoint start = _selectionAnchor, end = _selectionHead;
-    if (pointBefore(end, start)) std::swap(start, end);
-    return @(_session.screen.textInRange(start.row, start.column, end.row, end.column + 1).c_str());
+    if (pointBefore(end, start)) {
+        std::swap(start, end);
+    }
+    return StringFromUTF8(_session.screen.textInRange(start.row, start.column, end.row, end.column + 1));
 }
 
 - (void)copy:(id)sender {
     NSString *text = [self selectedString];
-    if (text.length == 0) return;
+    if (text.length == 0) {
+        return;
+    }
     [NSPasteboard.generalPasteboard clearContents];
     [NSPasteboard.generalPasteboard setString:text forType:NSPasteboardTypeString];
 }
@@ -1029,7 +1107,9 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
 }
 
 - (void)selectAll:(id)sender {
-    if (!_session) return;
+    if (!_session) {
+        return;
+    }
     gw::term::Screen &screen = _session.screen;
     _selectionAnchor = {-static_cast<long>(screen.historyCount()), 0};
     _selectionHead = {screen.rows() - 1, screen.columns() - 1};
@@ -1038,7 +1118,9 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
 }
 
 - (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item {
-    if (item.action == @selector(copy:)) return _hasSelection;
+    if (item.action == @selector(copy:)) {
+        return _hasSelection;
+    }
     return YES;
 }
 
@@ -1053,7 +1135,9 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
         NSString *escaped = [url.path stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
         [quoted addObject:[NSString stringWithFormat:@"'%@'", escaped]];
     }
-    if (quoted.count == 0 || !_session) return NO;
+    if (quoted.count == 0 || !_session) {
+        return NO;
+    }
     [_session pasteText:[[quoted componentsJoinedByString:@" "] stringByAppendingString:@" "]];
     return YES;
 }
@@ -1064,16 +1148,24 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
 /// Sends a mouse event to a program that asked for them. Returns YES if sent.
 - (BOOL)reportMouse:(NSEvent *)event button:(int)button pressed:(BOOL)pressed motion:(BOOL)motion {
     gw::term::Screen &screen = _session.screen;
-    if (screen.mouseMode() == gw::term::MouseMode::None) return NO;
+    if (screen.mouseMode() == gw::term::MouseMode::None) {
+        return NO;
+    }
     NSEventModifierFlags flags = event.modifierFlags;
-    if (flags & (NSEventModifierFlagOption | NSEventModifierFlagShift)) return NO;  // these select text instead
+    if (flags & (NSEventModifierFlagOption | NSEventModifierFlagShift)) {
+        return NO; // these select text instead
+    }
 
     NSPoint local = [self convertPoint:event.locationInWindow fromView:nil];
     int column = std::clamp<int>(static_cast<int>(floor((local.x - kPadding) / _cellWidth)), 0, screen.columns() - 1) + 1;
     int line = std::clamp<int>(static_cast<int>(floor((local.y - kPadding) / _cellHeight)), 0, screen.rows() - 1) + 1;
     int code = button;
-    if (motion) code += 32;
-    if (flags & NSEventModifierFlagControl) code += 16;
+    if (motion) {
+        code += 32;
+    }
+    if (flags & NSEventModifierFlagControl) {
+        code += 16;
+    }
     std::string message;
     if (screen.mouseSgr()) {
         message = "\x1b[<" + std::to_string(code) + ";" + std::to_string(column) + ";" + std::to_string(line) + (pressed ? "M" : "m");
@@ -1092,8 +1184,12 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
 - (void)wordRangeAt:(GWTermPoint)point start:(int *)start end:(int *)end {
     gw::term::Screen &screen = _session.screen;
     auto isWordCharacter = [](uint32_t c) {
-        if (c == 0) return false;
-        if (c > 0x7F) return true;
+        if (c == 0) {
+            return false;
+        }
+        if (c > 0x7F) {
+            return true;
+        }
         return isalnum(static_cast<int>(c)) != 0 || strchr("_-./~:@%+=#?&,", static_cast<int>(c)) != nullptr;
     };
     int from = point.column, to = point.column;
@@ -1101,14 +1197,20 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
         *start = *end = point.column;
         return;
     }
-    while (from > 0 && isWordCharacter(screen.cellAt(point.row, from - 1).character)) --from;
-    while (to < screen.columns() - 1 && isWordCharacter(screen.cellAt(point.row, to + 1).character)) ++to;
+    while (from > 0 && isWordCharacter(screen.cellAt(point.row, from - 1).character)) {
+        --from;
+    }
+    while (to < screen.columns() - 1 && isWordCharacter(screen.cellAt(point.row, to + 1).character)) {
+        ++to;
+    }
     *start = from;
     *end = to;
 }
 
 - (void)mouseDown:(NSEvent *)event {
-    if (_session == nil) return;
+    if (_session == nil) {
+        return;
+    }
     [self.window makeFirstResponder:self];
     if ([self reportMouse:event button:0 pressed:YES motion:NO]) {
         _reportingMouse = YES;
@@ -1139,14 +1241,18 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
 }
 
 - (void)mouseDragged:(NSEvent *)event {
-    if (_session == nil) return;
+    if (_session == nil) {
+        return;
+    }
     if (_reportingMouse) {
         if (_session.screen.mouseMode() == gw::term::MouseMode::Drag || _session.screen.mouseMode() == gw::term::MouseMode::Motion) {
             [self reportMouse:event button:0 pressed:YES motion:YES];
         }
         return;
     }
-    if (!_selecting) return;
+    if (!_selecting) {
+        return;
+    }
 
     // Dragging above or below scrolls the history.
     NSPoint local = [self convertPoint:event.locationInWindow fromView:nil];
@@ -1184,7 +1290,9 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
 }
 
 - (void)rightMouseDown:(NSEvent *)event {
-    if ([self reportMouse:event button:2 pressed:YES motion:NO]) return;
+    if ([self reportMouse:event button:2 pressed:YES motion:NO]) {
+        return;
+    }
     [NSMenu popUpContextMenu:[self contextMenu] withEvent:event forView:self];
 }
 
@@ -1205,12 +1313,16 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
 }
 
 - (void)scrollWheel:(NSEvent *)event {
-    if (_session == nil) return;
+    if (_session == nil) {
+        return;
+    }
     gw::term::Screen &screen = _session.screen;
     CGFloat lines = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY / _cellHeight : event.scrollingDeltaY * 3;
     _scrollRemainder += lines;
     long whole = static_cast<long>(_scrollRemainder);
-    if (whole == 0) return;
+    if (whole == 0) {
+        return;
+    }
     _scrollRemainder -= static_cast<CGFloat>(whole);
 
     // A program that wants the mouse gets wheel "buttons".
@@ -1222,9 +1334,19 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
     }
     // Full-screen programs without mouse support (less, man) scroll with the arrow keys.
     if (screen.onAlternateScreen()) {
-        std::string key = std::string(screen.applicationCursorKeys() ? "\x1bO" : "\x1b[") + (whole > 0 ? "A" : "B");
+        std::string key = "\x1b[";
+        if (screen.applicationCursorKeys()) {
+            key = "\x1bO";
+        }
+        if (whole > 0) {
+            key += "A";
+        } else {
+            key += "B";
+        }
         std::string keys;
-        for (long step = 0; step < std::min<long>(labs(whole), 10); ++step) keys += key;
+        for (long step = 0; step < std::min<long>(labs(whole), 10); ++step) {
+            keys += key;
+        }
         [_session sendBytes:keys];
         return;
     }
@@ -1240,22 +1362,34 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
 - (NSString *)tokenAt:(GWTermPoint)point {
     gw::term::Screen &screen = _session.screen;
     auto isTokenCharacter = [](uint32_t c) {
-        if (c == 0 || c == ' ') return false;
-        if (c > 0x7F) return true;
+        if (c == 0 || c == ' ') {
+            return false;
+        }
+        if (c > 0x7F) {
+            return true;
+        }
         return strchr("\"'`<>|{}[]\\^", static_cast<int>(c)) == nullptr && c > ' ';
     };
-    if (!isTokenCharacter(screen.cellAt(point.row, point.column).character)) return nil;
+    if (!isTokenCharacter(screen.cellAt(point.row, point.column).character)) {
+        return nil;
+    }
     int from = point.column, to = point.column;
-    while (from > 0 && isTokenCharacter(screen.cellAt(point.row, from - 1).character)) --from;
-    while (to < screen.columns() - 1 && isTokenCharacter(screen.cellAt(point.row, to + 1).character)) ++to;
-    NSString *token = @(screen.textInRange(point.row, from, point.row, to + 1).c_str());
+    while (from > 0 && isTokenCharacter(screen.cellAt(point.row, from - 1).character)) {
+        --from;
+    }
+    while (to < screen.columns() - 1 && isTokenCharacter(screen.cellAt(point.row, to + 1).character)) {
+        ++to;
+    }
+    NSString *token = StringFromUTF8(screen.textInRange(point.row, from, point.row, to + 1));
     // Sentence punctuation and wrapping brackets aren't part of it.
     NSCharacterSet *trim = [NSCharacterSet characterSetWithCharactersInString:@".,;:!?()"];
     while (token.length > 0 && [trim characterIsMember:[token characterAtIndex:token.length - 1]] &&
            ![token hasSuffix:@")"]) {
         token = [token substringToIndex:token.length - 1];
     }
-    while (token.length > 0 && [token hasPrefix:@"("]) token = [token substringFromIndex:1];
+    while (token.length > 0 && [token hasPrefix:@"("]) {
+        token = [token substringFromIndex:1];
+    }
     while (token.length > 0 && [token hasSuffix:@")"] && [token rangeOfString:@"("].location == NSNotFound) {
         token = [token substringToIndex:token.length - 1];
     }
@@ -1264,10 +1398,14 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
 
 - (void)openLinkAt:(GWTermPoint)point {
     NSString *token = [self tokenAt:point];
-    if (token.length == 0) return;
+    if (token.length == 0) {
+        return;
+    }
     if ([token hasPrefix:@"http://"] || [token hasPrefix:@"https://"]) {
         NSURL *url = [NSURL URLWithString:token];
-        if (url) [NSWorkspace.sharedWorkspace openURL:url];
+        if (url) {
+            [NSWorkspace.sharedWorkspace openURL:url];
+        }
         return;
     }
     // path, path:line, path:line:column, or path(line,column)
@@ -1277,14 +1415,20 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
         pattern = [NSRegularExpression regularExpressionWithPattern:@"^(.+?)(?::(\\d+)(?::(\\d+))?|\\((\\d+)(?:,(\\d+))?\\))?:?$" options:0 error:nil];
     });
     NSTextCheckingResult *match = [pattern firstMatchInString:token options:0 range:NSMakeRange(0, token.length)];
-    if (match == nil) return;
+    if (match == nil) {
+        return;
+    }
     NSString *path = [token substringWithRange:[match rangeAtIndex:1]];
     NSInteger line = 0, column = 0;
     for (NSUInteger group : {2, 4}) {
-        if ([match rangeAtIndex:group].location != NSNotFound) line = [token substringWithRange:[match rangeAtIndex:group]].integerValue;
+        if ([match rangeAtIndex:group].location != NSNotFound) {
+            line = [token substringWithRange:[match rangeAtIndex:group]].integerValue;
+        }
     }
     for (NSUInteger group : {3, 5}) {
-        if ([match rangeAtIndex:group].location != NSNotFound) column = [token substringWithRange:[match rangeAtIndex:group]].integerValue;
+        if ([match rangeAtIndex:group].location != NSNotFound) {
+            column = [token substringWithRange:[match rangeAtIndex:group]].integerValue;
+        }
     }
     path = [path stringByExpandingTildeInPath];
     NSString *base = self.baseFolderProvider ? self.baseFolderProvider() : nil;
@@ -1294,12 +1438,16 @@ static CGColorRef makeRGB(uint8_t red, uint8_t green, uint8_t blue) {
         [candidates addObject:path];
     } else {
         [candidates addObject:[directory stringByAppendingPathComponent:path]];
-        if (base != nil) [candidates addObject:[base stringByAppendingPathComponent:path]];
+        if (base != nil) {
+            [candidates addObject:[base stringByAppendingPathComponent:path]];
+        }
     }
     for (NSString *candidate in candidates) {
         BOOL isDirectory = NO;
         if ([NSFileManager.defaultManager fileExistsAtPath:candidate isDirectory:&isDirectory] && !isDirectory) {
-            if (self.onOpenPath) self.onOpenPath(candidate.stringByStandardizingPath, line, column);
+            if (self.onOpenPath) {
+                self.onOpenPath(candidate.stringByStandardizingPath, line, column);
+            }
             return;
         }
     }

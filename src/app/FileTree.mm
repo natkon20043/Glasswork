@@ -60,15 +60,21 @@
     }
     // Folders first, then files, each alphabetically the way Finder sorts.
     [nodes sortUsingComparator:^NSComparisonResult(GWFileNode *a, GWFileNode *b) {
-        if (a.isDirectory != b.isDirectory) return a.isDirectory ? NSOrderedAscending : NSOrderedDescending;
+        if (a.isDirectory != b.isDirectory) {
+            return a.isDirectory ? NSOrderedAscending : NSOrderedDescending;
+        }
         return [a.url.lastPathComponent localizedStandardCompare:b.url.lastPathComponent];
     }];
     return nodes;
 }
 
 - (NSArray<GWFileNode *> *)loadedChildren {
-    if (!self.isDirectory) return @[];
-    if (self.children) return self.children;
+    if (!self.isDirectory) {
+        return @[];
+    }
+    if (self.children) {
+        return self.children;
+    }
     self.children = [self readChildrenReusing:@[]];
     return self.children;
 }
@@ -160,12 +166,16 @@
 - (void)reloadNode:(GWFileNode *)node {
     if (node.children == nil) {
         // Not loaded yet, so there is nothing on screen to refresh.
-        if (node == _root) [_outline reloadData];
+        if (node == _root) {
+            [_outline reloadData];
+        }
         return;
     }
     node.children = [node readChildrenReusing:node.children];
     for (GWFileNode *child in node.children) {
-        if (child.isDirectory && child.children != nil) [self reloadNode:child];
+        if (child.isDirectory && child.children != nil) {
+            [self reloadNode:child];
+        }
     }
     if (node == _root) {
         [_outline reloadData];
@@ -176,12 +186,18 @@
 
 /// The node for a folder or file, if it is in the loaded part of the tree.
 - (GWFileNode *)nodeForURL:(NSURL *)url {
-    if (_root == nil) return nil;
+    if (_root == nil) {
+        return nil;
+    }
     NSString *target = url.URLByStandardizingPath.path;
-    if ([target isEqualToString:_root.url.URLByStandardizingPath.path]) return _root;
+    if ([target isEqualToString:_root.url.URLByStandardizingPath.path]) {
+        return _root;
+    }
     GWFileNode *node = _root;
     NSString *prefix = _root.url.URLByStandardizingPath.path;
-    if (![target hasPrefix:[prefix stringByAppendingString:@"/"]]) return nil;
+    if (![target hasPrefix:[prefix stringByAppendingString:@"/"]]) {
+        return nil;
+    }
     NSArray<NSString *> *parts = [[target substringFromIndex:prefix.length + 1] componentsSeparatedByString:@"/"];
     for (NSString *part in parts) {
         GWFileNode *next = nil;
@@ -191,7 +207,9 @@
                 break;
             }
         }
-        if (next == nil) return nil;
+        if (next == nil) {
+            return nil;
+        }
         node = next;
     }
     return node;
@@ -215,7 +233,9 @@
 
 - (void)clicked:(id)sender {
     GWFileNode *node = [_outline itemAtRow:_outline.clickedRow];
-    if (!node) return;
+    if (!node) {
+        return;
+    }
     if (node.isDirectory) {
         if ([_outline isItemExpanded:node]) {
             [_outline collapseItem:node];
@@ -303,7 +323,9 @@
 
 - (NSURL *)targetFolder {
     GWFileNode *selected = _outline.selectedRow >= 0 ? [_outline itemAtRow:_outline.selectedRow] : nil;
-    if (selected == nil) return _root.url;
+    if (selected == nil) {
+        return _root.url;
+    }
     return selected.isDirectory ? selected.url : selected.url.URLByDeletingLastPathComponent;
 }
 
@@ -322,7 +344,9 @@
     while ([NSFileManager.defaultManager fileExistsAtPath:candidate.path]) {
         NSString *numbered = number == 1 ? [NSString stringWithFormat:@"%@%@", stem, suffix]
                                          : [NSString stringWithFormat:@"%@%@ %ld", stem, suffix, static_cast<long>(number)];
-        if (extension.length > 0) numbered = [numbered stringByAppendingPathExtension:extension];
+        if (extension.length > 0) {
+            numbered = [numbered stringByAppendingPathExtension:extension];
+        }
         candidate = [folder URLByAppendingPathComponent:numbered];
         ++number;
     }
@@ -370,8 +394,17 @@
                                                    @"too.", folder.lastPathComponent];
     [self askForNameWithTitle:title message:message initial:isDirectory ? @"" : @"untitled.txt" selectStem:!isDirectory
                    completion:^(NSString *name) {
-        if (name == nil) return;
-        if ([name hasPrefix:@"/"] || [name containsString:@".."]) {
+        if (name == nil) {
+            return;
+        }
+        // A relative path may make folders, but no part of it may climb out of this one.
+        BOOL climbsOut = [name hasPrefix:@"/"];
+        for (NSString *part in [name componentsSeparatedByString:@"/"]) {
+            if ([part isEqualToString:@".."]) {
+                climbsOut = YES;
+            }
+        }
+        if (climbsOut) {
             [self reportError:@"That name won't work" message:@"Use a name or a relative path without “..”."];
             return;
         }
@@ -391,7 +424,9 @@
             return;
         }
         [self revealNewItem:destination];
-        if (!isDirectory && self.onOpenFile) self.onOpenFile(destination);
+        if (!isDirectory && self.onOpenFile) {
+            self.onOpenFile(destination);
+        }
     }];
 }
 
@@ -442,8 +477,16 @@
 - (NSMenu *)menuForRow:(NSInteger)row {
     GWFileNode *node = row >= 0 ? [_outline itemAtRow:row] : nil;
     _menuNode = node;
-    NSURL *folder = node == nil ? _root.url : (node.isDirectory ? node.url : node.url.URLByDeletingLastPathComponent);
-    if (folder == nil) return nil;
+    // New files go in the folder clicked, or the folder of the file clicked, or the top folder.
+    NSURL *folder = _root.url;
+    if (node != nil && node.isDirectory) {
+        folder = node.url;
+    } else if (node != nil) {
+        folder = node.url.URLByDeletingLastPathComponent;
+    }
+    if (folder == nil) {
+        return nil;
+    }
 
     NSMenu *menu = [NSMenu new];
     auto add = ^NSMenuItem *(NSString *title, SEL action) {
@@ -487,10 +530,14 @@
 
 - (void)menuRename:(NSMenuItem *)item {
     GWFileNode *node = _menuNode;
-    if (node == nil) return;
+    if (node == nil) {
+        return;
+    }
     [self askForNameWithTitle:@"Rename" message:[NSString stringWithFormat:@"Give “%@” a new name.", node.url.lastPathComponent]
                       initial:node.url.lastPathComponent selectStem:!node.isDirectory completion:^(NSString *name) {
-        if (name == nil || [name isEqualToString:node.url.lastPathComponent]) return;
+        if (name == nil || [name isEqualToString:node.url.lastPathComponent]) {
+            return;
+        }
         if ([name containsString:@"/"]) {
             [self reportError:@"That name won't work" message:@"A name can't contain a slash."];
             return;
@@ -511,7 +558,9 @@
         [self reportError:@"Couldn't move it" message:error.localizedDescription];
         return NO;
     }
-    if (self.onItemMoved) self.onItemMoved(source, destination);
+    if (self.onItemMoved) {
+        self.onItemMoved(source, destination);
+    }
     [self reloadDirectory:source.URLByDeletingLastPathComponent];
     if (![source.URLByDeletingLastPathComponent isEqual:destination.URLByDeletingLastPathComponent]) {
         [self reloadDirectory:destination.URLByDeletingLastPathComponent];
@@ -521,7 +570,9 @@
 
 - (void)menuDuplicate:(NSMenuItem *)item {
     GWFileNode *node = _menuNode;
-    if (node == nil) return;
+    if (node == nil) {
+        return;
+    }
     NSURL *copy = [self uniqueURLForName:node.url.lastPathComponent inFolder:node.url.URLByDeletingLastPathComponent suffix:@" copy"];
     NSError *error = nil;
     if (![NSFileManager.defaultManager copyItemAtURL:node.url toURL:copy error:&error]) {
@@ -533,51 +584,72 @@
 
 - (void)menuTrash:(NSMenuItem *)item {
     GWFileNode *node = _menuNode;
-    if (node == nil) return;
+    if (node == nil) {
+        return;
+    }
     NSError *error = nil;
     if (![NSFileManager.defaultManager trashItemAtURL:node.url resultingItemURL:nil error:&error]) {
         [self reportError:@"Couldn't move it to the Trash" message:error.localizedDescription];
         return;
     }
-    if (self.onItemTrashed) self.onItemTrashed(node.url);
+    if (self.onItemTrashed) {
+        self.onItemTrashed(node.url);
+    }
     [self reloadDirectory:node.url.URLByDeletingLastPathComponent];
 }
 
 - (void)menuCopyPath:(NSMenuItem *)item {
-    if (_menuNode == nil) return;
+    if (_menuNode == nil) {
+        return;
+    }
     [NSPasteboard.generalPasteboard clearContents];
     [NSPasteboard.generalPasteboard setString:_menuNode.url.path forType:NSPasteboardTypeString];
 }
 
 - (void)menuCopyRelativePath:(NSMenuItem *)item {
-    if (_menuNode == nil || _root == nil) return;
+    if (_menuNode == nil || _root == nil) {
+        return;
+    }
     NSString *prefix = [_root.url.path stringByAppendingString:@"/"];
-    NSString *path = [_menuNode.url.path hasPrefix:prefix] ? [_menuNode.url.path substringFromIndex:prefix.length] : _menuNode.url.path;
+    NSString *path = _menuNode.url.path;
+    if ([path hasPrefix:prefix]) {
+        path = [path substringFromIndex:prefix.length];
+    }
     [NSPasteboard.generalPasteboard clearContents];
     [NSPasteboard.generalPasteboard setString:path forType:NSPasteboardTypeString];
 }
 
 - (void)menuReveal:(NSMenuItem *)item {
-    if (_menuNode != nil) [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[_menuNode.url]];
+    if (_menuNode != nil) {
+        [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[_menuNode.url]];
+    }
 }
 
 - (void)menuOpenInTerminal:(NSMenuItem *)item {
-    if (self.onOpenInTerminal) self.onOpenInTerminal(item.representedObject);
+    if (self.onOpenInTerminal) {
+        self.onOpenInTerminal(item.representedObject);
+    }
 }
 
 - (void)menuFindInFolder:(NSMenuItem *)item {
-    if (self.onFindInFolder) self.onFindInFolder(item.representedObject);
+    if (self.onFindInFolder) {
+        self.onFindInFolder(item.representedObject);
+    }
 }
 
 - (void)menuAskClaude:(NSMenuItem *)item {
-    if (self.onAskClaude && _menuNode != nil) self.onAskClaude(_menuNode.url);
+    if (self.onAskClaude && _menuNode != nil) {
+        self.onAskClaude(_menuNode.url);
+    }
 }
 
 // ---------------------------------------------------------------------------
 // MARK: Drag and drop
 
 - (id<NSPasteboardWriting>)outlineView:(NSOutlineView *)outlineView pasteboardWriterForItem:(GWFileNode *)item {
-    if (GWIsRemoteURL(item.url)) return nil;  // a file on another machine can't be dragged out
+    if (GWIsRemoteURL(item.url)) {
+        return nil; // a file on another machine can't be dragged out
+    }
     return item.url;
 }
 
@@ -585,7 +657,9 @@
                   validateDrop:(id<NSDraggingInfo>)info
                   proposedItem:(GWFileNode *)item
             proposedChildIndex:(NSInteger)index {
-    if (_root == nil || GWIsRemoteURL(_root.url)) return NSDragOperationNone;
+    if (_root == nil || GWIsRemoteURL(_root.url)) {
+        return NSDragOperationNone;
+    }
     // Dropping on a file means dropping in its folder; between rows means the folder they are in.
     GWFileNode *target = item;
     if (target != nil && !target.isDirectory) {
@@ -617,7 +691,9 @@
             continue;
         }
         if (insideTree && !copy) {
-            if ([source.URLByDeletingLastPathComponent.URLByStandardizingPath isEqual:folder.URLByStandardizingPath]) continue;
+            if ([source.URLByDeletingLastPathComponent.URLByStandardizingPath isEqual:folder.URLByStandardizingPath]) {
+                continue;
+            }
             any |= [self moveItemAtURL:source toURL:destination];
         } else {
             NSError *error = nil;
@@ -628,7 +704,9 @@
             }
         }
     }
-    if (any) [self reloadDirectory:folder];
+    if (any) {
+        [self reloadDirectory:folder];
+    }
     return any;
 }
 

@@ -11,7 +11,9 @@ namespace gw::tm {
 
 std::vector<std::string> ScopeNode::path() const {
     std::vector<std::string> names;
-    for (const ScopeNode* node = this; node; node = node->parent) names.push_back(node->name);
+    for (const ScopeNode* node = this; node; node = node->parent) {
+        names.push_back(node->name);
+    }
     std::reverse(names.begin(), names.end());
     return names;
 }
@@ -26,7 +28,9 @@ const ScopeNode* pushScopes(const ScopeNode* parent, const std::string& name) {
         size_t space = name.find(' ', start);
         std::string part = name.substr(start, space == std::string::npos ? std::string::npos : space - start);
         start = space == std::string::npos ? name.size() : space + 1;
-        if (part.empty()) continue;
+        if (part.empty()) {
+            continue;
+        }
         auto key = std::make_pair(node, part);
         auto found = nodes.find(key);
         if (found == nodes.end()) {
@@ -57,7 +61,9 @@ constexpr int kMaxIterationsPerLine = 20000;
 
 /// "$1" and "${1:/downcase}" in scope names refer to captured text.
 std::string substituteCaptures(const std::string& name, const Match& match, const std::string& text) {
-    if (name.find('$') == std::string::npos) return name;
+    if (name.find('$') == std::string::npos) {
+        return name;
+    }
     std::string result;
     for (size_t index = 0; index < name.size(); ++index) {
         if (name[index] != '$' || index + 1 >= name.size()) {
@@ -66,9 +72,13 @@ std::string substituteCaptures(const std::string& name, const Match& match, cons
         }
         size_t cursor = index + 1;
         bool braced = name[cursor] == '{';
-        if (braced) ++cursor;
+        if (braced) {
+            ++cursor;
+        }
         size_t digits = cursor;
-        while (digits < name.size() && std::isdigit(static_cast<unsigned char>(name[digits]))) ++digits;
+        while (digits < name.size() && std::isdigit(static_cast<unsigned char>(name[digits]))) {
+            ++digits;
+        }
         if (digits == cursor) {
             result += name[index];
             continue;
@@ -88,10 +98,16 @@ std::string substituteCaptures(const std::string& name, const Match& match, cons
         if (group < static_cast<int>(match.groups.size()) && match.groups[group].first >= 0) {
             captured = text.substr(match.groups[group].first, match.groups[group].second - match.groups[group].first);
             // Scope names can't contain dots from user text (e.g. HTML tag names).
-            while (!captured.empty() && captured.front() == '.') captured.erase(0, 1);
+            while (!captured.empty() && captured.front() == '.') {
+                captured.erase(0, 1);
+            }
         }
-        if (transform == ":/downcase") std::transform(captured.begin(), captured.end(), captured.begin(), ::tolower);
-        if (transform == ":/upcase") std::transform(captured.begin(), captured.end(), captured.begin(), ::toupper);
+        if (transform == ":/downcase") {
+            std::transform(captured.begin(), captured.end(), captured.begin(), ::tolower);
+        }
+        if (transform == ":/upcase") {
+            std::transform(captured.begin(), captured.end(), captured.begin(), ::toupper);
+        }
         result += captured;
         index = digits - 1;
     }
@@ -125,7 +141,9 @@ std::string fillBackReferences(const std::string& source, const Match& match, co
 
 size_t nextCharacterBoundary(const std::string& text, size_t position) {
     ++position;
-    while (position < text.size() && (static_cast<unsigned char>(text[position]) & 0xC0) == 0x80) ++position;
+    while (position < text.size() && (static_cast<unsigned char>(text[position]) & 0xC0) == 0x80) {
+        ++position;
+    }
     return position;
 }
 
@@ -135,7 +153,9 @@ public:
 
     /// Runs from `position` to the end of the text, updating `state`.
     void run(size_t position, State& state) {
-        if (!state.frames.empty() && position == 0) position = checkWhileRegions(state);
+        if (!state.frames.empty() && position == 0) {
+            position = checkWhileRegions(state);
+        }
         // \G may match at this line's start only if the region's begin match ended the line
         // before; that's a one-line allowance.
         anchor_ = -1;
@@ -147,7 +167,9 @@ public:
         std::vector<std::pair<Rule*, size_t>> emptyPushes;  // guards push/pop loops at one spot
         for (int iteration = 0; iteration < kMaxIterationsPerLine; ++iteration) {
             Frame& top = state.frames.back();
-            if (position >= text_.size()) break;
+            if (position >= text_.size()) {
+                break;
+            }
 
             // Find the earliest match among the region's end and its patterns. On a tie the
             // end wins, unless the rule asked for its end to be tried last.
@@ -163,14 +185,20 @@ public:
                 }
             }
             for (Rule* rule : top.rule->grammar->candidates(top.rule, &base_)) {
-                if (!rule->match) continue;
+                if (!rule->match) {
+                    continue;
+                }
                 const Match& match = cachedSearch(*rule->match, position);
-                if (!match.found) continue;
+                if (!match.found) {
+                    continue;
+                }
                 if (!best || match.start() < best->start()) {
                     best = &match;
                     bestRule = rule;
                     bestIsEnd = false;
-                    if (match.start() == static_cast<int>(position)) break;  // can't do better
+                    if (match.start() == static_cast<int>(position)) {
+                        break; // can't do better
+                    }
                 }
             }
             if (top.end && top.rule->applyEndPatternLast && endMatch.found &&
@@ -193,7 +221,9 @@ public:
                 Rule* rule = top.rule;
                 const ScopeNode* scopes = top.nameScopes;
                 emitCaptures(match, rule->endCaptures, scopes, start, end);
-                if (state.frames.size() > 1) state.frames.pop_back();
+                if (state.frames.size() > 1) {
+                    state.frames.pop_back();
+                }
                 anchor_ = -1;
                 position = end;
                 continue;
@@ -232,7 +262,9 @@ public:
             anchor_ = static_cast<int>(end);  // \G now means "right where this region began"
             position = end;
         }
-        if (position < text_.size()) emit(position, text_.size(), state.frames.back().contentScopes);
+        if (position < text_.size()) {
+            emit(position, text_.size(), state.frames.back().contentScopes);
+        }
     }
 
     std::vector<Token> tokens;
@@ -244,7 +276,9 @@ private:
         size_t position = 0;
         for (size_t index = 1; index < state.frames.size(); ++index) {
             Frame& frame = state.frames[index];
-            if (frame.rule->kind != Rule::Kind::BeginWhile || !frame.rule->whilePattern) continue;
+            if (frame.rule->kind != Rule::Kind::BeginWhile || !frame.rule->whilePattern) {
+                continue;
+            }
             Match match = frame.rule->whilePattern->search(text_, position);
             if (!match.found || match.start() != static_cast<int>(position)) {
                 state.frames.resize(index);
@@ -284,7 +318,9 @@ private:
     }
 
     void emit(size_t start, size_t end, const ScopeNode* scopes) {
-        if (end <= start) return;
+        if (end <= start) {
+            return;
+        }
         if (!tokens.empty() && tokens.back().end == start && tokens.back().scopes == scopes) {
             tokens.back().end = static_cast<uint32_t>(end);
             return;
@@ -305,9 +341,13 @@ private:
         };
         std::vector<Span> spans;
         for (const auto& [index, rule] : captures) {
-            if (index >= static_cast<int>(match.groups.size())) continue;
+            if (index >= static_cast<int>(match.groups.size())) {
+                continue;
+            }
             auto [from, to] = match.groups[index];
-            if (from < 0 || to <= from) continue;
+            if (from < 0 || to <= from) {
+                continue;
+            }
             spans.push_back({static_cast<size_t>(from), static_cast<size_t>(to), rule});
         }
         std::sort(spans.begin(), spans.end(), [](const Span& a, const Span& b) {
@@ -316,7 +356,9 @@ private:
 
         std::vector<Token> local;
         auto put = [&](size_t from, size_t to, const ScopeNode* node) {
-            if (to <= from) return;
+            if (to <= from) {
+                return;
+            }
             if (!local.empty() && local.back().end == from && local.back().scopes == node) {
                 local.back().end = static_cast<uint32_t>(to);
             } else {
@@ -331,7 +373,9 @@ private:
         std::vector<std::pair<Span, const ScopeNode*>> withPatterns;
         size_t cursor = start;
         for (const Span& span : spans) {
-            if (span.start < start || span.start >= end) continue;
+            if (span.start < start || span.start >= end) {
+                continue;
+            }
             while (open.size() > 1 && open.back().end <= span.start) {
                 put(cursor, open.back().end, open.back().scopes);
                 cursor = std::max(cursor, open.back().end);
@@ -341,7 +385,9 @@ private:
             cursor = std::max(cursor, span.start);
             const ScopeNode* node = pushScopes(open.back().scopes, substituteCaptures(span.rule->name, match, text_));
             size_t spanEnd = std::min(span.end, open.back().end);
-            if (!span.rule->patterns.empty()) withPatterns.push_back({{span.start, spanEnd, span.rule}, node});
+            if (!span.rule->patterns.empty()) {
+                withPatterns.push_back({{span.start, spanEnd, span.rule}, node});
+            }
             open.push_back({spanEnd, node});
         }
         while (!open.empty()) {
@@ -370,7 +416,9 @@ private:
                 splice(local, span.start, span.end, replacement);
             }
         }
-        for (const Token& token : local) emit(token.start, token.end, token.scopes);
+        for (const Token& token : local) {
+            emit(token.start, token.end, token.scopes);
+        }
     }
 
     /// Replaces whatever covers [from, to) in `tokens` with `replacement`.
@@ -417,7 +465,9 @@ LineResult tokenizeLine(Grammar& base, std::string_view line, const State& previ
     // Drop the synthetic newline and give any untokenized tail the plain scopes.
     const ScopeNode* plain = result.state.frames.front().contentScopes;
     for (Token& token : tokenizer.tokens) {
-        if (token.start >= line.size()) continue;
+        if (token.start >= line.size()) {
+            continue;
+        }
         token.end = std::min<uint32_t>(token.end, static_cast<uint32_t>(line.size()));
         result.tokens.push_back(token);
     }

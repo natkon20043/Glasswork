@@ -15,7 +15,9 @@
 
 static double nowMs(void) {
     static mach_timebase_info_data_t info;
-    if (info.denom == 0) mach_timebase_info(&info);
+    if (info.denom == 0) {
+        mach_timebase_info(&info);
+    }
     return (double)mach_absolute_time() * info.numer / info.denom / 1e6;
 }
 
@@ -27,25 +29,37 @@ static NSRunningApplication *findApp(NSString *bundleId) {
 static BOOL hasWindow(NSString *owner, pid_t pid) {
     NSArray *list = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID));
     for (NSDictionary *w in list) {
-        if ([w[(id)kCGWindowOwnerPID] intValue] != pid) continue;
-        if ([w[(id)kCGWindowLayer] intValue] != 0) continue;
+        if ([w[(id)kCGWindowOwnerPID] intValue] != pid) {
+            continue;
+        }
+        if ([w[(id)kCGWindowLayer] intValue] != 0) {
+            continue;
+        }
         NSDictionary *b = w[(id)kCGWindowBounds];
-        if ([b[@"Width"] doubleValue] > 300 && [b[@"Height"] doubleValue] > 200) return YES;
+        if ([b[@"Width"] doubleValue] > 300 && [b[@"Height"] doubleValue] > 200) {
+            return YES;
+        }
     }
     return NO;
 }
 
 static uint64_t cpuNanoseconds(pid_t pid) {
     struct proc_taskinfo info;
-    if (proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &info, sizeof info) != sizeof info) return 0;
+    if (proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &info, sizeof info) != sizeof info) {
+        return 0;
+    }
     static mach_timebase_info_data_t tb;
-    if (tb.denom == 0) mach_timebase_info(&tb);
+    if (tb.denom == 0) {
+        mach_timebase_info(&tb);
+    }
     return (info.pti_total_user + info.pti_total_system) * tb.numer / tb.denom;
 }
 
 static uint64_t residentBytes(pid_t pid) {
     struct proc_taskinfo info;
-    if (proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &info, sizeof info) != sizeof info) return 0;
+    if (proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &info, sizeof info) != sizeof info) {
+        return 0;
+    }
     return info.pti_resident_size;
 }
 
@@ -86,7 +100,9 @@ int main(int argc, char **argv) {
                 [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.002]];
                 if (pid == 0) {
                     NSRunningApplication *app = findApp(bundleId);
-                    if (app) pid = app.processIdentifier;
+                    if (app) {
+                        pid = app.processIdentifier;
+                    }
                 }
                 if (pid != 0 && windowTime < 0 && hasWindow(owner, pid)) { windowTime = nowMs() - start; break; }
             }
@@ -112,7 +128,9 @@ int main(int argc, char **argv) {
             windows[count] = windowTime; idles[count] = idleTime; memory[count] = megabytes; ++count;
 
             NSRunningApplication *app = findApp(bundleId);
-            if (app) [app forceTerminate];
+            if (app) {
+                [app forceTerminate];
+            }
         }
         if (count > 0) {
             qsort(windows, count, sizeof(double), compare);

@@ -1,4 +1,5 @@
 #import "MarkdownView.h"
+#import "Strings.h"
 
 #import "CodeHighlight.h"
 #import "Services.h"
@@ -197,7 +198,7 @@
     NSString *name = language.length > 0 ? language : @"code";
     NSString *languageId = GWLanguageForFenceTag(language);
     if (languageId.length > 0) {
-        NSString *friendly = @(GWServices.shared.extensions.languageName(languageId.UTF8String).c_str());
+        NSString *friendly = StringFromUTF8(GWServices.shared.extensions.languageName(languageId.UTF8String));
         if (friendly.length > 0) {
             name = friendly;
         }
@@ -342,7 +343,13 @@
             field.selectable = YES;
             if (column < alignments.length) {
                 unichar align = [alignments characterAtIndex:column];
-                field.alignment = align == 'r' ? NSTextAlignmentRight : (align == 'c' ? NSTextAlignmentCenter : NSTextAlignmentLeft);
+                if (align == 'r') {
+                    field.alignment = NSTextAlignmentRight;
+                } else if (align == 'c') {
+                    field.alignment = NSTextAlignmentCenter;
+                } else {
+                    field.alignment = NSTextAlignmentLeft;
+                }
             }
             [cells addObject:field];
         }
@@ -513,10 +520,7 @@ typedef NS_ENUM(NSInteger, GWMDItemKind) {
               color:(NSColor *)color
           forceBold:(BOOL)forceBold {
     for (const gw::markdown::Span &span : spans) {
-        NSString *content = @(span.text.c_str());
-        if (content == nil) {
-            continue;
-        }
+        NSString *content = StringFromUTF8(span.text);
         BOOL bold = (span.style & gw::markdown::kBold) != 0 || forceBold;
         BOOL italic = (span.style & gw::markdown::kItalic) != 0;
         NSMutableDictionary *attributes = [NSMutableDictionary dictionary];
@@ -539,7 +543,7 @@ typedef NS_ENUM(NSInteger, GWMDItemKind) {
             attributes[NSStrikethroughStyleAttributeName] = @(NSUnderlineStyleSingle);
         }
         if ((span.style & gw::markdown::kLink) && !span.url.empty()) {
-            NSURL *url = [NSURL URLWithString:@(span.url.c_str())];
+            NSURL *url = [NSURL URLWithString:StringFromUTF8(span.url)];
             if (url != nil) {
                 attributes[NSLinkAttributeName] = url;
                 attributes[NSForegroundColorAttributeName] = NSColor.linkColor;
@@ -617,9 +621,8 @@ typedef NS_ENUM(NSInteger, GWMDItemKind) {
             return;
         }
         // The last paragraph needs no space after it.
-        NSRange last = NSMakeRange(run.length > 0 ? run.length - 1 : 0, run.length > 0 ? 1 : 0);
-        if (last.length > 0 && [run.string characterAtIndex:last.location] == '\n') {
-            [run deleteCharactersInRange:last];
+        if (run.length > 0 && [run.string characterAtIndex:run.length - 1] == '\n') {
+            [run deleteCharactersInRange:NSMakeRange(run.length - 1, 1)];
         }
         GWMDItem *item = [GWMDItem new];
         item.kind = GWMDItemKindText;
@@ -656,8 +659,8 @@ typedef NS_ENUM(NSInteger, GWMDItemKind) {
                 finishRun();
                 GWMDItem *item = [GWMDItem new];
                 item.kind = GWMDItemKindCode;
-                item.code = @(block.code.c_str()) ?: @"";
-                item.language = @(block.language.c_str()) ?: @"";
+                item.code = StringFromUTF8(block.code);
+                item.language = StringFromUTF8(block.language);
                 [items addObject:item];
                 break;
             }
@@ -687,7 +690,7 @@ typedef NS_ENUM(NSInteger, GWMDItemKind) {
                 item.kind = GWMDItemKindTable;
                 item.rows = rows;
                 item.hasHeader = block.hasHeader;
-                item.alignments = @(block.alignments.c_str());
+                item.alignments = StringFromUTF8(block.alignments);
                 [items addObject:item];
                 break;
             }

@@ -1,4 +1,5 @@
 #import "SearchPanel.h"
+#import "Strings.h"
 
 #import "FileIcons.h"
 
@@ -541,7 +542,7 @@ static NSImage *symbolImage(NSString *name, CGFloat size, NSFontWeight weight = 
     query.useRegex = _regexButton.state == NSControlStateValueOn;
     _matcher = std::make_shared<gw::search::Matcher>(query);
     if (!_matcher->valid()) {
-        _status.stringValue = [NSString stringWithFormat:@"Not a valid pattern: %s", _matcher->error().c_str()];
+        _status.stringValue = [NSString stringWithFormat:@"Not a valid pattern: %@", StringFromUTF8(_matcher->error())];
         _status.textColor = NSColor.systemRedColor;
         return;
     }
@@ -617,7 +618,7 @@ static NSImage *symbolImage(NSString *name, CGFloat size, NSFontWeight weight = 
 }
 
 - (NSAttributedString *)attributedForHit:(const gw::search::LineHit &)hit {
-    NSString *text = @(hit.text.c_str()) ?: @"";
+    NSString *text = StringFromUTF8(hit.text);
     NSMutableParagraphStyle *oneLine = [NSMutableParagraphStyle new];
     oneLine.lineBreakMode = NSLineBreakByTruncatingTail;
     NSMutableAttributedString *attributed = [[NSMutableAttributedString alloc] initWithString:text attributes:@{
@@ -646,7 +647,7 @@ static NSImage *symbolImage(NSString *name, CGFloat size, NSFontWeight weight = 
 - (void)mergeResults:(std::vector<gw::search::FileResult> &)results {
     for (gw::search::FileResult &result : results) {
         GWSearchFile *file = [GWSearchFile new];
-        file.path = @(result.path.c_str());
+        file.path = StringFromUTF8(result.path);
         file.name = file.path.lastPathComponent;
         file.folder = file.path.stringByDeletingLastPathComponent;
         file.matchCount = result.matchCount;

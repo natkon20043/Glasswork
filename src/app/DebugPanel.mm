@@ -314,7 +314,12 @@ static NSTextField *sectionTitle(NSString *text) {
     [self appendConsole:[NSString stringWithFormat:@"> %@\n", expression] category:@"console"];
     __weak GWDebugPanel *weakSelf = self;
     [_debugger evaluate:expression completion:^(NSString *result, NSString *error) {
-        [weakSelf appendConsole:[(result ?: error) stringByAppendingString:@"\n"] category:result ? @"stdout" : @"stderr"];
+        if (result != nil) {
+            [weakSelf appendConsole:[result stringByAppendingString:@"\n"] category:@"stdout"];
+        } else {
+            NSString *problem = error ?: @"No result.";
+            [weakSelf appendConsole:[problem stringByAppendingString:@"\n"] category:@"stderr"];
+        }
     }];
     return YES;
 }

@@ -60,7 +60,9 @@ async function main() {
     connection.onNotification('lsp/message', (p) => {
         const message = p.message;
         seen.serverMessages.push(message);
-        if (message.method === 'textDocument/publishDiagnostics') seen.diagnostics.push(message.params);
+        if (message.method === 'textDocument/publishDiagnostics') {
+            seen.diagnostics.push(message.params);
+        }
         if (message.id !== undefined && !message.method && pendingServer.has(message.id)) {
             pendingServer.get(message.id)(message);
             pendingServer.delete(message.id);
@@ -143,7 +145,9 @@ async function main() {
         const methods = [];
         for (const message of seen.serverMessages) {
             if (message.method === 'client/registerCapability') {
-                for (const registration of message.params.registrations) methods.push(registration.method);
+                for (const registration of message.params.registrations) {
+                    methods.push(registration.method);
+                }
             }
         }
         for (const wanted of ['textDocument/completion', 'textDocument/hover', 'textDocument/definition', 'textDocument/formatting']) {

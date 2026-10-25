@@ -30,15 +30,6 @@ struct ServerSpec {
 
 /// A problem reported by a server. `range` is the raw LSP range (UTF-16 columns).
 struct Diagnostic {
-    Json range;
-    /// 1 error, 2 warning, 3 information, 4 hint.
-    int severity = 1;
-    std::string message;
-    std::string source;
-    std::string code;
-    /// Exactly what the server sent, to hand back in code-action requests.
-    Json original;
-
     Json toJson() const {
         if (!original.is_null()) {
             return original;
@@ -52,6 +43,15 @@ struct Diagnostic {
         }
         return result;
     }
+
+    Json range;
+    /// 1 error, 2 warning, 3 information, 4 hint.
+    int severity = 1;
+    std::string message;
+    std::string source;
+    std::string code;
+    /// Exactly what the server sent, to hand back in code-action requests.
+    Json original;
 };
 
 // ---- Server specs and programs

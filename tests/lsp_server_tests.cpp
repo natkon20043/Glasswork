@@ -418,7 +418,9 @@ TEST(serverMessagesProgressAndSettingsReachTheApp) {
         reply("No");
     };
     server.onConfiguration = [&](const std::string& section, const std::string&) -> Json {
-        if (section == "fake.size") return Json(12);
+        if (section == "fake.size") {
+            return Json(12);
+        }
         return Json();
     };
     std::string error;

@@ -1,4 +1,5 @@
 #import "WebviewController.h"
+#import "Strings.h"
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
@@ -90,8 +91,9 @@ static NSString *ThemeStyleScript(BOOL dark) {
                        "body { background: var(--vscode-editor-background); color: var(--vscode-editor-foreground);"
                        "font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); margin: 0; padding: 0 20px; }"
                        "a { color: var(--vscode-textLink-foreground); }"];
-    NSString *escaped = [[css stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"] stringByReplacingOccurrencesOfString:@"'"
-                                                                                                                       withString:@"\\'"];
+    NSString *escaped = [css stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"];
+    escaped = [escaped stringByReplacingOccurrencesOfString:@"'" withString:@"\\'"];
+    NSString *kind = dark ? @"vscode-dark" : @"vscode-light";
     return [NSString stringWithFormat:
             @"(function () {"
              "  var style = document.createElement('style');"
@@ -101,7 +103,7 @@ static NSString *ThemeStyleScript(BOOL dark) {
              "document.documentElement).firstChild);"
              "  document.body && document.body.classList.add('%@');"
              "  document.documentElement.setAttribute('data-vscode-theme-kind', '%@');"
-             "})();", escaped, dark ? @"vscode-dark" : @"vscode-light", dark ? @"vscode-dark" : @"vscode-light"];
+             "})();", escaped, kind, kind];
 }
 
 // MARK: - Serving local files
@@ -154,6 +156,23 @@ static NSString *ThemeStyleScript(BOOL dark) {
 
 @end
 
+// MARK: - Messages from the page
+
+/// Passes the page's messages on to the controller without keeping it alive: WebKit holds its
+/// message handlers strongly, and the controller owns the web view, so registering the
+/// controller itself would keep both alive for good.
+@interface GWWeakMessageHandler : NSObject <WKScriptMessageHandler>
+@property (nonatomic, weak) id<WKScriptMessageHandler> target;
+@end
+
+@implementation GWWeakMessageHandler
+
+- (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message {
+    [self.target userContentController:controller didReceiveScriptMessage:message];
+}
+
+@end
+
 // MARK: - The controller
 
 @interface GWWebviewController () <WKScriptMessageHandler, WKNavigationDelegate>
@@ -177,15 +196,20 @@ static NSString *ThemeStyleScript(BOOL dark) {
 
         WKWebViewConfiguration *configuration = [WKWebViewConfiguration new];
         [configuration setURLSchemeHandler:_resources forURLScheme:kResourceScheme];
-        [configuration.userContentController addScriptMessageHandler:self name:@"glasswork"];
-        BOOL dark = [NSApp.effectiveAppearance bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]] == NSAppearanceNameDarkAqua;
-        for (NSString *source in @[kBridgeScript, ThemeStyleScript(dark)]) {
-            BOOL isBridge = source == kBridgeScript;
-            WKUserScript *script = [[WKUserScript alloc] initWithSource:source
-                                                          injectionTime:isBridge ? WKUserScriptInjectionTimeAtDocumentStart : WKUserScriptInjectionTimeAtDocumentEnd
-                                                       forMainFrameOnly:YES];
-            [configuration.userContentController addUserScript:script];
-        }
+        GWWeakMessageHandler *handler = [GWWeakMessageHandler new];
+        handler.target = self;
+        [configuration.userContentController addScriptMessageHandler:handler name:@"glasswork"];
+        NSArray<NSAppearanceName> *appearances = @[NSAppearanceNameAqua, NSAppearanceNameDarkAqua];
+        BOOL dark = [NSApp.effectiveAppearance bestMatchFromAppearancesWithNames:appearances] == NSAppearanceNameDarkAqua;
+        // The bridge must exist before the page's own scripts run; the theme only once there is a page.
+        WKUserScript *bridge = [[WKUserScript alloc] initWithSource:kBridgeScript
+                                                      injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                                   forMainFrameOnly:YES];
+        WKUserScript *theme = [[WKUserScript alloc] initWithSource:ThemeStyleScript(dark)
+                                                     injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
+                                                  forMainFrameOnly:YES];
+        [configuration.userContentController addUserScript:bridge];
+        [configuration.userContentController addUserScript:theme];
         _webView = [[WKWebView alloc] initWithFrame:NSMakeRect(0, 0, 400, 300) configuration:configuration];
         _webView.navigationDelegate = self;
         _webView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
@@ -201,12 +225,15 @@ static NSString *ThemeStyleScript(BOOL dark) {
 }
 
 - (void)applyOptions:(const Json &)options {
-    _scriptsEnabled = options.value("enableScripts", false);
+    _scriptsEnabled = NO;
+    if (options.contains("enableScripts") && options["enableScripts"].is_boolean()) {
+        _scriptsEnabled = options["enableScripts"].get<bool>();
+    }
     NSMutableArray<NSString *> *roots = [NSMutableArray array];
     if (options.contains("localResourceRoots") && options["localResourceRoots"].is_array()) {
         for (const Json &root : options["localResourceRoots"]) {
             if (root.is_string()) {
-                [roots addObject:@(root.get<std::string>().c_str())];
+                [roots addObject:StringFromUTF8(root.get<std::string>())];
             }
         }
     } else {
@@ -224,16 +251,20 @@ static NSString *ThemeStyleScript(BOOL dark) {
 - (void)postMessage:(const Json &)message completion:(void (^)(BOOL))completion {
     std::string text = message.dump();
     NSString *script = [NSString stringWithFormat:@"window.dispatchEvent(new MessageEvent('message', {data: "
-                                                  @"%s}));", text.c_str()];
+                                                  @"%@}));", StringFromUTF8(text)];
     __weak GWWebviewController *weakSelf = self;
     void (^deliver)(void) = ^{
         GWWebviewController *strongSelf = weakSelf;
         if (strongSelf == nil) {
-            if (completion) completion(NO);
+            if (completion) {
+                completion(NO);
+            }
             return;
         }
         [strongSelf->_webView evaluateJavaScript:script completionHandler:^(id, NSError *error) {
-            if (completion) completion(error == nil);
+            if (completion) {
+                completion(error == nil);
+            }
         }];
     };
     if (_loaded) {
@@ -279,11 +310,25 @@ static NSString *ThemeStyleScript(BOOL dark) {
     NSURL *url = action.request.URL;
     NSString *scheme = url.scheme.lowercaseString;
     if (action.navigationType != WKNavigationTypeLinkActivated) {
-        decisionHandler(WKNavigationActionPolicyAllow, preferences);
+        // The page itself stays on its own content: the main frame may not be sent off to a web
+        // site, which would then get the bridge to the extension. Frames inside it may load
+        // anything; they get no bridge.
+        BOOL mainFrame = action.targetFrame == nil || action.targetFrame.isMainFrame;
+        BOOL ownContent = [scheme isEqualToString:kResourceScheme] || [scheme isEqualToString:@"about"];
+        if (!mainFrame || ownContent) {
+            decisionHandler(WKNavigationActionPolicyAllow, preferences);
+            return;
+        }
+        if ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) {
+            [NSWorkspace.sharedWorkspace openURL:url];
+        }
+        decisionHandler(WKNavigationActionPolicyCancel, preferences);
         return;
     }
     if ([scheme isEqualToString:@"command"]) {
-        if (self.onCommandLink) self.onCommandLink(url.absoluteString);
+        if (self.onCommandLink) {
+            self.onCommandLink(url.absoluteString);
+        }
     } else if ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"] || [scheme isEqualToString:@"mailto"]) {
         [NSWorkspace.sharedWorkspace openURL:url];
     } else if (url.fragment != nil) {

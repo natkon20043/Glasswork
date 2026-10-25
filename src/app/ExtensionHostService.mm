@@ -1,4 +1,5 @@
 #import "ExtensionHostService.h"
+#import "Strings.h"
 
 #import "Services.h"
 
@@ -38,7 +39,7 @@ constexpr int kMostRestarts = 3;
 
 NSString *StringFromJson(const Json &value) {
     if (value.is_string()) {
-        return @(value.get<std::string>().c_str());
+        return StringFromUTF8(value.get<std::string>());
     }
     return nil;
 }
@@ -221,13 +222,13 @@ std::string PathFromURI(const std::string &uri) {
                 continue;
             }
             GWContributedView *contributed = [GWContributedView new];
-            contributed.identifier = @(view["id"].get<std::string>().c_str());
-            contributed.name = @(view.value("name", view["id"].get<std::string>()).c_str());
-            contributed.containerIdentifier = @(it.key().c_str());
-            contributed.containerTitle = @((found != containers.end() ? found->second.first : it.key()).c_str());
-            contributed.containerIcon = found != containers.end() && !found->second.second.empty() ? @(found->second.second.c_str()) : nil;
-            contributed.extensionIdentifier = @(extension.id.c_str());
-            contributed.when = @(view.value("when", "").c_str());
+            contributed.identifier = StringFromUTF8(view["id"].get<std::string>());
+            contributed.name = StringFromUTF8(view.value("name", view["id"].get<std::string>()));
+            contributed.containerIdentifier = StringFromUTF8(it.key());
+            contributed.containerTitle = StringFromUTF8((found != containers.end() ? found->second.first : it.key()));
+            contributed.containerIcon = found != containers.end() && !found->second.second.empty() ? StringFromUTF8(found->second.second) : nil;
+            contributed.extensionIdentifier = StringFromUTF8(extension.id);
+            contributed.when = StringFromUTF8(view.value("when", ""));
             contributed.isWebview = view.value("type", "tree") == "webview";
             [_contributedViews addObject:contributed];
         }
@@ -250,7 +251,7 @@ std::string PathFromURI(const std::string &uri) {
     [self buildIndexIfNeeded];
     for (const ContributedCommand &command : _contributedCommands) {
         if (command.identifier == identifier.UTF8String) {
-            return @(command.title.c_str());
+            return StringFromUTF8(command.title);
         }
     }
     return nil;
@@ -285,7 +286,7 @@ std::string PathFromURI(const std::string &uri) {
     }
     _host->request(method.UTF8String, std::move(params), [completion](const Json &result, const std::string &problem) {
         auto sharedResult = std::make_shared<Json>(result);
-        NSString *error = problem.empty() ? nil : @(problem.c_str());
+        NSString *error = problem.empty() ? nil : StringFromUTF8(problem);
         dispatch_async(dispatch_get_main_queue(), ^{
             completion(*sharedResult, error);
         });
@@ -414,8 +415,14 @@ std::string PathFromURI(const std::string &uri) {
         auto sharedParams = std::make_shared<Json>(params);
         dispatch_async(dispatch_get_main_queue(), ^{
             GWExtensionHostService *strongSelf = weakSelf;
-            if (strongSelf != nil && strongSelf->_host.get() == rawHost) {
+            if (strongSelf == nil || strongSelf->_host.get() != rawHost) {
+                return;
+            }
+            // A message of a shape the code doesn't expect is dropped, rather than ending the app.
+            try {
                 [strongSelf handleNotification:*sharedMethod params:*sharedParams];
+            } catch (const std::exception &problem) {
+                NSLog(@"Glasswork: dropped %s from the extension host: %s", sharedMethod->c_str(), problem.what());
             }
         });
     };
@@ -428,14 +435,19 @@ std::string PathFromURI(const std::string &uri) {
                 reply(Json(), "The extension host was restarted");
                 return;
             }
-            [strongSelf handleRequest:*sharedMethod params:*sharedParams reply:reply];
+            try {
+                [strongSelf handleRequest:*sharedMethod params:*sharedParams reply:reply];
+            } catch (const std::exception &problem) {
+                reply(Json(), std::string("Glasswork couldn't handle this request: ") + problem.what());
+            }
         });
     };
     host->onStderr = [weakSelf](std::string_view bytes) {
-        NSString *text = [[NSString alloc] initWithBytes:bytes.data() length:bytes.size() encoding:NSUTF8StringEncoding];
-        if (text != nil) {
+        NSString *text = StringFromUTF8(std::string(bytes));
+        // The log's bookkeeping belongs to the main thread; this arrives on the reader's.
+        dispatch_async(dispatch_get_main_queue(), ^{
             [weakSelf appendLog:text toChannel:@"Extension Host"];
-        }
+        });
     };
     host->onExit = [weakSelf, rawHost](int code) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -458,7 +470,7 @@ std::string PathFromURI(const std::string &uri) {
     if (!host->start(settings, &error)) {
         _initializing = NO;
         [self finishWaiting:NO];
-        [self.delegate hostShowStatusMessage:@(error.c_str()) seconds:8];
+        [self.delegate hostShowStatusMessage:StringFromUTF8(error) seconds:8];
         return;
     }
     _host = std::move(host);
@@ -683,7 +695,7 @@ std::string PathFromURI(const std::string &uri) {
             continue;
         }
         GWPaletteItem *item = [GWPaletteItem new];
-        item.title = @(title.c_str());
+        item.title = StringFromUTF8(title);
         item.subtitle = @"Extension";
         item.symbol = @"puzzlepiece.extension";
         item.symbolColor = NSColor.systemPurpleColor;
@@ -692,7 +704,7 @@ std::string PathFromURI(const std::string &uri) {
             [indexes addIndex:position];
         }
         item.matchedIndexes = indexes;
-        NSString *commandIdentifier = @(identifier.c_str());
+        NSString *commandIdentifier = StringFromUTF8(identifier);
         item.run = ^{
             [weakSelf executeCommand:commandIdentifier arguments:nil];
         };
@@ -716,7 +728,7 @@ std::string PathFromURI(const std::string &uri) {
             }
             std::string failure = problem;
             dispatch_async(dispatch_get_main_queue(), ^{
-                [weakSelf.delegate hostShowStatusMessage:[NSString stringWithFormat:@"%@ failed: %s", identifier, failure.c_str()]
+                [weakSelf.delegate hostShowStatusMessage:[NSString stringWithFormat:@"%@ failed: %@", identifier, StringFromUTF8(failure)]
                                                  seconds:8];
             });
         });
@@ -743,7 +755,13 @@ std::string PathFromURI(const std::string &uri) {
             ++running;
         }
     }
-    return running == 0 ? @"" : [NSString stringWithFormat:@"%lu extension%@ running", (unsigned long)running, running == 1 ? @"" : @"s"];
+    if (running == 0) {
+        return @"";
+    }
+    if (running == 1) {
+        return @"1 extension running";
+    }
+    return [NSString stringWithFormat:@"%lu extensions running", (unsigned long)running];
 }
 
 // ---------------------------------------------------------------------------
@@ -789,9 +807,10 @@ std::string PathFromURI(const std::string &uri) {
 // ---------------------------------------------------------------------------
 // MARK: Messages from the host
 
-- (void)handleNotification:(const std::string &)method params:(const Json &)params {
+- (void)handleNotification:(const std::string &)method params:(const Json &)incoming {
+    Json params = incoming;  // a copy, so a missing key reads as null instead of undefined
     if (method.rfind("view/", 0) == 0 || method.rfind("webview/", 0) == 0) {
-        [self.viewsDelegate hostViewNotification:@(method.c_str()) params:params];
+        [self.viewsDelegate hostViewNotification:StringFromUTF8(method) params:params];
         return;
     }
     if (method == "ui/log") {
@@ -846,18 +865,23 @@ std::string PathFromURI(const std::string &uri) {
     } else if (method == "commands/setContext") {
         NSString *key = StringFromJson(params["key"]);
         const Json &value = params.contains("value") ? params["value"] : Json();
-        NSString *text = value.is_string() ? StringFromJson(value) : @(value.is_null() ? "" : value.dump().c_str());
+        NSString *text = @"";
+        if (value.is_string()) {
+            text = StringFromJson(value);
+        } else if (!value.is_null()) {
+            text = StringFromUTF8(value.dump());
+        }
         if (key != nil) {
             [self.delegate hostSetContextKey:key value:text];
         }
     } else if (method == "editor/setSelections") {
         [self.delegate hostSetSelections:params.value("selections", Json::array())
-                                 forPath:@(PathFromURI(params.value("uri", "")).c_str())];
+                                 forPath:StringFromUTF8(PathFromURI(params.value("uri", "")))];
     } else if (method == "editor/reveal") {
         [self.delegate hostRevealRange:params.value("range", Json::object())
-                               forPath:@(PathFromURI(params.value("uri", "")).c_str())];
+                               forPath:StringFromUTF8(PathFromURI(params.value("uri", "")))];
     } else if (method == "editor/decorations") {
-        [self.delegate hostSetDecorationsForPath:@(PathFromURI(params.value("uri", "")).c_str())
+        [self.delegate hostSetDecorationsForPath:StringFromUTF8(PathFromURI(params.value("uri", "")))
                                              key:StringFromJson(params["key"]) ?: @""
                                          options:params.value("options", Json::object())
                                           ranges:params.value("ranges", Json::array())];
@@ -873,14 +897,15 @@ std::string PathFromURI(const std::string &uri) {
     }
 }
 
-- (void)handleRequest:(const std::string &)method params:(const Json &)params reply:(gw::ExtensionHost::Reply)reply {
+- (void)handleRequest:(const std::string &)method params:(const Json &)incoming reply:(gw::ExtensionHost::Reply)reply {
+    Json params = incoming;  // a copy, so a missing key reads as null instead of undefined
     if (method.rfind("webview/", 0) == 0) {
         id<GWExtensionViewsDelegate> views = self.viewsDelegate;
         if (views == nil) {
             reply(Json{{"delivered", false}}, "");
             return;
         }
-        [views hostViewRequest:@(method.c_str()) params:params reply:^(const Json &result) {
+        [views hostViewRequest:StringFromUTF8(method) params:params reply:^(const Json &result) {
             reply(result, "");
         }];
         return;
@@ -895,7 +920,7 @@ std::string PathFromURI(const std::string &uri) {
         BOOL applied = [self.delegate hostApplyWorkspaceEdit:params.value("edit", Json::object())];
         reply(Json{{"applied", applied == YES}}, "");
     } else if (method == "workspace/saveDocument") {
-        BOOL saved = [self.delegate hostSaveFileAtPath:@(PathFromURI(params.value("uri", "")).c_str())];
+        BOOL saved = [self.delegate hostSaveFileAtPath:StringFromUTF8(PathFromURI(params.value("uri", "")))];
         reply(Json(saved == YES), "");
     } else if (method == "workspace/saveAll") {
         [self.delegate hostSaveAll];
@@ -906,13 +931,13 @@ std::string PathFromURI(const std::string &uri) {
     } else if (method == "editor/insertSnippet") {
         BOOL inserted = [self.delegate hostInsertSnippet:StringFromJson(params["snippet"]) ?: @""
                                                 atRanges:params.value("ranges", Json::array())
-                                                 forPath:@(PathFromURI(params.value("uri", "")).c_str())];
+                                                 forPath:StringFromUTF8(PathFromURI(params.value("uri", "")))];
         reply(Json(inserted == YES), "");
     } else if (method == "ui/openDocument") {
         std::string path = PathFromURI(params.value("uri", ""));
         NSInteger line = params.contains("line") && params["line"].is_number() ? params["line"].get<NSInteger>() : -1;
         NSInteger character = params.contains("character") && params["character"].is_number() ? params["character"].get<NSInteger>() : 0;
-        [self.delegate hostOpenFileAtPath:@(path.c_str()) line:line character:character];
+        [self.delegate hostOpenFileAtPath:StringFromUTF8(path) line:line character:character];
         reply(Json(), "");
     } else if (method == "env/openExternal") {
         NSURL *url = [NSURL URLWithString:StringFromJson(params["uri"]) ?: @""];
@@ -936,7 +961,8 @@ std::string PathFromURI(const std::string &uri) {
 
 /// Saves a setting an extension changed (`config.update`) next to settings.json instead of
 /// editing the user's file, which would lose its comments.
-- (void)storeSetting:(const Json &)params {
+- (void)storeSetting:(const Json &)incoming {
+    Json params = incoming;  // a copy, so a missing key reads as null instead of undefined
     NSURL *file = [[self supportFolder] URLByAppendingPathComponent:@"extension-settings.json"];
     Json settings = Json::object();
     std::ifstream input(file.path.UTF8String);
@@ -963,13 +989,14 @@ std::string PathFromURI(const std::string &uri) {
 // ---------------------------------------------------------------------------
 // MARK: Messages, pickers and prompts
 
-- (void)showMessage:(const Json &)params reply:(gw::ExtensionHost::Reply)reply {
+- (void)showMessage:(const Json &)incoming reply:(gw::ExtensionHost::Reply)reply {
+    Json params = incoming;  // a copy, so a missing key reads as null instead of undefined
     std::string severity = params.value("severity", "info");
     NSString *message = StringFromJson(params["message"]) ?: @"";
     NSMutableArray<NSString *> *items = [NSMutableArray array];
     for (const Json &item : params.value("items", Json::array())) {
         if (item.is_string()) {
-            [items addObject:@(item.get<std::string>().c_str())];
+            [items addObject:StringFromUTF8(item.get<std::string>())];
         }
     }
     BOOL modal = params.value("modal", false);
@@ -1013,7 +1040,8 @@ std::string PathFromURI(const std::string &uri) {
     }
 }
 
-- (void)showQuickPick:(const Json &)params reply:(gw::ExtensionHost::Reply)reply {
+- (void)showQuickPick:(const Json &)incoming reply:(gw::ExtensionHost::Reply)reply {
+    Json params = incoming;  // a copy, so a missing key reads as null instead of undefined
     NSMutableArray<GWPaletteItem *> *items = [NSMutableArray array];
     __block BOOL answered = NO;
     for (const Json &entry : params.value("items", Json::array())) {
@@ -1061,7 +1089,8 @@ std::string PathFromURI(const std::string &uri) {
     }];
 }
 
-- (void)showInputBox:(const Json &)params reply:(gw::ExtensionHost::Reply)reply {
+- (void)showInputBox:(const Json &)incoming reply:(gw::ExtensionHost::Reply)reply {
+    Json params = incoming;  // a copy, so a missing key reads as null instead of undefined
     NSAlert *alert = [NSAlert new];
     alert.messageText = StringFromJson(params["prompt"]) ?: StringFromJson(params["title"]) ?: @"Enter a value";
     [alert addButtonWithTitle:@"OK"];

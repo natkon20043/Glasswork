@@ -1,4 +1,5 @@
 #import "AppDelegate.h"
+#import "Strings.h"
 
 #import "MainWindow.h"
 #import "Services.h"
@@ -57,7 +58,9 @@ static NSString *SpecialKey(unichar key) {
     if (lastFolder && [NSFileManager.defaultManager fileExistsAtPath:lastFolder isDirectory:&isDirectory] && isDirectory) {
         [_window openURL:[NSURL fileURLWithPath:lastFolder]];
     }
-    for (NSURL *url in _pendingURLs) [_window openURL:url];
+    for (NSURL *url in _pendingURLs) {
+        [_window openURL:url];
+    }
     [_pendingURLs removeAllObjects];
 
     // GLASSWORK_ACTIONS="showSourceControl:,quickOpen:" runs those menu actions in order, a
@@ -136,7 +139,9 @@ static NSString *SpecialKey(unichar key) {
         return;
     }
     GWMainWindowController *target = [self frontWindowController];
-    for (NSURL *url in urls) [target openURL:url];
+    for (NSURL *url in urls) {
+        [target openURL:url];
+    }
     [target showWindow:nil];
 }
 
@@ -160,13 +165,19 @@ static NSString *SpecialKey(unichar key) {
     [_windows addObject:controller];
     __weak GWAppDelegate *weakSelf = self;
     __weak GWMainWindowController *weakController = controller;
-    [NSNotificationCenter.defaultCenter addObserverForName:NSWindowWillCloseNotification object:controller.window queue:nil
-                                                usingBlock:^(NSNotification *note) {
+    // The observer removes itself once its window has closed, so none are left behind.
+    __block id observer = nil;
+    observer = [NSNotificationCenter.defaultCenter addObserverForName:NSWindowWillCloseNotification
+                                                               object:controller.window
+                                                                queue:nil
+                                                           usingBlock:^(NSNotification *note) {
         GWAppDelegate *strongSelf = weakSelf;
         GWMainWindowController *closing = weakController;
         if (strongSelf != nil && closing != nil) {
             [strongSelf->_windows removeObject:closing];
         }
+        [NSNotificationCenter.defaultCenter removeObserver:observer];
+        observer = nil;
     }];
     return controller;
 }
@@ -216,15 +227,15 @@ static NSString *SpecialKey(unichar key) {
 
 - (NSMenu *)submenu:(NSString *)title items:(NSArray<NSMenuItem *> *)items parent:(NSMenu *)parent {
     NSMenu *menu = [[NSMenu alloc] initWithTitle:title];
-    for (NSMenuItem *item in items) [menu addItem:item];
+    for (NSMenuItem *item in items) {
+        [menu addItem:item];
+    }
     NSMenuItem *holder = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
     holder.submenu = menu;
     [parent addItem:holder];
     return menu;
 }
 
-/// File > Open Recent. The list is rebuilt each time the menu opens, from the folders and
-/// files macOS has noted as recent (MainWindow notes them when they are opened).
 /// Edit > Transform: case changes and line sorting.
 - (NSMenuItem *)transformItem {
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Transform"];
@@ -240,6 +251,8 @@ static NSString *SpecialKey(unichar key) {
     return holder;
 }
 
+/// File > Open Recent. The list is rebuilt each time the menu opens, from the folders and
+/// files macOS has noted as recent (MainWindow notes them when they are opened).
 - (NSMenuItem *)openRecentItem {
     _recentMenu = [[NSMenu alloc] initWithTitle:@"Open Recent"];
     _recentMenu.delegate = self;
@@ -510,7 +523,9 @@ static NSString *SpecialKey(unichar key) {
         [self item:@"Restart Extensions" action:@selector(restartExtensionHost:) key:@""],
         NSMenuItem.separatorItem,
     ] parent:main];
-    for (NSMenuItem *item in extensions.itemArray) item.target = self;
+    for (NSMenuItem *item in extensions.itemArray) {
+        item.target = self;
+    }
     _installedMenu = [self submenu:@"Installed" items:@[] parent:extensions];
     _installedMenu.delegate = self;
 }
@@ -574,12 +589,12 @@ static NSString *SpecialKey(unichar key) {
     } else if (menu == _installedMenu) {
         [menu removeAllItems];
         for (const auto &extension : services.extensions.extensions()) {
-            NSString *title = [NSString stringWithFormat:@"%s  (%s)", extension.displayName.c_str(), extension.version.c_str()];
+            NSString *title = [NSString stringWithFormat:@"%@  (%@)", StringFromUTF8(extension.displayName), StringFromUTF8(extension.version)];
             NSMenuItem *item = [self item:title action:nil key:@""];
             NSMenu *actions = [NSMenu new];
             NSMenuItem *uninstall = [self item:@"Uninstall" action:@selector(uninstallExtension:) key:@""];
             uninstall.target = self;
-            uninstall.representedObject = @(extension.id.c_str());
+            uninstall.representedObject = StringFromUTF8(extension.id);
             [actions addItem:uninstall];
             item.submenu = actions;
             [menu addItem:item];
@@ -591,7 +606,9 @@ static NSString *SpecialKey(unichar key) {
         }
     } else {  // opacity
         NSInteger current = static_cast<NSInteger>(std::lround(services.editorOpacity * 100));
-        for (NSMenuItem *item in menu.itemArray) item.state = item.tag == current ? NSControlStateValueOn : NSControlStateValueOff;
+        for (NSMenuItem *item in menu.itemArray) {
+            item.state = item.tag == current ? NSControlStateValueOn : NSControlStateValueOff;
+        }
     }
 }
 
@@ -667,7 +684,9 @@ static NSString *SpecialKey(unichar key) {
     alert.window.initialFirstResponder = field;
     [alert addButtonWithTitle:@"Install"];
     [alert addButtonWithTitle:@"Cancel"];
-    if ([alert runModal] != NSAlertFirstButtonReturn || field.stringValue.length == 0) return;
+    if ([alert runModal] != NSAlertFirstButtonReturn || field.stringValue.length == 0) {
+        return;
+    }
 
     [GWServices.shared installExtension:field.stringValue completion:^(BOOL ok, NSString *message) {
         NSAlert *result = [NSAlert new];

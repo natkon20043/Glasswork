@@ -1,4 +1,5 @@
 #import "ColorInspector.h"
+#import "Strings.h"
 
 #import "EditorView.h"
 #import "Services.h"
@@ -176,7 +177,7 @@ using StyleEditor = std::function<void(gw::EditorSettings &, const std::function
 
     // The name section.
     BOOL hasWord = !_word.empty();
-    _nameTitle.stringValue = hasWord ? [NSString stringWithFormat:@"“%s”", _word.c_str()] : @"No name at the caret";
+    _nameTitle.stringValue = hasWord ? [NSString stringWithFormat:@"“%@”", StringFromUTF8(_word)] : @"No name at the caret";
     for (NSView *control in _nameRow.view.arrangedSubviews) {
         if ([control isKindOfClass:NSControl.class]) {
             ((NSControl *)control).enabled = hasWord;
@@ -192,7 +193,7 @@ using StyleEditor = std::function<void(gw::EditorSettings &, const std::function
     NSString *previouslyPicked = _scopePicker.titleOfSelectedItem;
     [_scopePicker removeAllItems];
     for (const std::string &scope : _scopes) {
-        [_scopePicker addItemWithTitle:@(scope.c_str())];
+        [_scopePicker addItemWithTitle:StringFromUTF8(scope)];
     }
     if (previouslyPicked && [_scopePicker itemWithTitle:previouslyPicked]) {
         [_scopePicker selectItemWithTitle:previouslyPicked];

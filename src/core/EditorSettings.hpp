@@ -10,7 +10,7 @@ namespace gw {
 
 /// Everything a user can change, stored as a VS Code-style settings.json (JSON with comments).
 struct EditorSettings {
-    // Font and layout
+    // ---- Font and layout
     double fontSize = 13;
     /// Empty: SF Mono.
     std::string fontFamily;
@@ -29,12 +29,12 @@ struct EditorSettings {
     /// Empty: built-in symbols.
     std::string iconTheme;
 
-    // Editor features
+    // ---- Editor features
     bool highlightOccurrences = true;
     bool showMinimap = true;
     /// Vim keys: normal, insert and visual modes (View > Vim Mode).
     bool vimMode = false;
-    /// The Vim cursor leaves a trail when it jumps, its corners catching up one after another.
+    /// The Vim cursor smears as it moves, a faint trail fading into the cursor.
     bool vimCursorSmear = true;
     bool indentGuides = true;
     bool bracketPairColors = true;
@@ -45,27 +45,32 @@ struct EditorSettings {
     bool inlayHints = true;
     bool languageServers = true;
 
-    // Saving (an .editorconfig overrides the trim/newline options)
+    // ---- Saving (an .editorconfig overrides the trim/newline options)
     bool autoSave = false;
     bool trimTrailingWhitespace = false;
     bool insertFinalNewline = false;
     /// Needs a language server that can format.
     bool formatOnSave = false;
 
-    // Terminal
+    // ---- Terminal
     /// 0: one point smaller than the editor's.
     double terminalFontSize = 0;
     /// Empty: $SHELL.
     std::string terminalShell;
 
+    // ---- Colors
     ColorCustomizations colors;
 };
+
+// ---- Reading and writing
 
 /// Missing or invalid keys keep defaults; `error` describes the first problem found.
 EditorSettings parseSettings(const std::string& jsonc, std::string* error = nullptr);
 
 /// Writes a commented settings.json explaining every option.
 std::string serializeSettings(const EditorSettings& settings);
+
+// ---- Conversions
 
 /// "#RRGGBB", or "#RRGGBBAA" when not fully opaque.
 std::string colorToHex(Color color);

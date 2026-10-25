@@ -17,13 +17,17 @@ std::vector<std::string> splitScopes(const std::string& text) {
     std::string current;
     for (char character : text) {
         if (character == ',') {
-            if (!current.empty()) scopes.push_back(current);
+            if (!current.empty()) {
+                scopes.push_back(current);
+            }
             current.clear();
         } else if (character != ' ') {
             current += character;
         }
     }
-    if (!current.empty()) scopes.push_back(current);
+    if (!current.empty()) {
+        scopes.push_back(current);
+    }
     return scopes;
 }
 
@@ -35,8 +39,12 @@ std::string joinedBody(const json& body) {
     if (body.is_array()) {
         bool first = true;
         for (const json& line : body) {
-            if (!line.is_string()) continue;
-            if (!first) text += '\n';
+            if (!line.is_string()) {
+                continue;
+            }
+            if (!first) {
+                text += '\n';
+            }
             text += line.get<std::string>();
             first = false;
         }
@@ -65,7 +73,9 @@ std::vector<SnippetDefinition> parseSnippetFile(std::string_view text) {
             prefixes.push_back(entry["prefix"].get<std::string>());
         } else if (entry["prefix"].is_array()) {
             for (const json& prefix : entry["prefix"]) {
-                if (prefix.is_string()) prefixes.push_back(prefix.get<std::string>());
+                if (prefix.is_string()) {
+                    prefixes.push_back(prefix.get<std::string>());
+                }
             }
         }
         std::string description = stringOr(entry, "description", name);
@@ -74,7 +84,9 @@ std::vector<SnippetDefinition> parseSnippetFile(std::string_view text) {
             scopes = splitScopes(entry["scope"].get<std::string>());
         }
         for (const std::string& prefix : prefixes) {
-            if (prefix.empty()) continue;
+            if (prefix.empty()) {
+                continue;
+            }
             SnippetDefinition definition;
             definition.name = name;
             definition.prefix = prefix;
@@ -118,7 +130,9 @@ std::vector<SnippetDefinition> SnippetLibrary::forLanguage(const std::string& la
         for (const SnippetDefinition& definition : found->second) {
             bool applies = isForThisLanguage || definition.scopes.empty();
             for (const std::string& scope : definition.scopes) {
-                if (scope == language) applies = true;
+                if (scope == language) {
+                    applies = true;
+                }
             }
             if (applies) {
                 result.push_back(definition);

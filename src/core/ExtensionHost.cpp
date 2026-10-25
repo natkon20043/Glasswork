@@ -7,15 +7,12 @@
 
 namespace gw {
 
-namespace {
-
-}  // namespace
-
 // ---------------------------------------------------------------------------
 // The shared state transports use to reach the host without owning it
 
 struct ExtensionHost::Shared {
-    std::mutex mutex;
+    // Recursive: delivering a message holds it, and the server may answer on the same thread.
+    std::recursive_mutex mutex;
     ExtensionHost* host = nullptr;  // null once the host is destroyed
 };
 
@@ -33,7 +30,7 @@ public:
     ~HostTransport() override { terminate(); }
 
     bool start(std::string*) override {
-        std::lock_guard<std::mutex> lock(shared_->mutex);
+        std::lock_guard<std::recursive_mutex> lock(shared_->mutex);
         ExtensionHost* host = shared_->host;
         if (host == nullptr || !host->isRunning()) {
             return false;
@@ -49,7 +46,7 @@ public:
     }
 
     bool write(std::string_view bytes) override {
-        std::lock_guard<std::mutex> lock(shared_->mutex);
+        std::lock_guard<std::recursive_mutex> lock(shared_->mutex);
         ExtensionHost* host = shared_->host;
         if (host == nullptr || !running_) {
             return false;
@@ -64,7 +61,7 @@ public:
     void closeInput() override {}
 
     void terminate() override {
-        std::lock_guard<std::mutex> lock(shared_->mutex);
+        std::lock_guard<std::recursive_mutex> lock(shared_->mutex);
         if (!running_) {
             return;
         }
@@ -113,7 +110,7 @@ ExtensionHost::ExtensionHost() : shared_(std::make_shared<Shared>()) {
 
 ExtensionHost::~ExtensionHost() {
     {
-        std::lock_guard<std::mutex> lock(shared_->mutex);
+        std::lock_guard<std::recursive_mutex> lock(shared_->mutex);
         shared_->host = nullptr;  // transports still alive stop talking to us
     }
     process_.terminate();
@@ -146,11 +143,14 @@ std::string ExtensionHost::findNode() {
 }
 
 bool ExtensionHost::start(const Settings& settings, std::string* error) {
-    std::string node = settings.nodeProgram.empty() ? findNode() : settings.nodeProgram;
+    std::string node = settings.nodeProgram;
+    if (node.empty()) {
+        node = findNode();
+    }
     if (node.empty()) {
         if (error != nullptr) {
-            *error = "Extensions need Node.js, which wasn't found. Install it from nodejs.org or with Homebrew (brew install "
-                     "node).";
+            *error = "Extensions need Node.js, which wasn't found. "
+                     "Install it from nodejs.org or with Homebrew (brew install node).";
         }
         return false;
     }
@@ -160,7 +160,10 @@ bool ExtensionHost::start(const Settings& settings, std::string* error) {
     long version = versionNumber(versionCheck.output);
     if (!versionCheck.succeeded() || version < 18000000) {
         if (error != nullptr) {
-            std::string found = versionCheck.output.empty() ? std::string("none that runs") : versionCheck.output;
+            std::string found = versionCheck.output;
+            if (found.empty()) {
+                found = "none that runs";
+            }
             *error = "Extensions need Node.js 18 or newer; found " + found;
         }
         return false;
@@ -168,7 +171,9 @@ bool ExtensionHost::start(const Settings& settings, std::string* error) {
 
     process_.onOutput = [this](std::string_view bytes) { handleOutput(bytes); };
     process_.onErrorOutput = [this](std::string_view bytes) {
-        if (onStderr) onStderr(bytes);
+        if (onStderr) {
+            onStderr(bytes);
+        }
     };
     process_.onExit = [this](int code) { failEverything(code); };
 
@@ -223,13 +228,29 @@ std::unique_ptr<lsp::ServerTransport> ExtensionHost::makeServerTransport(const s
 }
 
 void ExtensionHost::handleOutput(std::string_view bytes) {
-    decoder_.append(bytes);
-    while (std::optional<Json> message = decoder_.next()) {
-        handleMessage(*message);
+    std::vector<Json> messages;
+    try {
+        decoder_.append(bytes);
+        while (std::optional<Json> message = decoder_.next()) {
+            messages.push_back(std::move(*message));
+        }
+    } catch (const std::exception&) {
+        // A broken stream can't be resynchronised; start afresh with whatever comes next.
+        decoder_ = lsp::Decoder();
+    }
+    for (const Json& message : messages) {
+        // A message of an unexpected shape is dropped; it must not end the app from this thread.
+        try {
+            handleMessage(message);
+        } catch (const std::exception&) {
+        }
     }
 }
 
 void ExtensionHost::deliverToServer(const std::string& serverId, const Json& message) {
+    // The shared lock is held while the message is delivered, so the transport can't be destroyed
+    // (its destructor waits for this lock) between being found and being used.
+    std::lock_guard<std::recursive_mutex> sharedLock(shared_->mutex);
     HostTransport* transport = nullptr;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -248,7 +269,10 @@ void ExtensionHost::handleMessage(const Json& message) {
     bool hasId = message.contains("id") && !message["id"].is_null();
 
     if (!hasMethod && hasId) {
-        int identifier = message["id"].is_number_integer() ? message["id"].get<int>() : -1;
+        int identifier = -1;
+        if (message["id"].is_number_integer()) {
+            identifier = message["id"].get<int>();
+        }
         ResponseHandler handler;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -263,7 +287,11 @@ void ExtensionHost::handleMessage(const Json& message) {
         if (message.contains("error")) {
             error = message["error"].value("message", "Extension host error");
         }
-        handler(error.empty() ? message.value("result", Json()) : Json(), error);
+        if (error.empty()) {
+            handler(message.value("result", Json()), error);
+        } else {
+            handler(Json(), error);
+        }
         return;
     }
 
@@ -271,14 +299,17 @@ void ExtensionHost::handleMessage(const Json& message) {
         return;
     }
     std::string method = message["method"].get<std::string>();
-    Json params = message.contains("params") ? message["params"] : Json::object();
+    Json params = Json::object();
+    if (message.contains("params")) {
+        params = message["params"];
+    }
 
     if (hasId) {
         // The host is asking us something. The answer is sent whenever `reply` is called.
         Json requestId = message["id"];
         std::shared_ptr<Shared> shared = shared_;
         Reply reply = [shared, requestId](const Json& result, const std::string& error) {
-            std::lock_guard<std::mutex> lock(shared->mutex);
+            std::lock_guard<std::recursive_mutex> lock(shared->mutex);
             if (shared->host == nullptr) {
                 return;
             }
@@ -304,7 +335,9 @@ void ExtensionHost::handleMessage(const Json& message) {
     }
     if (method == "host/ready") {
         ready_ = true;
-        if (onReady) onReady();
+        if (onReady) {
+            onReady();
+        }
         return;
     }
     if (onNotification) {
@@ -318,7 +351,7 @@ void ExtensionHost::failEverything(int exitCode) {
     {
         // The shared lock is held while the transports are told, so none of them can be destroyed
         // (their destructors wait for it) between being found and being used.
-        std::lock_guard<std::mutex> sharedLock(shared_->mutex);
+        std::lock_guard<std::recursive_mutex> sharedLock(shared_->mutex);
         std::vector<HostTransport*> affected;
         {
             std::lock_guard<std::mutex> lock(mutex_);

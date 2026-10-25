@@ -1,4 +1,5 @@
 #import "Services.h"
+#import "Strings.h"
 
 #include <algorithm>
 #include <cmath>
@@ -253,7 +254,7 @@ std::optional<std::string> readFile(NSURL *url) {
         [self extensionsChanged];
     }
     if (_settings.theme != previousTheme) {
-        [self loadTheme:@(_settings.theme.c_str())];  // posts the theme notification itself
+        [self loadTheme:StringFromUTF8(_settings.theme)];  // posts the theme notification itself
     }
     [self reloadIconTheme];
     [self rebuildStylist];
@@ -364,7 +365,7 @@ std::optional<std::string> readFile(NSURL *url) {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         auto result = gw::ExtensionManager::installFromOpenVSX(id, folder);
         dispatch_async(dispatch_get_main_queue(), ^{
-            NSString *message = @(result.message.c_str());
+            NSString *message = StringFromUTF8(result.message);
             if (result.ok) {
                 [self extensionsChanged];
                 // Someone who installs a color theme wants to see it, so switch to it right away.
@@ -413,7 +414,7 @@ std::optional<std::string> readFile(NSURL *url) {
         if (info.id == _settings.iconTheme || info.label == _settings.iconTheme) {
             _iconTheme = gw::IconTheme::load(info.path);
             if (_iconTheme) {
-                _iconThemeLabel = @(info.label.c_str());
+                _iconThemeLabel = StringFromUTF8(info.label);
             }
             return;
         }
@@ -431,7 +432,7 @@ std::optional<std::string> readFile(NSURL *url) {
 - (NSArray<NSString *> *)iconThemeLabels {
     NSMutableArray<NSString *> *labels = [NSMutableArray array];
     for (const gw::IconThemeInfo &info : _extensions->iconThemes()) {
-        [labels addObject:@(info.label.c_str())];
+        [labels addObject:StringFromUTF8(info.label)];
     }
     return labels;
 }
@@ -453,7 +454,7 @@ std::optional<std::string> readFile(NSURL *url) {
 - (NSArray<NSString *> *)themeLabels {
     NSMutableArray *labels = [NSMutableArray array];
     for (const auto &theme : _extensions->themes()) {
-        [labels addObject:@(theme.label.c_str())];
+        [labels addObject:StringFromUTF8(theme.label)];
     }
     return labels;
 }
@@ -469,7 +470,7 @@ std::optional<std::string> readFile(NSURL *url) {
 }
 
 - (void)applySavedTheme {
-    if ([self loadTheme:@(_settings.theme.c_str())]) {
+    if ([self loadTheme:StringFromUTF8(_settings.theme)]) {
         return;
     }
     if ([self loadTheme:@"Dark Modern"]) {
@@ -489,7 +490,7 @@ std::optional<std::string> readFile(NSURL *url) {
         return NO;
     }
     for (const auto &info : _extensions->themes()) {
-        if (![@(info.label.c_str()) isEqualToString:label]) {
+        if (![StringFromUTF8(info.label) isEqualToString:label]) {
             continue;
         }
         std::string error;
@@ -545,7 +546,7 @@ std::optional<std::string> readFile(NSURL *url) {
     if (!_settings.fontFamily.empty()) {
         // A named family (e.g. "JetBrains Mono"), with the right weight if it has one.
         NSFontDescriptor *descriptor = [NSFontDescriptor fontDescriptorWithFontAttributes:@{
-            NSFontFamilyAttribute: @(_settings.fontFamily.c_str()),
+            NSFontFamilyAttribute: StringFromUTF8(_settings.fontFamily),
             NSFontTraitsAttribute: @{NSFontWeightTrait: @(weight)},
         }];
         font = [NSFont fontWithDescriptor:descriptor size:size];

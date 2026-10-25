@@ -30,10 +30,6 @@ struct TextStyle {
 /// How well a selector matches a scope path, in VS Code's order: deeper scope wins, then more
 /// specific selector, then more parent constraints.
 struct SelectorMatch {
-    long depth = -1;
-    size_t specificity = 0;
-    size_t parents = 0;
-
     bool operator<(const SelectorMatch& other) const {
         if (depth != other.depth) {
             return depth < other.depth;
@@ -44,6 +40,10 @@ struct SelectorMatch {
         return parents < other.parents;
     }
     bool operator==(const SelectorMatch& other) const = default;
+
+    long depth = -1;
+    size_t specificity = 0;
+    size_t parents = 0;
 };
 
 // ---- Color helpers

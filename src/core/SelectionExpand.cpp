@@ -101,8 +101,12 @@ std::optional<Range> wordAround(const TextBuffer& buffer, Position at) {
     std::string_view text = buffer.line(at.line);
     size_t start = std::min(at.column, text.size());
     size_t end = start;
-    while (start > 0 && isWordByte(static_cast<unsigned char>(text[start - 1]))) --start;
-    while (end < text.size() && isWordByte(static_cast<unsigned char>(text[end]))) ++end;
+    while (start > 0 && isWordByte(static_cast<unsigned char>(text[start - 1]))) {
+        --start;
+    }
+    while (end < text.size() && isWordByte(static_cast<unsigned char>(text[end]))) {
+        ++end;
+    }
     if (start == end) {
         return std::nullopt;
     }

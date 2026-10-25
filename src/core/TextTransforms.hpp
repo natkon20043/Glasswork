@@ -5,11 +5,14 @@
 
 namespace gw {
 
-/// Edit > Transform commands on UTF-8 text; non-ASCII letters are left alone.
+// ---- Case (Edit > Transform; non-ASCII letters are left alone)
+
 std::string upperCaseText(std::string_view text);
 std::string lowerCaseText(std::string_view text);
 /// Capital at the start of each word, the rest lower case.
 std::string titleCaseText(std::string_view text);
+
+// ---- Lines
 
 /// Lines separated by '\n'. Case counts (capitals first) unless `ignoreCase`. A final line break stays.
 std::string sortLinesText(std::string_view text, bool descending, bool ignoreCase = false);

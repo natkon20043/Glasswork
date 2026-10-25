@@ -1,5 +1,7 @@
 #include "ProjectSearch.hpp"
 
+#include "TextBuffer.hpp"
+
 #include <oniguruma.h>
 
 #include <algorithm>
@@ -46,9 +48,8 @@ int commonness(unsigned char c) {
         for (const char* p = order; *p != '\0'; ++p) {
             unsigned char lower = static_cast<unsigned char>(*p);
             table[lower] = rank;
-            unsigned char upper = lower;
             if (lower >= 'a' && lower <= 'z') {
-                upper = static_cast<unsigned char>(lower - 'a' + 'A');
+                unsigned char upper = static_cast<unsigned char>(lower - 'a' + 'A');
                 table[upper] = rank + 12;  // capitals are rarer than their lower-case forms
             }
             ++rank;
@@ -67,8 +68,14 @@ size_t lineStartBefore(const char* data, size_t position) {
 }
 
 size_t lineEndAfter(const char* data, size_t size, size_t position) {
-    const void* newline = position < size ? std::memchr(data + position, '\n', size - position) : nullptr;
-    return newline == nullptr ? size : static_cast<size_t>(static_cast<const char*>(newline) - data);
+    if (position >= size) {
+        return size;
+    }
+    const void* newline = std::memchr(data + position, '\n', size - position);
+    if (newline == nullptr) {
+        return size;
+    }
+    return static_cast<size_t>(static_cast<const char*>(newline) - data);
 }
 
 }  // namespace
@@ -187,7 +194,9 @@ Matcher::Matcher(const Query& query) : query_(query), implementation_(std::make_
     // that byte has no other case.
     size_t rarest = 0;
     for (size_t index = 1; index < impl.needle.size(); ++index) {
-        if (commonness(static_cast<unsigned char>(impl.needle[index])) > commonness(static_cast<unsigned char>(impl.needle[rarest]))) {
+        int here = commonness(static_cast<unsigned char>(impl.needle[index]));
+        int best = commonness(static_cast<unsigned char>(impl.needle[rarest]));
+        if (here > best) {
             rarest = index;
         }
     }
@@ -408,7 +417,10 @@ std::vector<std::string> splitPatterns(std::string_view text) {
     size_t start = 0;
     while (start <= text.size()) {
         size_t comma = text.find(',', start);
-        size_t end = comma == std::string_view::npos ? text.size() : comma;
+        size_t end = comma;
+        if (comma == std::string_view::npos) {
+            end = text.size();
+        }
         std::string_view piece = text.substr(start, end - start);
         while (!piece.empty() && piece.front() == ' ') {
             piece.remove_prefix(1);
@@ -439,7 +451,9 @@ bool matchesPattern(std::string_view path, const std::string& pattern) {
     std::string_view subject = path;
     if (!hasSlash) {
         size_t slash = path.rfind('/');
-        subject = slash == std::string_view::npos ? path : path.substr(slash + 1);
+        if (slash != std::string_view::npos) {
+            subject = path.substr(slash + 1);
+        }
     }
     std::string subjectText(subject);
     if (fnmatch(glob.c_str(), subjectText.c_str(), 0) == 0) {
@@ -485,7 +499,9 @@ bool passesFilters(std::string_view path, const std::vector<std::string>& includ
 
 namespace {
 
-/// A view of a file's bytes, either read into a reusable buffer (small files) or mapped.
+constexpr size_t kLargestReadFile = 8 * 1024 * 1024;
+
+/// A view of a file's bytes, either read into a reusable buffer or, for very large files, mapped.
 class FileBytes {
 public:
     ~FileBytes() { release(); }
@@ -504,7 +520,9 @@ public:
             return false;
         }
         size_ = static_cast<size_t>(info.st_size);
-        if (size_ <= 256 * 1024) {
+        // Files are read rather than mapped, except very large ones: a mapped file that another
+        // program shortens while we read it (a build rewriting its output) crashes the reader.
+        if (size_ <= kLargestReadFile) {
             if (scratch.size() < size_) {
                 scratch.resize(std::max<size_t>(size_, 64 * 1024));
             }
@@ -556,13 +574,6 @@ bool looksBinary(const char* data, size_t size) {
     return std::memchr(data, '\0', check) != nullptr;
 }
 
-size_t floorToCharacter(std::string_view text, size_t position) {
-    while (position > 0 && position < text.size() && (static_cast<unsigned char>(text[position]) & 0xC0) == 0x80) {
-        --position;
-    }
-    return position;
-}
-
 /// Builds the list entry for one matching line: trimmed, cut to a sensible length, with the
 /// match positions inside it.
 LineHit makeHit(const Matcher& matcher, size_t lineNumber, std::string_view line) {
@@ -574,7 +585,10 @@ LineHit makeHit(const Matcher& matcher, size_t lineNumber, std::string_view line
     }
     std::vector<std::pair<size_t, size_t>> matches;
     matcher.forEachInLine(line, [&matches](size_t start, size_t length) { matches.emplace_back(start, length); });
-    hit.column = matches.empty() ? 0 : matches.front().first;
+    hit.column = 0;
+    if (!matches.empty()) {
+        hit.column = matches.front().first;
+    }
 
     size_t begin = 0;
     while (begin < line.size() && (line[begin] == ' ' || line[begin] == '\t')) {
@@ -590,8 +604,14 @@ LineHit makeHit(const Matcher& matcher, size_t lineNumber, std::string_view line
     end = floorToCharacter(line, end);
     bool cutEnd = end < line.size();
 
-    std::string prefix = cutStart ? "…" : "";
-    hit.text = prefix + std::string(line.substr(begin, end - begin)) + (cutEnd ? "…" : "");
+    std::string prefix;
+    if (cutStart) {
+        prefix = "…";
+    }
+    hit.text = prefix + std::string(line.substr(begin, end - begin));
+    if (cutEnd) {
+        hit.text += "…";
+    }
     for (const auto& [start, length] : matches) {
         if (start < begin || start >= end) {
             continue;
@@ -642,7 +662,10 @@ SearchSummary searchFiles(const SearchOptions& options, const Matcher& matcher, 
                 break;
             }
             const std::string& relative = *files[index];
-            std::string full = options.root.empty() ? relative : options.root + "/" + relative;
+            std::string full = relative;
+            if (!options.root.empty()) {
+                full = options.root + "/" + relative;
+            }
             if (!bytes.open(full, options.maxFileBytes, scratch)) {
                 continue;
             }

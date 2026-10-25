@@ -542,7 +542,13 @@ bool readTableSeparator(std::string_view line, std::string& alignments) {
                 return false;
             }
         }
-        alignments += left && right ? 'c' : (right ? 'r' : 'l');
+        if (left && right) {
+            alignments += 'c';
+        } else if (right) {
+            alignments += 'r';
+        } else {
+            alignments += 'l';
+        }
     }
     return true;
 }

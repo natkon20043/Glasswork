@@ -71,11 +71,12 @@ private:
     void handleOutput(std::string_view bytes);
 
     // ---- Private variables
-    ChildProcess child_;
     LineSplitter splitter_;
     std::mutex errorMutex_;
     std::string errorText_;
     std::atomic<int> requestCounter_{0};
+    // Last, so its reader thread is joined before the members its callbacks use are destroyed.
+    ChildProcess child_;
 };
 
 /// One-off question with no tools or history. Blocking: call from a background queue.

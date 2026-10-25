@@ -174,16 +174,6 @@ bool spawnProgram(const std::vector<std::string>& argv, const ProcessOptions& op
     return true;
 }
 
-int exitCodeFromStatus(int status) {
-    if (WIFEXITED(status)) {
-        return WEXITSTATUS(status);
-    }
-    if (WIFSIGNALED(status)) {
-        return 128 + WTERMSIG(status);
-    }
-    return -1;
-}
-
 double secondsSince(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 }
@@ -198,6 +188,16 @@ void ignoreBrokenPipes() {
 }
 
 }  // namespace
+
+int exitCodeFromStatus(int status) {
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    if (WIFSIGNALED(status)) {
+        return 128 + WTERMSIG(status);
+    }
+    return -1;
+}
 
 // ---------------------------------------------------------------------------
 // Finding programs
@@ -229,7 +229,6 @@ std::string searchPathForChildren() {
     return path;
 }
 
-/// "v22.1.0" → 22001000, so versions sort as numbers. 0 if it isn't a version.
 long versionNumber(const std::string& text) {
     long parts[3] = {0, 0, 0};
     int index = 0;

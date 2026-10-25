@@ -18,11 +18,15 @@ struct Task {
     Kind kind = Kind::Other;
 };
 
+// ---- Detecting
+
 /// Reads CMake, Swift packages, Cargo, Go modules, npm scripts and Makefiles. Builds come first.
 std::vector<Task> detectTasks(const std::filesystem::path& folder);
 
 /// Runs one file alone (a script, or a single C/C++/Rust file compiled first). Empty for files that can't.
 std::string commandToRunFile(const std::filesystem::path& file, const std::string& languageId);
+
+// ---- Shell
 
 /// Single-quotes a string for a POSIX shell.
 std::string shellQuote(const std::string& text);

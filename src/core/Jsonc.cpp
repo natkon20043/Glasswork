@@ -11,7 +11,9 @@ std::string withoutTrailingCommas(const std::string& text) {
     out.reserve(text.size());
     size_t index = 0;
     auto skipComment = [&](size_t at) -> size_t {  // returns the index just past a comment at `at`
-        if (at + 1 >= text.size() || text[at] != '/') return at;
+        if (at + 1 >= text.size() || text[at] != '/') {
+            return at;
+        }
         if (text[at + 1] == '/') {
             size_t end = text.find('\n', at);
             return end == std::string::npos ? text.size() : end;
@@ -26,7 +28,9 @@ std::string withoutTrailingCommas(const std::string& text) {
         char character = text[index];
         if (character == '"') {  // copy a whole string, honouring escapes
             size_t end = index + 1;
-            while (end < text.size() && text[end] != '"') end += text[end] == '\\' ? 2 : 1;
+            while (end < text.size() && text[end] != '"') {
+                end += text[end] == '\\' ? 2 : 1;
+            }
             end = std::min(end + 1, text.size());
             out.append(text, index, end - index);
             index = end;

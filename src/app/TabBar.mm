@@ -191,7 +191,9 @@
 }
 
 - (NSRect)targetPill {
-    if (_selectedIndex < 0 || _selectedIndex >= static_cast<NSInteger>(_tabRects.count)) return NSZeroRect;
+    if (_selectedIndex < 0 || _selectedIndex >= static_cast<NSInteger>(_tabRects.count)) {
+        return NSZeroRect;
+    }
     return _tabRects[static_cast<NSUInteger>(_selectedIndex)].rectValue;
 }
 
@@ -208,7 +210,10 @@
     __weak GWTabBar *weakSelf = self;
     _pillTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60 repeats:YES block:^(NSTimer *timer) {
         GWTabBar *bar = weakSelf;
-        if (!bar) return;
+        if (!bar) {
+            [timer invalidate];  // the bar is gone
+            return;
+        }
         double progress = std::min(1.0, (NSDate.timeIntervalSinceReferenceDate - bar->_pillStart) / 0.22);
         double eased = 1 - std::pow(1 - progress, 3);  // ease-out cubic
         auto mix = [&](CGFloat a, CGFloat b) { return a + (b - a) * eased; };
@@ -294,7 +299,9 @@
 
 - (void)updateTrackingAreas {
     [super updateTrackingAreas];
-    if (_tracking) [self removeTrackingArea:_tracking];
+    if (_tracking) {
+        [self removeTrackingArea:_tracking];
+    }
     _tracking = [[NSTrackingArea alloc] initWithRect:NSZeroRect
                                              options:NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited |
                                                      NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
@@ -305,7 +312,9 @@
 
 - (NSInteger)tabAtPoint:(NSPoint)point {
     for (NSUInteger index = 0; index < _tabRects.count; ++index) {
-        if (NSPointInRect(point, _tabRects[index].rectValue)) return static_cast<NSInteger>(index);
+        if (NSPointInRect(point, _tabRects[index].rectValue)) {
+            return static_cast<NSInteger>(index);
+        }
     }
     return -1;
 }
@@ -347,7 +356,9 @@
     if (index >= 0) {
         NSRect rect = _tabRects[static_cast<NSUInteger>(index)].rectValue;
         if (NSPointInRect(point, NSInsetRect([self closeRectForTab:rect], -3, -3))) {
-            if (self.onClose) self.onClose(index);
+            if (self.onClose) {
+                self.onClose(index);
+            }
         } else if (self.onSelect) {
             self.onSelect(index);
         }

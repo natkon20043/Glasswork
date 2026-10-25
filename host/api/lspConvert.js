@@ -191,10 +191,18 @@ function fromCompletionItem(item, dataTag) {
     if (item.documentation !== undefined) {
         result.documentation = markupOf(item.documentation);
     }
-    if (item.sortText !== undefined) result.sortText = item.sortText;
-    if (item.filterText !== undefined) result.filterText = item.filterText;
-    if (item.preselect) result.preselect = true;
-    if (item.commitCharacters) result.commitCharacters = item.commitCharacters;
+    if (item.sortText !== undefined) {
+        result.sortText = item.sortText;
+    }
+    if (item.filterText !== undefined) {
+        result.filterText = item.filterText;
+    }
+    if (item.preselect) {
+        result.preselect = true;
+    }
+    if (item.commitCharacters) {
+        result.commitCharacters = item.commitCharacters;
+    }
 
     const insertText = item.insertText !== undefined ? item.insertText : undefined;
     let newText = typeof item.label === 'string' ? item.label : item.label.label;
@@ -268,11 +276,21 @@ function fromCodeAction(item, dataTag) {
         return { title: item.title, command: fromCommand(item), data: { __gwHost: dataTag } };
     }
     const result = { title: item.title };
-    if (item.kind) result.kind = item.kind.value;
-    if (item.diagnostics) result.diagnostics = item.diagnostics.map(fromDiagnostic);
-    if (item.edit) result.edit = fromWorkspaceEdit(item.edit);
-    if (item.command) result.command = fromCommand(item.command);
-    if (item.isPreferred) result.isPreferred = true;
+    if (item.kind) {
+        result.kind = item.kind.value;
+    }
+    if (item.diagnostics) {
+        result.diagnostics = item.diagnostics.map(fromDiagnostic);
+    }
+    if (item.edit) {
+        result.edit = fromWorkspaceEdit(item.edit);
+    }
+    if (item.command) {
+        result.command = fromCommand(item.command);
+    }
+    if (item.isPreferred) {
+        result.isPreferred = true;
+    }
     if (item.disabled) result.disabled = { reason: item.disabled.reason };
     result.data = { __gwHost: dataTag };
     return result;
@@ -280,7 +298,9 @@ function fromCodeAction(item, dataTag) {
 
 function fromCodeLens(lens, dataTag) {
     const result = { range: fromRange(lens.range) };
-    if (lens.command) result.command = fromCommand(lens.command);
+    if (lens.command) {
+        result.command = fromCommand(lens.command);
+    }
     result.data = { __gwHost: dataTag };
     return result;
 }

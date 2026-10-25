@@ -53,9 +53,13 @@ private:
     char current() const { return source_[position_]; }
 
     int readNumber() {
+        // Tab stop numbers are small; a longer run of digits is read whole but kept in range.
+        const int largest = 100000;
         int number = 0;
         while (!atEnd() && isDigit(current())) {
-            number = number * 10 + (current() - '0');
+            if (number < largest) {
+                number = number * 10 + (current() - '0');
+            }
             ++position_;
         }
         return number;
@@ -204,7 +208,9 @@ private:
             bool readingFirst = true;
             while (!atEnd() && !(current() == '|' && position_ + 1 < source_.size() && source_[position_ + 1] == '}')) {
                 if (current() == '\\' && position_ + 1 < source_.size()) {
-                    if (readingFirst) firstChoice += source_[position_ + 1];
+                    if (readingFirst) {
+                        firstChoice += source_[position_ + 1];
+                    }
                     position_ += 2;
                     continue;
                 }
@@ -232,7 +238,10 @@ private:
             return nullptr;
         }
         auto found = variables_->find(name);
-        return found == variables_->end() ? nullptr : &found->second;
+        if (found == variables_->end()) {
+            return nullptr;
+        }
+        return &found->second;
     }
 
     std::string_view source_;

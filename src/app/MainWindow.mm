@@ -1,4 +1,5 @@
 #import "MainWindow.h"
+#import "Strings.h"
 
 #import "ChangePopover.h"
 #import "ChatPanel.h"
@@ -148,7 +149,9 @@ bool looksBinary(const char *path) {
     file.read(buffer, sizeof buffer);
     std::streamsize count = file.gcount();
     for (std::streamsize index = 0; index < count; ++index) {
-        if (buffer[index] == '\0') return true;
+        if (buffer[index] == '\0') {
+            return true;
+        }
     }
     return false;
 }
@@ -246,7 +249,9 @@ bool looksBinary(const char *path) {
     };
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
-    for (NSUInteger index = 0; index < _blobs.count; ++index) _blobs[index].frame = frames[index];
+    for (NSUInteger index = 0; index < _blobs.count; ++index) {
+        _blobs[index].frame = frames[index];
+    }
     [CATransaction commit];
 }
 
@@ -751,12 +756,18 @@ bool looksBinary(const char *path) {
     [_card addSubview:_editorView.stickyView];
     _editorView.onStickyChange = ^{
         GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
         strongSelf->_card.needsLayout = YES;
     };
     _findBar = [[GWFindBar alloc] initWithFrame:NSMakeRect(0, 0, 400, 44)];
     _findBar.editor = _editorView;
     _findBar.onResize = ^{
         GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
         strongSelf->_card.needsLayout = YES;
     };
     _card.findBar = _findBar;
@@ -943,11 +954,17 @@ bool looksBinary(const char *path) {
     chatHandle.horizontal = YES;
     chatHandle.onDrag = ^(CGFloat delta) {
         GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
         strongSelf->_root.chatWidth = MAX(300, MIN(strongSelf->_root.chatWidth - delta, 900));
         strongSelf->_root.needsLayout = YES;
     };
     chatHandle.onFinish = ^{
         GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
         [NSUserDefaults.standardUserDefaults setDouble:strongSelf->_root.chatWidth forKey:@"chatWidth"];
     };
     _root.chatHandle = chatHandle;
@@ -957,11 +974,17 @@ bool looksBinary(const char *path) {
     bottomHandle.horizontal = NO;
     bottomHandle.onDrag = ^(CGFloat delta) {
         GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
         strongSelf->_root.bottomHeight = MAX(120, MIN(strongSelf->_root.bottomHeight - delta, 700));
         strongSelf->_root.needsLayout = YES;
     };
     bottomHandle.onFinish = ^{
         GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
         [NSUserDefaults.standardUserDefaults setDouble:strongSelf->_root.bottomHeight forKey:@"bottomHeight"];
     };
     _root.bottomHandle = bottomHandle;
@@ -1032,11 +1055,15 @@ bool looksBinary(const char *path) {
 }
 
 - (void)reloadRecents {
-    for (NSView *view in _recentList.arrangedSubviews) [view removeFromSuperview];
+    for (NSView *view in _recentList.arrangedSubviews) {
+        [view removeFromSuperview];
+    }
     NSArray<NSURL *> *urls = NSDocumentController.sharedDocumentController.recentDocumentURLs;
     NSUInteger shown = 0;
     for (NSURL *url in urls) {
-        if (shown == 5) break;
+        if (shown == 5) {
+            break;
+        }
         NSNumber *directory = nil;
         [url getResourceValue:&directory forKey:NSURLIsDirectoryKey error:nil];
         NSString *symbol = directory.boolValue ? @"folder.fill" : GWSymbolForFile(url.lastPathComponent);
@@ -1066,7 +1093,9 @@ bool looksBinary(const char *path) {
         [_recentList addArrangedSubview:button];
         ++shown;
     }
-    if (shown == 0) [_recentList addArrangedSubview:[self label:@"Folders you open will appear here." size:12 weight:NSFontWeightRegular secondary:YES]];
+    if (shown == 0) {
+        [_recentList addArrangedSubview:[self label:@"Folders you open will appear here." size:12 weight:NSFontWeightRegular secondary:YES]];
+    }
     _root.needsLayout = YES;
 }
 
@@ -1139,8 +1168,12 @@ bool looksBinary(const char *path) {
     [_extensionHost startIfExtensionsWantToRun];
     [_keybindings reload];  // they may have brought, or taken, keybindings
     // Grammars were reloaded, so every tab must pick up fresh grammar pointers now.
-    for (auto &tab : _tabs) [self configureLanguageForTab:*tab];
-    if (_selected >= 0) [self showTab:_selected];
+    for (auto &tab : _tabs) {
+        [self configureLanguageForTab:*tab];
+    }
+    if (_selected >= 0) {
+        [self showTab:_selected];
+    }
     [self updateStatus];
 }
 
@@ -1153,7 +1186,9 @@ bool looksBinary(const char *path) {
     if (!tab.forcedLanguage.empty()) {
         language = tab.forcedLanguage;
     } else if (tab.document->path()) {
-        if (auto detected = extensions.languageForFile(*tab.document->path())) language = *detected;
+        if (auto detected = extensions.languageForFile(*tab.document->path())) {
+            language = *detected;
+        }
     }
     tab.document->languageId = language;
     tab.highlighter->setGrammar(services.grammars.forLanguage(language));
@@ -1176,7 +1211,7 @@ bool looksBinary(const char *path) {
     tab->identifier = ++_nextTabIdentifier;
     tab->document = std::move(document);
     if (tab->document->path()) {
-        NSString *resolved = [@(tab->document->path()->c_str()) stringByResolvingSymlinksInPath];
+        NSString *resolved = [StringFromUTF8(*tab->document->path()) stringByResolvingSymlinksInPath];
         tab->realPath = resolved.UTF8String;
     }
     if (configure) {
@@ -1194,7 +1229,9 @@ bool looksBinary(const char *path) {
         // Extension decorations move with the lines they are on, until the extension sends fresh ones.
         if (change.lineDelta != 0 && !tabPointer->decorations.empty()) {
             auto shiftLine = [&](size_t line) {
-                if (line <= change.firstLine) return line;
+                if (line <= change.firstLine) {
+                    return line;
+                }
                 long moved = static_cast<long>(line) + change.lineDelta;
                 return static_cast<size_t>(std::max(moved, static_cast<long>(change.firstLine)));
             };
@@ -1226,7 +1263,9 @@ bool looksBinary(const char *path) {
 }
 
 - (void)showTab:(NSInteger)index {
-    if (Tab *current = [self currentTab]) current->scroll = _card.scrollView.contentView.bounds.origin;
+    if (Tab *current = [self currentTab]) {
+        current->scroll = _card.scrollView.contentView.bounds.origin;
+    }
     _selected = index;
     [self scheduleEditorStateForExtensions];
     Tab *tab = [self currentTab];
@@ -1269,14 +1308,20 @@ bool looksBinary(const char *path) {
 }
 
 - (void)selectTab:(NSInteger)index {
-    if (index == _selected || index < 0 || index >= static_cast<NSInteger>(_tabs.size())) return;
+    if (index == _selected || index < 0 || index >= static_cast<NSInteger>(_tabs.size())) {
+        return;
+    }
     [self showTab:index];
 }
 
 - (void)closeTabAtIndex:(NSInteger)index {
-    if (index < 0 || index >= static_cast<NSInteger>(_tabs.size())) return;
+    if (index < 0 || index >= static_cast<NSInteger>(_tabs.size())) {
+        return;
+    }
     Tab &tab = *_tabs[static_cast<size_t>(index)];
-    if (tab.document->isDirty() && ![self confirmCloseDocument:*tab.document]) return;
+    if (tab.document->isDirty() && ![self confirmCloseDocument:*tab.document]) {
+        return;
+    }
     [self removeTabAtIndex:index];
 }
 
@@ -1293,7 +1338,7 @@ bool looksBinary(const char *path) {
     if (index == _selected) [_editorView setDocument:nullptr highlighter:nullptr configuration:{}];
     [_language untrackDocument:tab.document.get()];
     if (tab.kind == Tab::Kind::Webview) {
-        NSString *handle = @(tab.webviewHandle.c_str());
+        NSString *handle = StringFromUTF8(tab.webviewHandle);
         [_webviewTabViews removeObjectForKey:handle];
         [_extensionViews panelTabClosed:handle];
     }
@@ -1317,7 +1362,7 @@ bool looksBinary(const char *path) {
     NSMutableArray<GWTabItem *> *items = [NSMutableArray array];
     for (const auto &tab : _tabs) {
         GWTabItem *item = [GWTabItem new];
-        item.title = @(tab->document->displayName().c_str());
+        item.title = StringFromUTF8(tab->document->displayName());
         item.dirty = tab->document->isDirty();
         [items addObject:item];
     }
@@ -1327,9 +1372,13 @@ bool looksBinary(const char *path) {
     _root.editorCard.hidden = tab == nullptr;
     _root.editorContent.hidden = tab == nullptr;
     _root.welcome.hidden = tab != nullptr;
-    if (!tab) [self reloadRecents];
+    if (!tab) {
+        [self reloadRecents];
+    }
     self.window.documentEdited = tab && tab->document->isDirty();
-    if (tab && tab->document->path()) self.window.representedURL = [NSURL fileURLWithPath:@(tab->document->path()->c_str())];
+    if (tab && tab->document->path()) {
+        self.window.representedURL = [NSURL fileURLWithPath:StringFromUTF8(*tab->document->path())];
+    }
     [self updateBreadcrumb];
     [self updateStatus];
 }
@@ -1414,7 +1463,7 @@ static bool isImageExtension(NSString *extension) {
 - (void)showPreviewContentForTab:(Tab &)tab {
     NSScrollView *scroll = _card.previewScroll;
     if (tab.kind == Tab::Kind::Webview) {
-        WKWebView *webView = _webviewTabViews[@(tab.webviewHandle.c_str())];
+        WKWebView *webView = _webviewTabViews[StringFromUTF8(tab.webviewHandle)];
         for (NSView *old in [_card.webviewHolder.subviews copy]) {
             [old removeFromSuperview];
         }
@@ -1427,7 +1476,7 @@ static bool isImageExtension(NSString *extension) {
         return;
     }
     if (tab.kind == Tab::Kind::Image) {
-        NSImage *image = [[NSImage alloc] initWithContentsOfFile:@(tab.imagePath.c_str())];
+        NSImage *image = [[NSImage alloc] initWithContentsOfFile:StringFromUTF8(tab.imagePath)];
         if (_previewImage == nil) {
             _previewImage = [NSImageView new];
             _previewImage.imageScaling = NSImageScaleProportionallyDown;
@@ -1446,7 +1495,7 @@ static bool isImageExtension(NSString *extension) {
 - (void)refreshMarkdownPreviewForTab:(Tab &)preview keepScroll:(BOOL)keepScroll {
     Tab *source = [self tabWithIdentifier:preview.sourceIdentifier];
     NSScrollView *scroll = _card.previewScroll;
-    NSString *markdown = source ? @(source->document->buffer().text().c_str()) : @"The file this preview followed was closed.";
+    NSString *markdown = source ? StringFromUTF8(source->document->buffer().text()) : @"The file this preview followed was closed.";
     if (_previewMarkdown == nil) {
         _previewMarkdown = [GWMarkdownView new];
         _previewMarkdown.fontSize = 15;
@@ -1622,15 +1671,17 @@ static bool isImageExtension(NSString *extension) {
 /// "Glasswork › src › core › Highlighter.cpp", relative to the open folder.
 - (void)updateBreadcrumb {
     Tab *tab = [self currentTab];
-    if (!tab) return;
+    if (!tab) {
+        return;
+    }
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
-    NSURL *remote = tab->remoteURL.empty() ? nil : [NSURL URLWithString:@(tab->remoteURL.c_str())];
+    NSURL *remote = tab->remoteURL.empty() ? nil : [NSURL URLWithString:StringFromUTF8(tab->remoteURL)];
     if (remote != nil) {
         [parts addObject:GWRemoteDestination(remote)];
         [parts addObjectsFromArray:[remote.path pathComponents]];
         [parts removeObject:@"/"];
     } else if (tab->document->path()) {
-        NSString *path = @(tab->document->path()->c_str());
+        NSString *path = StringFromUTF8(*tab->document->path());
         NSString *root = _fileTree.rootURL.path;
         if (root && [path hasPrefix:[root stringByAppendingString:@"/"]]) {
             [parts addObject:root.lastPathComponent];
@@ -1647,7 +1698,7 @@ static bool isImageExtension(NSString *extension) {
             }
         }
     } else if (tab->isVirtual) {
-        [parts addObject:@(tab->document->displayName().c_str())];
+        [parts addObject:StringFromUTF8(tab->document->displayName())];
     } else {
         [parts addObject:@"Untitled"];
     }
@@ -1674,7 +1725,7 @@ static bool isImageExtension(NSString *extension) {
     std::vector<gw::Section> sections = [_editorView sections];
     long current = gw::sectionContaining(sections, tab->document->selection.caret.line);
     if (current >= 0 && !sections[static_cast<size_t>(current)].title.empty()) {
-        NSString *title = @(sections[static_cast<size_t>(current)].title.c_str());
+        NSString *title = StringFromUTF8(sections[static_cast<size_t>(current)].title);
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"  " attributes:folder]];
         [text appendAttributedString:GWSymbolString(@"chevron.right", [NSColor.labelColor colorWithAlphaComponent:0.4], 8)];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"  " attributes:folder]];
@@ -1827,7 +1878,7 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
         if (section.divider && menu.numberOfItems > 0) {
             [menu addItem:NSMenuItem.separatorItem];
         }
-        NSString *title = section.title.empty() ? @"(untitled section)" : @(section.title.c_str());
+        NSString *title = section.title.empty() ? @"(untitled section)" : StringFromUTF8(section.title);
         NSImage *image = [self symbol:@"number" color:NSColor.controlAccentColor];
         if (section.kind == gw::Section::Kind::Todo) {
             title = [@"TODO: " stringByAppendingString:title];
@@ -1869,7 +1920,7 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
                 continue;
             }
             GWPaletteItem *item = [GWPaletteItem new];
-            item.title = @(title.c_str());
+            item.title = StringFromUTF8(title);
             item.subtitle = [NSString stringWithFormat:@"line %zu", section.line + 1];
             item.symbol = @"number";
             item.symbolColor = NSColor.controlAccentColor;
@@ -2022,8 +2073,8 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
         // Positions (for the bold highlight) only for the rows actually shown.
         std::optional<gw::FuzzyMatch> match = gw::fuzzyMatch(wanted, path, nameStart);
         std::vector<uint32_t> positions = match ? match->positions : std::vector<uint32_t>{};
-        NSString *name = @(path.substr(nameStart).c_str());
-        NSString *folder = nameStart > 0 ? @(path.substr(0, nameStart - 1).c_str()) : @"";
+        NSString *name = StringFromUTF8(path.substr(nameStart));
+        NSString *folder = nameStart > 0 ? StringFromUTF8(path.substr(0, nameStart - 1)) : @"";
 
         GWPaletteItem *item = [GWPaletteItem new];
         item.title = name;
@@ -2037,7 +2088,7 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
             }
         }
         item.matchedIndexes = indexes;
-        NSURL *url = [root URLByAppendingPathComponent:@(path.c_str())];
+        NSURL *url = [root URLByAppendingPathComponent:StringFromUTF8(path)];
         __weak GWMainWindowController *weakSelf = self;
         item.run = ^{
             [weakSelf rememberLocationBeforeJump];
@@ -2055,10 +2106,18 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
     }
     NSMutableString *text = [NSMutableString string];
     NSEventModifierFlags flags = item.keyEquivalentModifierMask;
-    if (flags & NSEventModifierFlagControl) [text appendString:@"⌃"];
-    if (flags & NSEventModifierFlagOption) [text appendString:@"⌥"];
-    if (flags & NSEventModifierFlagShift) [text appendString:@"⇧"];
-    if (flags & NSEventModifierFlagCommand) [text appendString:@"⌘"];
+    if (flags & NSEventModifierFlagControl) {
+        [text appendString:@"⌃"];
+    }
+    if (flags & NSEventModifierFlagOption) {
+        [text appendString:@"⌥"];
+    }
+    if (flags & NSEventModifierFlagShift) {
+        [text appendString:@"⇧"];
+    }
+    if (flags & NSEventModifierFlagCommand) {
+        [text appendString:@"⌘"];
+    }
     [text appendString:item.keyEquivalent.uppercaseString];
     return text;
 }
@@ -2169,14 +2228,16 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
     auto join = ^NSAttributedString *(NSArray<NSAttributedString *> *pieces) {
         NSMutableAttributedString *joined = [NSMutableAttributedString new];
         for (NSUInteger index = 0; index < pieces.count; ++index) {
-            if (index > 0) [joined appendAttributedString:[[NSAttributedString alloc] initWithString:@"     " attributes:attributes]];
+            if (index > 0) {
+                [joined appendAttributedString:[[NSAttributedString alloc] initWithString:@"     " attributes:attributes]];
+            }
             [joined appendAttributedString:pieces[index]];
         }
         return joined;
     };
     NSColor *muted = GWStatusTextColor();
     _themeChip.attributedTitle = segment(@"paintpalette.fill", muted, services.themeLabel);
-    NSString *fontName = services.settings.fontFamily.empty() ? @"SF Mono" : @(services.settings.fontFamily.c_str());
+    NSString *fontName = services.settings.fontFamily.empty() ? @"SF Mono" : StringFromUTF8(services.settings.fontFamily);
     NSString *fontLabel = [NSString stringWithFormat:@"%@ %g", fontName, services.settings.fontSize];
     _fontChip.attributedTitle = segment(@"textformat", muted, fontLabel);
 
@@ -2204,10 +2265,12 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
     if (_editorView.cursorCount > 1) {
         [left addObject:segment(@"cursorarrow.rays", muted, [NSString stringWithFormat:@"%lu cursors", (unsigned long)_editorView.cursorCount])];
     } else if (!document.selection.empty()) {
-        NSString *selected = @(document.buffer().text(document.selection.range()).c_str());
+        NSString *selected = StringFromUTF8(document.buffer().text(document.selection.range()));
         [left addObject:segment(@"selection.pin.in.out", muted, [NSString stringWithFormat:@"%lu selected", (unsigned long)selected.length])];
     }
-    if (services.installingDefaults) [left addObject:segment(@"arrow.down.circle.fill", muted, @"Installing language support…")];
+    if (services.installingDefaults) {
+        [left addObject:segment(@"arrow.down.circle.fill", muted, @"Installing language support…")];
+    }
     NSUInteger errorCount = [_language errorCount];
     NSUInteger warningCount = [_language warningCount];
     if (errorCount > 0) {
@@ -2216,7 +2279,7 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
     if (warningCount > 0) {
         [left addObject:segment(@"exclamationmark.triangle.fill", NSColor.systemOrangeColor, [NSString stringWithFormat:@"%lu", (unsigned long)warningCount])];
     }
-    NSString *serverStatus = [_language statusTextForLanguage:@(document.languageId.c_str())];
+    NSString *serverStatus = [_language statusTextForLanguage:StringFromUTF8(document.languageId)];
     if (serverStatus.length > 0) {
         [left addObject:segment(@"bolt.horizontal.circle", muted, serverStatus)];
     }
@@ -2233,8 +2296,8 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
     }
     _statusLeft.attributedStringValue = join(left);
 
-    NSString *name = document.path() ? @(document.path()->filename().c_str()) : @"untitled";
-    NSString *language = @(services.extensions.languageName(document.languageId).c_str());
+    NSString *name = document.path() ? StringFromUTF8(document.path()->filename()) : @"untitled";
+    NSString *language = StringFromUTF8(services.extensions.languageName(document.languageId));
     NSMutableArray<NSAttributedString *> *extensionItems = [NSMutableArray array];
     for (GWExtensionStatusItem *item in _extensionHost.statusItems) {
         if (item.alignment == 2 && item.text.length > 0) {
@@ -2291,13 +2354,13 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
     context[@"inputFocus"] = inTextInput ? @"true" : @"false";
     context[@"textInputFocus"] = (inEditor || inTextInput) ? @"true" : @"false";
     if (Tab *tab = [self currentTab]) {
-        context[@"editorLangId"] = @(tab->document->languageId.c_str());
+        context[@"editorLangId"] = StringFromUTF8(tab->document->languageId);
         context[@"editorReadonly"] = tab->document->readOnly ? @"true" : @"false";
         context[@"editorHasSelection"] = tab->document->selection.empty() ? @"false" : @"true";
         context[@"editorHasMultipleSelections"] = tab->document->extraSelections.empty() ? @"false" : @"true";
         if (tab->document->path()) {
-            context[@"resourceExtname"] = @(tab->document->path()->extension().c_str());
-            context[@"resourceFilename"] = @(tab->document->path()->filename().c_str());
+            context[@"resourceExtname"] = StringFromUTF8(tab->document->path()->extension());
+            context[@"resourceFilename"] = StringFromUTF8(tab->document->path()->filename());
         }
     }
     // Context keys that extensions set with the `setContext` command.
@@ -2314,7 +2377,10 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
         [NSApp sendAction:NSSelectorFromString(actionName) to:nil from:self];
         return;
     }
-    NSArray *argumentList = arguments == nil ? nil : (arguments == NSNull.null ? nil : @[arguments]);
+    NSArray *argumentList = nil;
+    if (arguments != nil && arguments != NSNull.null) {
+        argumentList = @[arguments];
+    }
     [_extensionHost executeCommand:command arguments:argumentList];
 }
 
@@ -2415,8 +2481,8 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
         return gw::parseCssColor(value.get<std::string>());
     }
     if (value.is_object() && value.contains("id") && value["id"].is_string()) {
-        NSString *key = @(value["id"].get<std::string>().c_str());
-        if (key != nil && GWServices.shared.theme.hasColor(key.UTF8String)) {  // (nil: the name was not valid text)
+        NSString *key = StringFromUTF8(value["id"].get<std::string>());
+        if (GWServices.shared.theme.hasColor(key.UTF8String)) {
             return GWColorFromNSColor([GWServices.shared color:key]);
         }
     }
@@ -2428,18 +2494,26 @@ static gw::lsp::Json MergedDecorationOptions(const gw::lsp::Json &base, const gw
     using Json = gw::lsp::Json;
     Json merged = base.is_object() ? base : Json::object();
     auto layer = [&](const Json &top) {
-        if (!top.is_object()) return;
+        if (!top.is_object()) {
+            return;
+        }
         for (const auto &[key, value] : top.items()) {
-            if (key == "light" || key == "dark") continue;
+            if (key == "light" || key == "dark") {
+                continue;
+            }
             if (key == "after" && value.is_object() && merged.contains("after") && merged["after"].is_object()) {
-                for (const auto &[innerKey, innerValue] : value.items()) merged["after"][innerKey] = innerValue;
+                for (const auto &[innerKey, innerValue] : value.items()) {
+                    merged["after"][innerKey] = innerValue;
+                }
             } else {
                 merged[key] = value;
             }
         }
         const char *variant = dark ? "dark" : "light";
         if (top.contains(variant) && top[variant].is_object()) {
-            for (const auto &[key, value] : top[variant].items()) merged[key] = value;
+            for (const auto &[key, value] : top[variant].items()) {
+                merged[key] = value;
+            }
         }
     };
     layer(base);
@@ -2460,7 +2534,9 @@ static gw::lsp::Json MergedDecorationOptions(const gw::lsp::Json &base, const gw
     bool dark = GWServices.shared.theme.isDark();
     const gw::TextBuffer &buffer = tab->document->buffer();
     for (const Json &item : ranges) {
-        if (!item.is_object() || !item.contains("range")) continue;
+        if (!item.is_object() || !item.contains("range")) {
+            continue;
+        }
         Json look = MergedDecorationOptions(options, item.value("renderOptions", Json::object()), dark);
         GWDecoration decoration;
         try {
@@ -2468,12 +2544,18 @@ static gw::lsp::Json MergedDecorationOptions(const gw::lsp::Json &base, const gw
         } catch (const std::exception &) {
             continue;
         }
-        if (look.contains("backgroundColor")) decoration.background = [self decorationColorFrom:look["backgroundColor"]];
-        if (look.contains("color")) decoration.foreground = [self decorationColorFrom:look["color"]];
+        if (look.contains("backgroundColor")) {
+            decoration.background = [self decorationColorFrom:look["backgroundColor"]];
+        }
+        if (look.contains("color")) {
+            decoration.foreground = [self decorationColorFrom:look["color"]];
+        }
         decoration.wholeLine = look.value("isWholeLine", false);
         // A border or outline: its color is in "borderColor"/"outlineColor", or the last color in "1px solid red".
         for (const char *name : {"borderColor", "outlineColor"}) {
-            if (look.contains(name)) decoration.border = [self decorationColorFrom:look[name]];
+            if (look.contains(name)) {
+                decoration.border = [self decorationColorFrom:look[name]];
+            }
         }
         for (const char *name : {"border", "outline"}) {
             if (!decoration.border && look.contains(name) && look[name].is_string()) {
@@ -2491,7 +2573,9 @@ static gw::lsp::Json MergedDecorationOptions(const gw::lsp::Json &base, const gw
         if (look.contains("after") && look["after"].is_object()) {
             const Json &after = look["after"];
             decoration.afterText = after.value("contentText", "");
-            if (after.contains("color")) decoration.afterColor = [self decorationColorFrom:after["color"]];
+            if (after.contains("color")) {
+                decoration.afterColor = [self decorationColorFrom:after["color"]];
+            }
         }
         parsed.push_back(std::move(decoration));
     }
@@ -2545,7 +2629,13 @@ static gw::lsp::Json MergedDecorationOptions(const gw::lsp::Json &base, const gw
 
 /// `window/showMessage`: a line in the status bar, and in the server's log so it can be read again.
 - (void)serverSaid:(NSString *)message type:(int)type server:(NSString *)serverName {
-    NSString *prefix = type == 1 ? @"⛔ " : (type == 2 ? @"⚠️ " : @"");
+    // LSP message types: 1 error, 2 warning, 3 info, 4 log.
+    NSString *prefix = @"";
+    if (type == 1) {
+        prefix = @"⛔ ";
+    } else if (type == 2) {
+        prefix = @"⚠️ ";
+    }
     [_extensionHost appendLog:[NSString stringWithFormat:@"[%d] %@\n", type, message] toChannel:serverName];
     if (type <= 3) {
         [self hostShowStatusMessage:[NSString stringWithFormat:@"%@%@: %@", prefix, serverName, message] seconds:10];
@@ -2567,8 +2657,12 @@ static gw::lsp::Json MergedDecorationOptions(const gw::lsp::Json &base, const gw
         // A report carries only what changed: keep the title from "begin".
         NSString *heading = title.length > 0 ? title : [previous componentsSeparatedByString:@"  "].firstObject;
         NSMutableString *line = [NSMutableString stringWithFormat:@"%@: %@", serverName, heading ?: @"Working"];
-        if (message.length > 0) [line appendFormat:@" %@", message];
-        if (percentage >= 0) [line appendFormat:@" %d%%", percentage];
+        if (message.length > 0) {
+            [line appendFormat:@" %@", message];
+        }
+        if (percentage >= 0) {
+            [line appendFormat:@" %d%%", percentage];
+        }
         _serverProgress[key] = [line copy];
     }
     [self updateStatus];
@@ -2649,8 +2743,22 @@ static gw::lsp::Json MergedDecorationOptions(const gw::lsp::Json &base, const gw
 - (BOOL)hostRunBuiltinCommand:(NSString *)identifier arguments:(NSArray *)arguments {
     if ([identifier isEqualToString:@"vscode.open"] && arguments.count > 0) {
         id target = arguments[0];
-        NSString *text = [target isKindOfClass:NSString.class] ? target : (target[@"external"] ?: target[@"path"]);
-        NSURL *url = [text hasPrefix:@"/"] ? [NSURL fileURLWithPath:text] : [NSURL URLWithString:text];
+        // A string, or a URI object (its "external" form, else its path).
+        NSString *text = nil;
+        if ([target isKindOfClass:NSString.class]) {
+            text = target;
+        } else if ([target isKindOfClass:NSDictionary.class]) {
+            text = target[@"external"] ?: target[@"path"];
+        }
+        if (![text isKindOfClass:NSString.class]) {
+            return NO;
+        }
+        NSURL *url = nil;
+        if ([text hasPrefix:@"/"]) {
+            url = [NSURL fileURLWithPath:text];
+        } else {
+            url = [NSURL URLWithString:text];
+        }
         if (url.isFileURL) {
             [self openURL:url];
         } else if (url != nil) {
@@ -2699,8 +2807,12 @@ static gw::lsp::Json MergedDecorationOptions(const gw::lsp::Json &base, const gw
 
 /// "1234567" → "1.2M": download counts for the extension browser.
 static NSString *CompactCount(long count) {
-    if (count >= 1000000) return [NSString stringWithFormat:@"%.1fM", count / 1000000.0];
-    if (count >= 1000) return [NSString stringWithFormat:@"%.1fK", count / 1000.0];
+    if (count >= 1000000) {
+        return [NSString stringWithFormat:@"%.1fM", count / 1000000.0];
+    }
+    if (count >= 1000) {
+        return [NSString stringWithFormat:@"%.1fK", count / 1000.0];
+    }
     return [NSString stringWithFormat:@"%ld", count];
 }
 
@@ -2736,24 +2848,36 @@ static NSString *CompactCount(long count) {
                     for (const auto &entry : found) {
                         BOOL installed = GWServices.shared.extensions.isInstalled(entry.id);
                         GWPaletteItem *item = [GWPaletteItem new];
-                        item.title = entry.displayName.empty() ? @(entry.id.c_str()) : @(entry.displayName.c_str());
+                        item.title = entry.displayName.empty() ? StringFromUTF8(entry.id) : StringFromUTF8(entry.displayName);
                         NSMutableArray<NSString *> *facts = [NSMutableArray array];
-                        [facts addObject:@(entry.id.c_str())];
+                        [facts addObject:StringFromUTF8(entry.id)];
                         [facts addObject:[@"↓ " stringByAppendingString:CompactCount(entry.downloads)]];
-                        if (entry.rating > 0) [facts addObject:[NSString stringWithFormat:@"★ %.1f", entry.rating]];
-                        if (installed) [facts addObject:@"Installed"];
-                        if (!entry.description.empty()) [facts addObject:@(entry.description.c_str())];
+                        if (entry.rating > 0) {
+                            [facts addObject:[NSString stringWithFormat:@"★ %.1f", entry.rating]];
+                        }
+                        if (installed) {
+                            [facts addObject:@"Installed"];
+                        }
+                        if (!entry.description.empty()) {
+                            [facts addObject:StringFromUTF8(entry.description)];
+                        }
                         item.subtitle = [facts componentsJoinedByString:@"  ·  "];
                         item.symbol = installed ? @"checkmark.circle.fill" : @"arrow.down.circle";
                         item.symbolColor = installed ? NSColor.systemGreenColor : NSColor.controlAccentColor;
-                        NSString *identifier = @(entry.id.c_str());
+                        NSString *identifier = StringFromUTF8(entry.id);
                         item.run = ^{
                             [weakSelf installFromSearch:identifier];
                         };
                         [items addObject:item];
                     }
                     state->results = items;
-                    state->message = !error.empty() ? @(error.c_str()) : (items.count == 0 ? @"Nothing matches." : @"");
+                    if (!error.empty()) {
+                        state->message = StringFromUTF8(error);
+                    } else if (items.count == 0) {
+                        state->message = @"Nothing matches.";
+                    } else {
+                        state->message = @"";
+                    }
                     [GWPalette.shared refresh];
                 });
             });
@@ -2807,6 +2931,9 @@ static NSString *CompactCount(long count) {
         item.symbolColor = NSColor.systemPurpleColor;
         item.run = ^{
             GWMainWindowController *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
             NSURL *url = [strongSelf->_extensionHost logURLForChannel:channel];
             if (url != nil) {
                 [strongSelf openURL:url];
@@ -2830,10 +2957,10 @@ static NSString *CompactCount(long count) {
     };
     std::vector<Entry> entries;
     for (const gw::Extension &extension : services.extensions.extensions()) {
-        entries.push_back({@(extension.id.c_str()), @(extension.displayName.c_str()), @(extension.version.c_str()), NO, extension.hasCode});
+        entries.push_back({StringFromUTF8(extension.id), StringFromUTF8(extension.displayName), StringFromUTF8(extension.version), NO, extension.hasCode});
     }
     for (const gw::Extension &extension : services.extensions.disabledExtensions()) {
-        entries.push_back({@(extension.id.c_str()), @(extension.displayName.c_str()), @(extension.version.c_str()), YES, extension.hasCode});
+        entries.push_back({StringFromUTF8(extension.id), StringFromUTF8(extension.displayName), StringFromUTF8(extension.version), YES, extension.hasCode});
     }
     std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
         return [a.name caseInsensitiveCompare:b.name] == NSOrderedAscending;
@@ -2848,7 +2975,13 @@ static NSString *CompactCount(long count) {
         GWPaletteItem *item = [GWPaletteItem new];
         item.title = entry.name;
         NSMutableArray<NSString *> *facts = [NSMutableArray arrayWithObjects:entry.identifier, [@"v" stringByAppendingString:entry.version], nil];
-        [facts addObject:entry.disabled ? @"Disabled" : (entry.hasCode ? @"Enabled · runs code" : @"Enabled")];
+        if (entry.disabled) {
+            [facts addObject:@"Disabled"];
+        } else if (entry.hasCode) {
+            [facts addObject:@"Enabled · runs code"];
+        } else {
+            [facts addObject:@"Enabled"];
+        }
         item.subtitle = [facts componentsJoinedByString:@"  ·  "];
         item.symbol = entry.disabled ? @"slash.circle" : @"puzzlepiece.extension";
         item.symbolColor = entry.disabled ? NSColor.tertiaryLabelColor : NSColor.systemPurpleColor;
@@ -2944,7 +3077,7 @@ static NSString *CompactCount(long count) {
     smaller.target = NSApp.delegate;
     [menu addItem:NSMenuItem.separatorItem];
 
-    NSString *current = @(services.settings.fontFamily.c_str());
+    NSString *current = StringFromUTF8(services.settings.fontFamily);
     NSMenuItem *defaultItem = [menu addItemWithTitle:@"SF Mono (default)" action:@selector(fontFamilyChosen:) keyEquivalent:@""];
     defaultItem.target = self;
     defaultItem.representedObject = @"";
@@ -3040,6 +3173,9 @@ static NSString *CompactCount(long count) {
     };
     _terminal.onHide = ^{
         GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
         if (strongSelf->_root.bottomVisible) {
             [strongSelf toggleTerminal:nil];
         }
@@ -3102,9 +3238,9 @@ static NSString *CompactCount(long count) {
     [self buildTerminalPanel];
     [self setTerminalVisible:YES];
     NSString *folder = _fileTree.rootURL.path;
-    NSString *full = @(command.c_str());
+    NSString *full = StringFromUTF8(command);
     if (folder.length > 0) {
-        full = [NSString stringWithFormat:@"cd %@ && %s", [self shellQuoted:folder], command.c_str()];
+        full = [NSString stringWithFormat:@"cd %@ && %@", [self shellQuoted:folder], StringFromUTF8(command)];
     }
     [_terminal runTaskCommand:full];
 }
@@ -3126,8 +3262,8 @@ static NSString *CompactCount(long count) {
     __weak GWMainWindowController *weakSelf = self;
     for (const gw::Task &task : tasks) {
         GWPaletteItem *item = [GWPaletteItem new];
-        item.title = @(task.label.c_str());
-        item.subtitle = @(task.command.c_str());
+        item.title = StringFromUTF8(task.label);
+        item.subtitle = StringFromUTF8(task.command);
         switch (task.kind) {
             case gw::Task::Kind::Build: item.symbol = @"hammer.fill"; item.symbolColor = NSColor.systemOrangeColor; break;
             case gw::Task::Kind::Run: item.symbol = @"play.fill"; item.symbolColor = NSColor.systemGreenColor; break;
@@ -3202,6 +3338,9 @@ static NSString *CompactCount(long count) {
     _debugPanel.onStart = ^{ [weakSelf startDebugging:nil]; };
     _debugger.onChange = ^{
         GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
         [strongSelf->_debugPanel reload];
         if (strongSelf->_debugger.state != GWDebugStateStopped) {
             strongSelf->_executionLine = -1;
@@ -3213,15 +3352,24 @@ static NSString *CompactCount(long count) {
     };
     _debugger.onOutput = ^(NSString *text, NSString *category) {
         GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
         [strongSelf->_debugPanel appendConsole:text category:category];
     };
     _debugger.onError = ^(NSString *message) {
         GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
         [strongSelf->_debugPanel appendConsole:[message stringByAppendingString:@"\n"] category:@"stderr"];
         [strongSelf showErrorTitle:@"Debugger" message:message];
     };
     _debugger.onEnded = ^(NSInteger code) {
         GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
         strongSelf->_executionLine = -1;
         [strongSelf updateExecutionMarker];
         [strongSelf->_debugPanel appendConsole:@"Debugging ended.\n" category:@"console"];
@@ -3232,7 +3380,7 @@ static NSString *CompactCount(long count) {
 - (void)updateExecutionMarker {
     Tab *tab = [self currentTab];
     BOOL inThisFile = tab != nullptr && tab->document->path() && _executionPath != nil && _executionLine >= 0 &&
-                      [_executionPath isEqualToString:@(tab->document->path()->c_str())];
+                      [_executionPath isEqualToString:StringFromUTF8(*tab->document->path())];
     [_editorView setExecutionLine:inThisFile ? _executionLine : -1];
 }
 
@@ -3275,7 +3423,7 @@ static NSString *CompactCount(long count) {
     NSMutableArray<NSDictionary *> *entries = [NSMutableArray array];
     for (const auto &[path, lines] : _breakpointStore) {
         for (size_t line : lines) {
-            [entries addObject:@{@"path": @(path.c_str()), @"line": @(line)}];
+            [entries addObject:@{@"path": StringFromUTF8(path), @"line": @(line)}];
         }
     }
     [NSUserDefaults.standardUserDefaults setObject:entries forKey:[@"breakpoints:" stringByAppendingString:folder]];
@@ -3293,7 +3441,7 @@ static NSString *CompactCount(long count) {
         _breakpointStore.erase(path);
     }
     [self saveBreakpoints];
-    [self syncBreakpointsOfPath:@(path.c_str()) lines:tab->document->breakpointLines];
+    [self syncBreakpointsOfPath:StringFromUTF8(path) lines:tab->document->breakpointLines];
 }
 
 - (void)syncBreakpointsOfPath:(NSString *)path lines:(const std::set<size_t> &)lines {
@@ -3320,7 +3468,7 @@ static NSString *CompactCount(long count) {
         for (size_t line : lines) {
             [set addObject:@(line)];
         }
-        result[@(path.c_str())] = set;
+        result[StringFromUTF8(path)] = set;
     }
     return result;
 }
@@ -3339,7 +3487,7 @@ static NSString *CompactCount(long count) {
         tab->document->breakpointLines.clear();
     }
     for (const auto &[path, lines] : _breakpointStore) {
-        [_debugger setBreakpointLines:[NSSet set] forPath:@(path.c_str())];
+        [_debugger setBreakpointLines:[NSSet set] forPath:StringFromUTF8(path)];
     }
     _breakpointStore.clear();
     [self saveBreakpoints];
@@ -3429,7 +3577,7 @@ static NSString *CompactCount(long count) {
         command.push_back("-std=c++20");
     }
     command.insert(command.end(), {"-g", "-O0", "-Wall", source, "-o", output.UTF8String});
-    [_debugPanel appendConsole:[NSString stringWithFormat:@"Building %s…\n", tab->document->path()->filename().c_str()]
+    [_debugPanel appendConsole:[NSString stringWithFormat:@"Building %@…\n", StringFromUTF8(tab->document->path()->filename())]
                       category:@"console"];
     __weak GWMainWindowController *weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -3441,7 +3589,7 @@ static NSString *CompactCount(long count) {
             }
             std::string messages = result.output + result.errorOutput;
             if (!messages.empty()) {
-                [strongSelf->_debugPanel appendConsole:@(messages.c_str()) category:result.succeeded() ? @"console" : @"stderr"];
+                [strongSelf->_debugPanel appendConsole:StringFromUTF8(messages) category:result.succeeded() ? @"console" : @"stderr"];
             }
             if (!result.succeeded()) {
                 [strongSelf showErrorTitle:@"The build failed" message:@"The compiler's messages are in the debug console."];
@@ -3584,15 +3732,15 @@ static NSString *CompactCount(long count) {
         NSBeep();
         return;
     }
-    NSString *relative = [self projectRelativePath:@(tab->document->path()->c_str())];
+    NSString *relative = [self projectRelativePath:StringFromUTF8(*tab->document->path())];
     NSMutableString *list = [NSMutableString string];
     NSUInteger count = 0;
     for (const GWDiagnostic &diagnostic : [_language diagnosticsForDocument:tab->document.get()]) {
         if (diagnostic.severity > 2 || (onlyLine >= 0 && diagnostic.range.start.line != static_cast<size_t>(onlyLine))) {
             continue;
         }
-        [list appendFormat:@"- line %zu (%s): %s\n", diagnostic.range.start.line + 1, diagnostic.severity == 1 ? "error" : "warning",
-                           diagnostic.message.c_str()];
+        [list appendFormat:@"- line %zu (%s): %@\n", diagnostic.range.start.line + 1, diagnostic.severity == 1 ? "error" : "warning",
+                           StringFromUTF8(diagnostic.message)];
         if (++count >= 30) {
             break;
         }
@@ -3626,13 +3774,13 @@ static NSString *CompactCount(long count) {
         return context;
     }
     if (tab->document->path()) {
-        context.filePath = @(tab->document->path()->c_str());
+        context.filePath = StringFromUTF8(*tab->document->path());
     }
-    context.languageName = @(GWServices.shared.extensions.languageName(tab->document->languageId).c_str());
+    context.languageName = StringFromUTF8(GWServices.shared.extensions.languageName(tab->document->languageId));
     const gw::Document &document = *tab->document;
     if (!document.selection.empty()) {
         gw::Range range = document.selection.range();
-        context.selectedText = @(document.buffer().text(range).c_str());
+        context.selectedText = StringFromUTF8(document.buffer().text(range));
         context.startLine = static_cast<NSInteger>(range.start.line) + 1;
         context.endLine = static_cast<NSInteger>(range.end.line) + 1;
         // A selection that ends at the very start of a line doesn't include that line.
@@ -3666,7 +3814,7 @@ static NSString *CompactCount(long count) {
 
 - (void)goToLocation:(const gw::NavigationLocation &)location {
     _navigating = YES;
-    [self openURL:[NSURL fileURLWithPath:@(location.path.c_str())]];
+    [self openURL:[NSURL fileURLWithPath:StringFromUTF8(location.path)]];
     Tab *tab = [self currentTab];
     if (tab != nullptr) {
         [_editorView jumpToPosition:tab->document->buffer().clamp(location.position)];
@@ -3752,7 +3900,7 @@ static NSString *CompactCount(long count) {
                       [](const Match &a, const Match &b) { return a.score > b.score; });
     NSMutableArray<NSString *> *paths = [NSMutableArray array];
     for (size_t rank = 0; rank < shown; ++rank) {
-        [paths addObject:@(snapshot->paths[matches[rank].index].c_str())];
+        [paths addObject:StringFromUTF8(snapshot->paths[matches[rank].index])];
     }
     return paths;
 }
@@ -3763,7 +3911,7 @@ static NSString *CompactCount(long count) {
     if (![self currentTab]) {
         return;
     }
-    NSString *selected = @(_editorView.selectedText.c_str());
+    NSString *selected = StringFromUTF8(_editorView.selectedText);
     [_findBar showWithText:selected replace:NO];
 }
 
@@ -3771,7 +3919,7 @@ static NSString *CompactCount(long count) {
     if (![self currentTab]) {
         return;
     }
-    [_findBar showWithText:@(_editorView.selectedText.c_str()) replace:YES];
+    [_findBar showWithText:StringFromUTF8(_editorView.selectedText) replace:YES];
 }
 
 /// The Vim mode or command in progress changed. Suggestions belong to typing, so leaving
@@ -3866,7 +4014,7 @@ static NSString *CompactCount(long count) {
 - (IBAction)findPrevious:(id)sender { [_findBar findPrevious]; }
 
 - (IBAction)useSelectionForFind:(id)sender {
-    NSString *selected = @(_editorView.selectedText.c_str());
+    NSString *selected = StringFromUTF8(_editorView.selectedText);
     if (selected.length > 0) {
         [_findBar setSearchText:selected];
     }
@@ -3906,7 +4054,7 @@ static NSString *CompactCount(long count) {
 - (BOOL)isFileDirty:(NSString *)absolutePath {
     NSString *resolved = [absolutePath stringByResolvingSymlinksInPath];
     for (auto &tab : _tabs) {
-        if (!tab->realPath.empty() && [@(tab->realPath.c_str()) isEqualToString:resolved] && tab->document->isDirty()) {
+        if (!tab->realPath.empty() && [StringFromUTF8(tab->realPath) isEqualToString:resolved] && tab->document->isDirty()) {
             return YES;
         }
     }
@@ -3920,7 +4068,7 @@ static NSString *CompactCount(long count) {
         [resolved addObject:[path stringByResolvingSymlinksInPath]];
     }
     for (auto &tab : _tabs) {
-        if (!tab->realPath.empty() && [resolved containsObject:@(tab->realPath.c_str())]) {
+        if (!tab->realPath.empty() && [resolved containsObject:StringFromUTF8(tab->realPath)]) {
             [self checkExternalChangeForTab:tab.get()];
         }
     }
@@ -4074,7 +4222,7 @@ static NSString *CompactCount(long count) {
     NSString *selected = nil;
     if (Tab *tab = [self currentTab]) {
         (void)tab;
-        selected = @(_editorView.selectedText.c_str());
+        selected = StringFromUTF8(_editorView.selectedText);
     }
     [_search focusWithText:selected];
 }
@@ -4106,7 +4254,7 @@ static NSString *CompactCount(long count) {
         if (tab->isVirtual || !tab->document->path()) {
             continue;
         }
-        NSString *tabPath = @(tab->document->path()->c_str());
+        NSString *tabPath = StringFromUTF8(*tab->document->path());
         NSString *newPath = nil;
         if ([tabPath isEqualToString:oldBase]) {
             newPath = newBase;
@@ -4141,7 +4289,7 @@ static NSString *CompactCount(long count) {
         if (tab.isVirtual || !tab.document->path()) {
             continue;
         }
-        NSString *tabPath = @(tab.document->path()->c_str());
+        NSString *tabPath = StringFromUTF8(*tab.document->path());
         BOOL isTheItem = [tabPath isEqualToString:base];
         BOOL isInsideIt = [tabPath hasPrefix:folderPrefix];
         if (!isTheItem && !isInsideIt) {
@@ -4221,8 +4369,8 @@ static NSString *CompactCount(long count) {
     if (!status.isRepository) {
         return;
     }
-    NSString *name = status.branch.empty() ? [NSString stringWithFormat:@"%@", @(status.headCommit.substr(0, 7).c_str())]
-                                           : @(status.branch.c_str());
+    NSString *name = status.branch.empty() ? [NSString stringWithFormat:@"%@", StringFromUTF8(status.headCommit.substr(0, 7))]
+                                           : StringFromUTF8(status.branch);
     if (status.headCommit.empty() && status.branch.empty()) {
         name = @"no commits";
     }
@@ -4289,7 +4437,7 @@ static NSString *CompactCount(long count) {
 - (void)showDiffForPath:(NSString *)path staged:(BOOL)staged {
     std::string relative = path.UTF8String;
     [_git read:^id(NSString *root) {
-        return @(gw::git::readDiff(root.UTF8String, relative, staged).c_str());
+        return StringFromUTF8(gw::git::readDiff(root.UTF8String, relative, staged));
     } completion:^(id text) {
         NSString *title = [NSString stringWithFormat:@"%@ (%@)", path.lastPathComponent, staged ? @"Staged" : @"Changes"];
         std::string key = std::string(staged ? "staged:" : "changes:") + relative;
@@ -4413,27 +4561,6 @@ static double timed(void (^work)(void)) {
     [NSApp terminate:nil];
 }
 
-/// For development: run something colorful in a new terminal (see GLASSWORK_ACTIONS).
-/// Developer check: open README.md, rename it on disk the way the file tree does, and confirm
-/// the tab follows.
-- (IBAction)debugOpenReadme:(id)sender {
-    NSURL *readme = [_fileTree.rootURL URLByAppendingPathComponent:@"README.md"];
-    [self openURL:readme];
-}
-
-- (IBAction)debugRenameReadme:(id)sender {
-    NSURL *from = [_fileTree.rootURL URLByAppendingPathComponent:@"README.md"];
-    NSURL *to = [_fileTree.rootURL URLByAppendingPathComponent:@"GUIDE.txt"];
-    [NSFileManager.defaultManager moveItemAtURL:from toURL:to error:nil];
-    [self fileItemMovedFrom:from to:to];
-    [_fileTree reloadDirectory:_fileTree.rootURL];
-}
-
-- (IBAction)debugTrashGuide:(id)sender {
-    NSURL *guide = [_fileTree.rootURL URLByAppendingPathComponent:@"GUIDE.txt"];
-    [self fileItemTrashed:guide];
-}
-
 /// Developer hook: sends an editor action (such as moveLinesDown:) straight to the editor.
 - (BOOL)debugPerformEditorAction:(SEL)action {
     if (![_editorView respondsToSelector:action]) {
@@ -4444,128 +4571,10 @@ static double timed(void (^work)(void)) {
     return YES;
 }
 
-/// Developer check: shows the file tree's right-click menu for the second row.
-- (IBAction)debugShowTreeMenu:(id)sender {
-    NSView *tree = _fileTree.view.documentView;
-    NSMenu *menu = [_fileTree contextMenuForRow:1];
-    NSPoint where = NSMakePoint(60, 40);
-    NSEvent *event = [NSEvent mouseEventWithType:NSEventTypeRightMouseDown
-                                        location:[tree convertPoint:where toView:nil]
-                                   modifierFlags:0
-                                       timestamp:0
-                                    windowNumber:self.window.windowNumber
-                                         context:nil
-                                     eventNumber:0
-                                      clickCount:1
-                                        pressure:1];
-    [NSMenu popUpContextMenu:menu withEvent:event forView:tree];
-}
-
-- (IBAction)debugNewFileSheet:(id)sender {
-    [_fileTree createFileInFolder:_fileTree.rootURL];
-}
-
-/// Developer check: acts as if the pointer had rested on the word at the caret.
-- (IBAction)debugHoverAtCaret:(id)sender {
-    Tab *tab = [self currentTab];
-    if (tab == nullptr) {
-        return;
-    }
-    gw::Position caret = tab->document->selection.caret;
-    gw::Range word = tab->document->buffer().wordAt(caret);
-    [self hoverAtPosition:word.start word:word];
-}
-
-/// Developer check: types "sq" at the caret, one letter at a time, as a person would.
-- (IBAction)debugTypeSq:(id)sender {
-    [self.window makeFirstResponder:_editorView];
-    [_editorView insertText:@"s" replacementRange:NSMakeRange(NSNotFound, 0)];
-    [_editorView insertText:@"q" replacementRange:NSMakeRange(NSNotFound, 0)];
-}
-
-/// Developer check: presses Tab in the editor (accepts the highlighted suggestion).
-- (IBAction)debugPressTab:(id)sender {
-    [_editorView doCommandBySelector:@selector(insertTab:)];
-}
-
-/// Developer check: renames the symbol at the caret to "squared" without asking.
-- (IBAction)debugRenameToSquared:(id)sender {
-    Tab *tab = [self currentTab];
-    if (tab == nullptr) {
-        return;
-    }
-    gw::Document *document = tab->document.get();
-    gw::lsp::Json params = [_language positionParamsForDocument:document position:document->selection.caret];
-    params["newName"] = "squared";
-    __weak GWMainWindowController *weakSelf = self;
-    [_language request:@"textDocument/rename" params:params document:document requireSameVersion:NO
-            completion:^(const gw::lsp::Json &result, NSString *error) {
-        if (error != nil) {
-            fprintf(stderr, "rename failed: %s\n", error.UTF8String);
-            return;
-        }
-        [weakSelf applyWorkspaceEdit:result];
-    }];
-}
-
-/// Developer check: types "square(" at the caret (shows the signature help).
-- (IBAction)debugTypeCall:(id)sender {
-    [self.window makeFirstResponder:_editorView];
-    for (NSString *character in @[@"s", @"q", @"u", @"a", @"r", @"e", @"("]) {
-        [_editorView insertText:character replacementRange:NSMakeRange(NSNotFound, 0)];
-    }
-}
-
-/// Developer check: types "X" at every cursor.
-- (IBAction)debugTypeX:(id)sender {
-    [self.window makeFirstResponder:_editorView];
-    [_editorView insertText:@"X" replacementRange:NSMakeRange(NSNotFound, 0)];
-}
-
-/// Developer check: types a newline at every cursor.
-- (IBAction)debugPressReturn:(id)sender {
-    [self.window makeFirstResponder:_editorView];
-    [_editorView doCommandBySelector:@selector(insertNewline:)];
-}
-
-- (IBAction)debugTerminalDemo:(id)sender {
-    [self runInTerminal:@"clear; printf '\\e[1;31mbold red\\e[0m \\e[4munderline\\e[0m \\e[3mitalic\\e[0m "
-                        @"\\e[38;2;255;160;0mtruecolor\\e[0m \\e[7minverse\\e[0m\\n'; ls -la /System | head -8; echo '日本語 ✓ ─│┌┐└┘╭╮'; git -C ~/Code/Glasswork status -sb | head -3"];
-}
-
-- (IBAction)debugTerminalTop:(id)sender {
-    [self runInTerminal:@"top -l 2 -n 6 -s 1"];
-}
-
-/// For development: run a project search and open find with replace (see GLASSWORK_ACTIONS).
-- (IBAction)debugSearchTotal:(id)sender {
-    [self revealSidebarMode:2];
-    [_search focusWithText:@"total"];
-}
-
-- (IBAction)debugFindTotal:(id)sender {
-    [_findBar showWithText:@"total" replace:YES];
-}
-
-/// For development: shows the details popover for the first change in the open file.
-- (IBAction)debugShowFirstChange:(id)sender {
-    if (Tab *tab = [self currentTab]) {
-        [self jumpToHunkAtIndex:0 tabIdentifier:tab->identifier showDetails:YES];
-    }
-}
-
-/// For development: opens the diff of the first changed file (see GLASSWORK_ACTIONS).
-- (IBAction)debugShowFirstDiff:(id)sender {
-    for (const gw::git::FileChange &change : _git.status.changes) {
-        [self showDiffForPath:@(change.path.c_str()) staged:change.hasStagedChange() && !change.hasUnstagedChange()];
-        return;
-    }
-}
-
 - (void)showCommit:(NSString *)hash subject:(NSString *)subject {
     std::string commit = hash.UTF8String;
     [_git read:^id(NSString *root) {
-        return @(gw::git::readCommitDiff(root.UTF8String, commit).c_str());
+        return StringFromUTF8(gw::git::readCommitDiff(root.UTF8String, commit));
     } completion:^(id text) {
         NSString *title = [NSString stringWithFormat:@"%@ %@", [hash substringToIndex:MIN(hash.length, 7UL)], subject];
         [self showVirtualText:text title:title language:"diff" key:"commit:" + commit diff:YES];
@@ -4621,7 +4630,7 @@ static double timed(void (^work)(void)) {
         }
         return;
     }
-    NSString *path = @(tab->document->path()->c_str());
+    NSString *path = StringFromUTF8(*tab->document->path());
     NSString *relative = [_git relativePathForAbsolute:path];
     if (relative == nil) {
         [self clearChangesForTab:tab];
@@ -4747,7 +4756,7 @@ static double timed(void (^work)(void)) {
     NSView *gutter = _editorView.gutterView;
     __weak GWMainWindowController *weakSelf = self;
     uint64_t identifier = tab->identifier;
-    NSString *relative = tab->document->path() ? [_git relativePathForAbsolute:@(tab->document->path()->c_str())] : nil;
+    NSString *relative = tab->document->path() ? [_git relativePathForAbsolute:StringFromUTF8(*tab->document->path())] : nil;
 
     // Buttons that don't apply (nothing before the first change, no repository path…) are
     // left out by passing nil.
@@ -4846,7 +4855,7 @@ static double timed(void (^work)(void)) {
     } completion:^(gw::git::CommandResult result) {
         if (!result.ok) {
             [self showErrorTitle:@"Couldn't stage this change"
-                         message:@(result.error.c_str())];
+                         message:StringFromUTF8(result.error)];
         }
     }];
 }
@@ -4907,7 +4916,7 @@ static double timed(void (^work)(void)) {
         [_fileTree reloadDirectory:[NSURL fileURLWithPath:folderPath isDirectory:YES]];
     }
     for (auto &tab : _tabs) {
-        if (!tab->realPath.empty() && [changed containsObject:@(tab->realPath.c_str())]) {
+        if (!tab->realPath.empty() && [changed containsObject:StringFromUTF8(tab->realPath)]) {
             [self checkExternalChangeForTab:tab.get()];
         }
     }
@@ -4946,7 +4955,7 @@ static double timed(void (^work)(void)) {
 
 - (void)askAboutDiskChangeForTab:(Tab *)tab {
     NSAlert *alert = [NSAlert new];
-    alert.messageText = [NSString stringWithFormat:@"“%s” changed on disk", tab->document->displayName().c_str()];
+    alert.messageText = [NSString stringWithFormat:@"“%@” changed on disk", StringFromUTF8(tab->document->displayName())];
     alert.informativeText = @"You have unsaved edits in Glasswork, and the file was changed somewhere else.";
     [alert addButtonWithTitle:@"Keep My Version"];
     [alert addButtonWithTitle:@"Load From Disk"];
@@ -4998,6 +5007,9 @@ static double timed(void (^work)(void)) {
     };
     _extensionViews.onRevealPanel = ^(NSString *handle) {
         GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
         Tab *tab = [strongSelf webviewTabWithHandle:handle];
         if (tab != nullptr) {
             [strongSelf selectTab:[strongSelf indexOfTab:tab]];
@@ -5005,6 +5017,9 @@ static double timed(void (^work)(void)) {
     };
     _extensionViews.onClosePanel = ^(NSString *handle) {
         GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
         Tab *tab = [strongSelf webviewTabWithHandle:handle];
         if (tab != nullptr) {
             [strongSelf closeTabAtIndex:[strongSelf indexOfTab:tab]];
@@ -5013,12 +5028,15 @@ static double timed(void (^work)(void)) {
     // Pages may read the project and the installed extensions unless their extension says otherwise.
     _extensionViews.webviewRoots = ^NSArray<NSString *> *{
         GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return @[];
+        }
         NSMutableArray<NSString *> *roots = [NSMutableArray array];
         NSString *project = strongSelf->_fileTree.rootURL.path;
         if (project != nil) {
             [roots addObject:project];
         }
-        [roots addObject:@(GWServices.shared.extensions.directory().string().c_str())];
+        [roots addObject:StringFromUTF8(GWServices.shared.extensions.directory().string())];
         return roots;
     };
     _extensionViews.onRevealSidebar = ^{
@@ -5063,7 +5081,7 @@ static double timed(void (^work)(void)) {
     Tab *front = [self currentTab];
     for (auto &tab : _tabs) {
         if (tab->kind == Tab::Kind::Webview) {
-            [_extensionViews panelTab:@(tab->webviewHandle.c_str()) isFront:tab.get() == front];
+            [_extensionViews panelTab:StringFromUTF8(tab->webviewHandle) isFront:tab.get() == front];
         }
     }
 }
@@ -5107,6 +5125,9 @@ static double timed(void (^work)(void)) {
     };
     _language.onInlayHintsChanged = ^(gw::Document *document) {
         GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
         Tab *tab = [strongSelf currentTab];
         if (tab != nullptr && tab->document.get() == document) {
             [strongSelf->_editorView setInlayHints:[strongSelf->_language inlayHintsForDocument:document]];
@@ -5114,6 +5135,9 @@ static double timed(void (^work)(void)) {
     };
     _language.onSemanticTokensChanged = ^(gw::Document *document) {
         GWMainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
         Tab *tab = [strongSelf currentTab];
         if (tab != nullptr && tab->document.get() == document) {
             [strongSelf->_editorView setSemanticTokens:[strongSelf->_language semanticTokensForDocument:document]];
@@ -5199,7 +5223,7 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
     } else {
         result = fromOne(contents);
     }
-    return @(result.c_str());
+    return StringFromUTF8(result);
 }
 
 - (void)hoverAtPosition:(gw::Position)position word:(gw::Range)word {
@@ -5217,7 +5241,7 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
         bool overlaps = diagnostic.range.start.column <= word.end.column && diagnostic.range.end.column >= word.start.column;
         if (sameLine && overlaps) {
             NSString *marker = diagnostic.severity == 1 ? @"⛔️ " : @"⚠️ ";
-            [problems addObject:[marker stringByAppendingString:@(diagnostic.message.c_str())]];
+            [problems addObject:[marker stringByAppendingString:StringFromUTF8(diagnostic.message)]];
         }
     }
     __weak GWMainWindowController *weakSelf = self;
@@ -5274,7 +5298,7 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
         return @"";
     }
     std::string text = tab->document->buffer().text({start, caret});
-    return @(text.c_str());
+    return StringFromUTF8(text);
 }
 
 - (void)editorTypedText:(NSString *)typed {
@@ -5405,7 +5429,7 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
     if (!explicitly && caret.column > 0) {
         std::string before = document->buffer().text({{caret.line, caret.column - 1}, caret});
         NSString *triggers = [_language completionTriggerCharactersForDocument:document];
-        if (before.size() == 1 && [triggers containsString:@(before.c_str())]) {
+        if (before.size() == 1 && [triggers containsString:StringFromUTF8(before)]) {
             triggerKind = 2;  // TriggerCharacter
             triggerCharacter = before;
         } else if (_suggestions.visible && _suggestionsIncomplete) {
@@ -5439,12 +5463,12 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
     NSMutableArray<GWSuggestion *> *items = [NSMutableArray array];
     for (const gw::SnippetDefinition &definition : GWServices.shared.extensions.snippets().forLanguage(tab->document->languageId)) {
         GWSuggestion *item = [GWSuggestion new];
-        item.label = @(definition.prefix.c_str());
-        item.detail = @(definition.description.c_str());
+        item.label = StringFromUTF8(definition.prefix);
+        item.detail = StringFromUTF8(definition.description);
         item.filterText = item.label;
         item.sortText = [@"9" stringByAppendingString:item.label];  // after what a language server offers
         item.kind = 15;                                              // Snippet
-        item.documentation = [NSString stringWithFormat:@"```\n%s\n```", definition.body.c_str()];
+        item.documentation = [NSString stringWithFormat:@"```\n%@\n```", StringFromUTF8(definition.body)];
         item.raw = std::make_shared<gw::lsp::Json>(gw::lsp::Json{
             {"label", definition.prefix},
             {"detail", definition.description},
@@ -5486,10 +5510,10 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
 /// Text of an LSP documentation field: a plain string or MarkupContent {kind, value}.
 static NSString *markupText(const gw::lsp::Json &value) {
     if (value.is_string()) {
-        return @(value.get<std::string>().c_str());
+        return StringFromUTF8(value.get<std::string>());
     }
     if (value.is_object() && value.contains("value") && value["value"].is_string()) {
-        return @(value["value"].get<std::string>().c_str());
+        return StringFromUTF8(value["value"].get<std::string>());
     }
     return nil;
 }
@@ -5500,7 +5524,7 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
     if (item.contains("commitCharacters") && item["commitCharacters"].is_array()) {
         for (const gw::lsp::Json &character : item["commitCharacters"]) {
             if (character.is_string()) {
-                [characters appendString:@(character.get<std::string>().c_str())];
+                [characters appendString:StringFromUTF8(character.get<std::string>())];
             }
         }
     }
@@ -5531,14 +5555,14 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
         if (label.empty()) {
             continue;
         }
-        item.label = @(label.c_str());
+        item.label = StringFromUTF8(label);
         std::string detail = row.value("detail", "");
         if (detail.empty() && row.contains("labelDetails") && row["labelDetails"].is_object()) {
             detail = row["labelDetails"].value("description", "");
         }
-        item.detail = @(detail.c_str());
-        item.filterText = @(row.value("filterText", label).c_str());
-        item.sortText = @(row.value("sortText", label).c_str());
+        item.detail = StringFromUTF8(detail);
+        item.filterText = StringFromUTF8(row.value("filterText", label));
+        item.sortText = StringFromUTF8(row.value("sortText", label));
         item.kind = row.value("kind", 0);
         item.preselect = row.value("preselect", false);
         item.deprecated = row.value("deprecated", false);
@@ -5608,7 +5632,7 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
     }
     for (size_t index = 0; index < words.size(); ++index) {
         GWSuggestion *item = [GWSuggestion new];
-        item.label = @(words[index].c_str());
+        item.label = StringFromUTF8(words[index]);
         item.detail = @"word in this file";
         item.filterText = item.label;
         item.sortText = [NSString stringWithFormat:@"%05zu", index];  // keep the most used first
@@ -5624,18 +5648,6 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
     NSRect caretRect = [_editorView screenRectForPosition:document->selection.caret];
     [_suggestions showBelowScreenRect:caretRect parentWindow:self.window];
     [_suggestions filterWithPrefix:[self typedPrefix]];
-}
-
-/// For development: inserts a snippet at the caret the way accepting a completion does
-/// (see GLASSWORK_ACTIONS), so Tab through the placeholders can be checked without a server.
-- (void)debugInsertCallSnippet:(id)sender {
-    GWSuggestion *suggestion = [GWSuggestion new];
-    suggestion.raw = std::make_shared<gw::lsp::Json>(gw::lsp::Json{
-        {"label", "call"},
-        {"insertText", "call(${1:first}, ${2:second});$0"},
-        {"insertTextFormat", 2},
-    });
-    [self acceptSuggestion:suggestion];
 }
 
 /// Fetches the documentation of the highlighted item (many servers only send it on request),
@@ -5685,7 +5697,7 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
             }
             std::string detail = result.value("detail", "");
             if (!detail.empty()) {
-                suggestion.detail = @(detail.c_str());
+                suggestion.detail = StringFromUTF8(detail);
             }
         }
         then();
@@ -5868,7 +5880,7 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
         return nullptr;
     }
     gw::Document *document = tab->document.get();
-    NSString *languageId = @(document->languageId.c_str());
+    NSString *languageId = StringFromUTF8(document->languageId);
     if (![_language hasServerForLanguage:languageId]) {
         [self languageMessage:@"There is no language server for this kind of file yet."];
         return nullptr;
@@ -5933,8 +5945,8 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
             std::string path = gw::lsp::pathFromURI(uri);
             size_t line = (*range)["start"].value("line", 0) + 1;
             GWPaletteItem *item = [GWPaletteItem new];
-            NSString *relative = [self projectRelativePath:@(path.c_str())];
-            item.title = @(std::filesystem::path(path).filename().c_str());
+            NSString *relative = [self projectRelativePath:StringFromUTF8(path)];
+            item.title = StringFromUTF8(std::filesystem::path(path).filename());
             item.subtitle = [NSString stringWithFormat:@"%@ · line %zu", relative, line];
             item.symbol = @"arrow.turn.down.right";
             item.symbolColor = NSColor.controlAccentColor;
@@ -5964,7 +5976,9 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
                 [item.subtitle localizedCaseInsensitiveContainsString:query]) {
                 [filtered addObject:item];
             }
-            if (filtered.count == 100) break;
+            if (filtered.count == 100) {
+                break;
+            }
         }
         return filtered;
     }];
@@ -5977,7 +5991,7 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
         if (path.empty()) {
             return;
         }
-        NSURL *url = [NSURL fileURLWithPath:@(path.c_str())];
+        NSURL *url = [NSURL fileURLWithPath:StringFromUTF8(path)];
         [self rememberLocationBeforeJump];
         [self openURL:url];
         Tab *tab = [self currentTab];
@@ -6000,8 +6014,8 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
     gw::Document *document = tab->document.get();
     const std::vector<GWDiagnostic> &diagnostics = [_language diagnosticsForDocument:document];
     if (diagnostics.empty()) {
-        NSString *status = [_language statusTextForLanguage:@(document->languageId.c_str())];
-        NSString *hint = [_language installHintForLanguage:@(document->languageId.c_str())];
+        NSString *status = [_language statusTextForLanguage:StringFromUTF8(document->languageId)];
+        NSString *hint = [_language installHintForLanguage:StringFromUTF8(document->languageId)];
         if (hint.length > 0) {
             [self languageMessage:hint];
         } else if (status.length == 0) {
@@ -6015,7 +6029,7 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
     __weak GWMainWindowController *weakSelf = self;
     for (const GWDiagnostic &diagnostic : diagnostics) {
         GWPaletteItem *item = [GWPaletteItem new];
-        item.title = @(diagnostic.message.c_str());
+        item.title = StringFromUTF8(diagnostic.message);
         BOOL isError = diagnostic.severity == 1;
         item.symbol = isError ? @"xmark.octagon.fill" : @"exclamationmark.triangle.fill";
         item.symbolColor = isError ? NSColor.systemRedColor : NSColor.systemOrangeColor;
@@ -6083,10 +6097,16 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
                     continue;
                 }
                 GWPaletteItem *item = [GWPaletteItem new];
-                item.title = @(action.value("title", "Fix").c_str());
+                item.title = StringFromUTF8(action.value("title", "Fix"));
                 bool isRefactor = action.value("kind", "").rfind("refactor", 0) == 0;
                 bool isPreferred = action.value("isPreferred", false);
-                item.symbol = isRefactor ? @"wand.and.stars" : (isPreferred ? @"lightbulb.fill" : @"lightbulb");
+                if (isRefactor) {
+                    item.symbol = @"wand.and.stars";
+                } else if (isPreferred) {
+                    item.symbol = @"lightbulb.fill";
+                } else {
+                    item.symbol = @"lightbulb";
+                }
                 item.symbolColor = isRefactor ? NSColor.systemPurpleColor : NSColor.systemYellowColor;
                 Json actionCopy = action;
                 item.run = ^{
@@ -6188,7 +6208,7 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
             }
         }
         NSRect rect = [strongSelf->_editorView viewRectForRange:gw::Range{caret, caret}];
-        [GWHoverPopover showMarkdown:@(markdown.c_str()) problems:@[] relativeToRect:rect ofView:strongSelf->_editorView];
+        [GWHoverPopover showMarkdown:StringFromUTF8(markdown) problems:@[] relativeToRect:rect ofView:strongSelf->_editorView];
         strongSelf->_signatureLine = static_cast<NSInteger>(caret.line);
         strongSelf->_signatureColumn = static_cast<NSInteger>(caret.column);
     }];
@@ -6305,7 +6325,7 @@ static void collectSymbols(const gw::lsp::Json &symbols, const std::string &cont
     for (const Ranked &entry : ranked) {
         const SymbolRow &row = (*rows)[entry.index];
         GWPaletteItem *item = [GWPaletteItem new];
-        item.title = @(row.name.c_str());
+        item.title = StringFromUTF8(row.name);
         NSString *symbol = nil;
         NSColor *color = nil;
         iconForSymbolKind(row.kind, &symbol, &color);
@@ -6314,7 +6334,7 @@ static void collectSymbols(const gw::lsp::Json &symbols, const std::string &cont
 
         NSMutableString *subtitle = [NSMutableString string];
         if (!row.container.empty()) {
-            [subtitle appendString:@(row.container.c_str())];
+            [subtitle appendString:StringFromUTF8(row.container)];
         }
         if (showsFiles && row.location.contains("uri")) {
             std::string path = gw::lsp::pathFromURI(row.location.value("uri", ""));
@@ -6323,7 +6343,7 @@ static void collectSymbols(const gw::lsp::Json &symbols, const std::string &cont
                     [subtitle appendString:@" · "];
                 }
                 // Files inside the project show their project path; others just their name.
-                NSString *shown = [self projectRelativePath:@(path.c_str())];
+                NSString *shown = [self projectRelativePath:StringFromUTF8(path)];
                 if ([shown hasPrefix:@"/"]) {
                     shown = shown.lastPathComponent;
                 }
@@ -6482,9 +6502,9 @@ static std::vector<std::pair<gw::Range, std::string>> editsFromLsp(const gw::lsp
     }
     NSAlert *alert = [NSAlert new];
     alert.messageText = @"Rename Symbol";
-    alert.informativeText = [NSString stringWithFormat:@"Rename “%s” everywhere it is used.", current.c_str()];
+    alert.informativeText = [NSString stringWithFormat:@"Rename “%@” everywhere it is used.", StringFromUTF8(current)];
     NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 300, 24)];
-    field.stringValue = @(current.c_str());
+    field.stringValue = StringFromUTF8(current);
     alert.accessoryView = field;
     [alert addButtonWithTitle:@"Rename"];
     [alert addButtonWithTitle:@"Cancel"];
@@ -6684,7 +6704,7 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
         std::string error;
         auto document = gw::Document::open(path, &error);
         if (!document) {
-            [failures addObject:@(path.c_str())];
+            [failures addObject:StringFromUTF8(path)];
             continue;
         }
         std::vector<std::pair<gw::Range, std::string>> parsed = editsFromLsp(edits, document->buffer());
@@ -6695,7 +6715,7 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
         if (document->save(&error)) {
             ++changedFiles;
         } else {
-            [failures addObject:@(path.c_str())];
+            [failures addObject:StringFromUTF8(path)];
         }
     }
     [self refresh];
@@ -6796,7 +6816,7 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
     // Already open: just switch to it.
     for (size_t index = 0; index < _tabs.size(); ++index) {
         const auto &path = _tabs[index]->document->path();
-        if (path && [@(path->c_str()) isEqualToString:url.path]) {
+        if (path && [StringFromUTF8(*path) isEqualToString:url.path]) {
             [self selectTab:static_cast<NSInteger>(index)];
             return;
         }
@@ -6811,7 +6831,9 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
         alert.informativeText = @"Glasswork edits text files. Open it in another app?";
         [alert addButtonWithTitle:@"Open in Default App"];
         [alert addButtonWithTitle:@"Cancel"];
-        if ([alert runModal] == NSAlertFirstButtonReturn) [NSWorkspace.sharedWorkspace openURL:url];
+        if ([alert runModal] == NSAlertFirstButtonReturn) {
+            [NSWorkspace.sharedWorkspace openURL:url];
+        }
         return;
     }
     std::string error;
@@ -6819,7 +6841,7 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
     if (!document) {
         NSAlert *alert = [NSAlert new];
         alert.messageText = @"Couldn't open the file";
-        alert.informativeText = @(error.c_str());
+        alert.informativeText = StringFromUTF8(error);
         [alert runModal];
         return;
     }
@@ -6853,7 +6875,7 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
                      message:@"Use the form user@host:/path (for example nate@my-server:~/code)."];
         return;
     }
-    [self openRemoteLocation:@(location->destination.c_str()) path:@(location->path.c_str()) typedText:typed];
+    [self openRemoteLocation:StringFromUTF8(location->destination) path:StringFromUTF8(location->path) typedText:typed];
 }
 
 /// Connects (which also expands "~"), then shows the folder. The connection can take a moment,
@@ -6883,11 +6905,11 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
 - (void)debugOpenRemoteFolder:(NSString *)folder file:(NSString *)file {
     std::optional<gw::RemoteLocation> folderLocation = folder.length ? gw::parseRemoteLocation(folder.UTF8String) : std::nullopt;
     if (folderLocation) {
-        [self showRemoteFolder:GWRemoteURL(@(folderLocation->destination.c_str()), @(folderLocation->path.c_str()))];
+        [self showRemoteFolder:GWRemoteURL(StringFromUTF8(folderLocation->destination), StringFromUTF8(folderLocation->path))];
     }
     std::optional<gw::RemoteLocation> fileLocation = file.length ? gw::parseRemoteLocation(file.UTF8String) : std::nullopt;
     if (fileLocation) {
-        [self openRemoteFile:GWRemoteURL(@(fileLocation->destination.c_str()), @(fileLocation->path.c_str()))];
+        [self openRemoteFile:GWRemoteURL(StringFromUTF8(fileLocation->destination), StringFromUTF8(fileLocation->path))];
     }
 }
 
@@ -6955,7 +6977,7 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
     std::string error;
     auto document = gw::Document::open(copyPath.fileSystemRepresentation, &error);
     if (!document) {
-        [self showErrorTitle:@"Couldn't open the file" message:@(error.c_str())];
+        [self showErrorTitle:@"Couldn't open the file" message:StringFromUTF8(error)];
         return;
     }
     std::string remote = url.absoluteString.UTF8String;
@@ -6967,8 +6989,8 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
 /// Sends the saved copy of a remote file back to its machine, in the background. The text is read
 /// now, so edits made while it uploads are not mixed in.
 - (void)uploadTabToRemote:(Tab &)tab {
-    NSURL *url = [NSURL URLWithString:@(tab.remoteURL.c_str())];
-    NSData *data = [NSData dataWithContentsOfFile:@(tab.document->path()->c_str())];
+    NSURL *url = [NSURL URLWithString:StringFromUTF8(tab.remoteURL)];
+    NSData *data = [NSData dataWithContentsOfFile:StringFromUTF8(*tab.document->path())];
     if (url == nil || data == nil) {
         [self showErrorTitle:@"Couldn't upload" message:@"The saved copy could not be read."];
         return;
@@ -7028,8 +7050,12 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
     panel.canChooseDirectories = YES;
     panel.allowsMultipleSelection = YES;
     [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
-        if (response != NSModalResponseOK) return;
-        for (NSURL *url in panel.URLs) [self openURL:url];
+        if (response != NSModalResponseOK) {
+            return;
+        }
+        for (NSURL *url in panel.URLs) {
+            [self openURL:url];
+        }
     }];
 }
 
@@ -7039,19 +7065,25 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
     panel.canChooseDirectories = YES;
     panel.prompt = @"Open Folder";
     [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
-        if (response == NSModalResponseOK) [self openURL:panel.URL];
+        if (response == NSModalResponseOK) {
+            [self openURL:panel.URL];
+        }
     }];
 }
 
 - (BOOL)saveTab:(Tab &)tab {
-    if (tab.isVirtual) return YES;
-    if (!tab.document->path()) return [self saveTabAs:tab];
+    if (tab.isVirtual) {
+        return YES;
+    }
+    if (!tab.document->path()) {
+        return [self saveTabAs:tab];
+    }
     [self prepareTabForSaving:tab];
     std::string error;
     if (!tab.document->save(&error)) {
         NSAlert *alert = [NSAlert new];
         alert.messageText = @"Couldn't save";
-        alert.informativeText = @(error.c_str());
+        alert.informativeText = StringFromUTF8(error);
         [alert runModal];
         return NO;
     }
@@ -7070,14 +7102,18 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
 
 - (BOOL)saveTabAs:(Tab &)tab {
     NSSavePanel *panel = [NSSavePanel savePanel];
-    panel.nameFieldStringValue = @(tab.document->displayName().c_str());
-    if (_fileTree.rootURL) panel.directoryURL = _fileTree.rootURL;
-    if ([panel runModal] != NSModalResponseOK) return NO;
+    panel.nameFieldStringValue = StringFromUTF8(tab.document->displayName());
+    if (_fileTree.rootURL) {
+        panel.directoryURL = _fileTree.rootURL;
+    }
+    if ([panel runModal] != NSModalResponseOK) {
+        return NO;
+    }
     std::string error;
     if (!tab.document->saveAs(panel.URL.fileSystemRepresentation, &error)) {
         NSAlert *alert = [NSAlert new];
         alert.messageText = @"Couldn't save";
-        alert.informativeText = @(error.c_str());
+        alert.informativeText = StringFromUTF8(error);
         [alert runModal];
         return NO;
     }
@@ -7126,7 +7162,9 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
 }
 
 - (IBAction)saveDocumentAs:(id)sender {
-    if (Tab *tab = [self currentTab]) [self saveTabAs:*tab];
+    if (Tab *tab = [self currentTab]) {
+        [self saveTabAs:*tab];
+    }
 }
 
 - (IBAction)closeTab:(id)sender {
@@ -7142,7 +7180,7 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
     while (!_recentlyClosed.empty()) {
         gw::NavigationLocation location = _recentlyClosed.back();
         _recentlyClosed.pop_back();
-        NSString *path = @(location.path.c_str());
+        NSString *path = StringFromUTF8(location.path);
         if (![NSFileManager.defaultManager fileExistsAtPath:path]) {
             continue;  // deleted since; try the one before
         }
@@ -7176,11 +7214,15 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
 }
 
 - (IBAction)selectNextTab:(id)sender {
-    if (_tabs.size() > 1) [self selectTab:(_selected + 1) % static_cast<NSInteger>(_tabs.size())];
+    if (_tabs.size() > 1) {
+        [self selectTab:(_selected + 1) % static_cast<NSInteger>(_tabs.size())];
+    }
 }
 
 - (IBAction)selectPreviousTab:(id)sender {
-    if (_tabs.size() > 1) [self selectTab:(_selected + static_cast<NSInteger>(_tabs.size()) - 1) % static_cast<NSInteger>(_tabs.size())];
+    if (_tabs.size() > 1) {
+        [self selectTab:(_selected + static_cast<NSInteger>(_tabs.size()) - 1) % static_cast<NSInteger>(_tabs.size())];
+    }
 }
 
 - (IBAction)toggleSidebar:(id)sender {
@@ -7200,7 +7242,9 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
         Tab *tab = [self currentTab];
         return tab != nullptr && !tab->isVirtual;
     }
-    if (action == @selector(selectNextTab:) || action == @selector(selectPreviousTab:)) return _tabs.size() > 1;
+    if (action == @selector(selectNextTab:) || action == @selector(selectPreviousTab:)) {
+        return _tabs.size() > 1;
+    }
     return YES;
 }
 
@@ -7209,23 +7253,31 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
 /// Save / Don't Save / Cancel for one document. Returns NO on Cancel or a failed save.
 - (BOOL)confirmCloseDocument:(gw::Document &)document {
     NSAlert *alert = [NSAlert new];
-    alert.messageText = [NSString stringWithFormat:@"Save changes to “%s”?", document.displayName().c_str()];
+    alert.messageText = [NSString stringWithFormat:@"Save changes to “%@”?", StringFromUTF8(document.displayName())];
     alert.informativeText = @"Your changes will be lost if you don't save them.";
     [alert addButtonWithTitle:@"Save"];
     [alert addButtonWithTitle:@"Cancel"];
     [alert addButtonWithTitle:@"Don't Save"];
     NSModalResponse response = [alert runModal];
-    if (response == NSAlertSecondButtonReturn) return NO;
-    if (response == NSAlertThirdButtonReturn) return YES;
+    if (response == NSAlertSecondButtonReturn) {
+        return NO;
+    }
+    if (response == NSAlertThirdButtonReturn) {
+        return YES;
+    }
     for (auto &tab : _tabs) {
-        if (tab->document.get() == &document) return [self saveTab:*tab];
+        if (tab->document.get() == &document) {
+            return [self saveTab:*tab];
+        }
     }
     return NO;
 }
 
 - (BOOL)confirmCloseAll {
     for (auto &tab : _tabs) {
-        if (tab->document->isDirty() && ![self confirmCloseDocument:*tab->document]) return NO;
+        if (tab->document->isDirty() && ![self confirmCloseDocument:*tab->document]) {
+            return NO;
+        }
     }
     [self saveSession];
     [_language shutdown];
@@ -7266,7 +7318,7 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
         }
         gw::Position caret = tab.document->selection.caret;
         NSDictionary *entry = @{
-            @"path": @(tab.document->path()->c_str()),
+            @"path": StringFromUTF8(*tab.document->path()),
             @"line": @(caret.line),
             @"column": @(caret.column),
             @"scrollY": @(tab.scroll.y),

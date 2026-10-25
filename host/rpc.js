@@ -13,6 +13,11 @@ class Connection {
     constructor(input, output) {
         this.output = output;
         this.buffer = Buffer.alloc(0);
+        // Chunks that arrived after `buffer` and aren't joined to it yet: a big message comes in
+        // many pieces, and joining each one to everything before it would copy it over and over.
+        this.waitingChunks = [];
+        this.waitingBytes = 0;
+        this.bytesNeeded = 0;
         this.nextId = 1;
         this.pending = new Map();
         this.requestHandlers = new Map();
@@ -55,7 +60,15 @@ class Connection {
     }
 
     receive(chunk) {
-        this.buffer = Buffer.concat([this.buffer, chunk]);
+        this.waitingChunks.push(chunk);
+        this.waitingBytes += chunk.length;
+        if (this.buffer.length + this.waitingBytes < this.bytesNeeded) {
+            return;  // the message being read isn't complete yet
+        }
+        this.buffer = Buffer.concat([this.buffer, ...this.waitingChunks]);
+        this.waitingChunks = [];
+        this.waitingBytes = 0;
+        this.bytesNeeded = 0;
         for (;;) {
             const message = this.nextMessage();
             if (message === null) {
@@ -80,6 +93,7 @@ class Connection {
         const length = parseInt(match[1], 10);
         const start = separator + 4;
         if (this.buffer.length < start + length) {
+            this.bytesNeeded = start + length;
             return null;
         }
         const body = this.buffer.slice(start, start + length).toString('utf8');

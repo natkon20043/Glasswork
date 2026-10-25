@@ -88,7 +88,9 @@ std::vector<std::string> RemoteHost::baseArguments() const {
         "-o", "ConnectTimeout=10",
         "-o", "ServerAliveInterval=15",
         "-o", "ControlMaster=auto",
-        "-o", "ControlPath=/tmp/glasswork-ssh-%C",
+        // In the user's own ~/.ssh, not the shared /tmp, where another account could put a socket
+        // of its own for ssh to use. (Short enough for the limit on socket paths.)
+        "-o", "ControlPath=~/.ssh/glasswork-%C",
         "-o", "ControlPersist=10m",
     };
 }
@@ -183,11 +185,18 @@ bool RemoteHost::readFile(const std::string& path, std::string* contents, std::s
 }
 
 bool RemoteHost::writeFile(const std::string& path, const std::string& contents, std::string* error) const {
-    std::string target = remotePathWord(path);
-    std::string temporary = remotePathWord(path + ".glasswork-save");
-    // Write beside the file, copy its permissions if it exists, then swap it in.
-    std::string command = "cat > " + temporary + " && { chmod --reference=" + target + " " + temporary +
-                          " 2>/dev/null; true; } && mv -f -- " + temporary + " " + target;
+    std::string word = remotePathWord(path);
+    // Saving through a link changes the file it points to (readlink -f fails for a new file;
+    // then the path is used as it is). Write beside that file, give the copy its permissions
+    // (GNU chmod, else BSD stat), then swap it in.
+    std::string command =
+        "target=$(readlink -f -- " + word + " 2>/dev/null) || target=" + word + "; "
+        "[ -n \"$target\" ] || target=" + word + "; "
+        "temporary=\"$target.glasswork-save\"; "
+        "cat > \"$temporary\" && "
+        "{ chmod --reference=\"$target\" \"$temporary\" 2>/dev/null || "
+        "chmod \"$(stat -f %Lp \"$target\" 2>/dev/null)\" \"$temporary\" 2>/dev/null; true; } && "
+        "mv -f -- \"$temporary\" \"$target\"";
     return run(command, contents, 60, nullptr, error);
 }
 

@@ -63,8 +63,12 @@ LineStore LineStore::fromText(std::string&& text, size_t* crlfCount, size_t* lfC
         }
         lineStart = lineEnd + 1;
     }
-    if (crlfCount != nullptr) *crlfCount = crlf;
-    if (lfCount != nullptr) *lfCount = lf;
+    if (crlfCount != nullptr) {
+        *crlfCount = crlf;
+    }
+    if (lfCount != nullptr) {
+        *lfCount = lf;
+    }
     return store;
 }
 

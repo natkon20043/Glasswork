@@ -6,6 +6,8 @@
 
 namespace gw {
 
+// ---- Parsing
+
 /// Allows `//` and `/* */` comments and trailing commas. On error returns a discarded value (`is_discarded()`).
 nlohmann::json parseJsonc(const std::string& text);
 

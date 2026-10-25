@@ -1,4 +1,5 @@
 #import "KeybindingService.h"
+#import "Strings.h"
 
 #import "Services.h"
 
@@ -47,7 +48,10 @@ std::string KeyNameForEvent(NSEvent *event) {
         {"\"", "'"}, {"<", ","}, {">", "."}, {"?", "/"}, {"~", "`"},
     };
     auto found = unshifted.find(key);
-    return found == unshifted.end() ? key : found->second;
+    if (found == unshifted.end()) {
+        return key;
+    }
+    return found->second;
 }
 
 gw::KeyChord ChordForEvent(NSEvent *event) {
@@ -63,13 +67,21 @@ gw::KeyChord ChordForEvent(NSEvent *event) {
 
 std::string ChordText(const gw::KeyChord &chord) {
     std::string text;
-    if (chord.control) text += "⌃";
-    if (chord.option) text += "⌥";
-    if (chord.shift) text += "⇧";
-    if (chord.command) text += "⌘";
+    if (chord.control) {
+        text += "⌃";
+    }
+    if (chord.option) {
+        text += "⌥";
+    }
+    if (chord.shift) {
+        text += "⇧";
+    }
+    if (chord.command) {
+        text += "⌘";
+    }
     std::string key = chord.key;
     if (key.size() == 1) {
-        key = [@(key.c_str()) uppercaseString].UTF8String;  // "k" is shown as K, like the menus do
+        key = [StringFromUTF8(key) uppercaseString].UTF8String;  // "k" is shown as K, like the menus do
     }
     return text + key;
 }
@@ -142,15 +154,21 @@ std::string ChordText(const gw::KeyChord &chord) {
     std::vector<gw::KeyChord> pressed = _pending;
     pressed.push_back(chord);
 
-    NSDictionary<NSString *, NSString *> *contextObjects = self.contextProvider ? self.contextProvider() : @{};
+    NSDictionary<NSString *, NSString *> *contextObjects = @{};
+    if (self.contextProvider) {
+        contextObjects = self.contextProvider();
+    }
     std::map<std::string, std::string> context;
     for (NSString *name in contextObjects) {
-        context[name.UTF8String] = contextObjects[name].UTF8String;
+        id value = contextObjects[name];
+        if ([value isKindOfClass:NSString.class]) {
+            context[name.UTF8String] = [value UTF8String];
+        }
     }
 
     gw::KeybindingTable::Match match = _table.match(pressed, context);
     if (match.kind == gw::KeybindingTable::MatchKind::Complete) {
-        NSString *command = @(match.binding->command.c_str());
+        NSString *command = StringFromUTF8(match.binding->command);
         id arguments = nil;
         if (!match.binding->arguments.is_null()) {
             std::string text = match.binding->arguments.dump();
@@ -158,8 +176,12 @@ std::string ChordText(const gw::KeyChord &chord) {
                                                         options:NSJSONReadingFragmentsAllowed error:nil];
         }
         [self clearPending];
-        if (self.showStatus) self.showStatus(@"");
-        if (self.runCommand) self.runCommand(command, arguments);
+        if (self.showStatus) {
+            self.showStatus(@"");
+        }
+        if (self.runCommand) {
+            self.runCommand(command, arguments);
+        }
         return YES;
     }
     if (match.kind == gw::KeybindingTable::MatchKind::Prefix) {
@@ -167,22 +189,29 @@ std::string ChordText(const gw::KeyChord &chord) {
         _pendingSince = [NSDate date];
         NSMutableString *shown = [NSMutableString string];
         for (const gw::KeyChord &pendingChord : _pending) {
-            if (shown.length > 0) [shown appendString:@" "];
-            [shown appendString:@(ChordText(pendingChord).c_str())];
+            if (shown.length > 0) {
+                [shown appendString:@" "];
+            }
+            [shown appendString:StringFromUTF8(ChordText(pendingChord))];
         }
-        if (self.showStatus) self.showStatus([NSString stringWithFormat:@"(%@) was pressed. Waiting for the next key of the "
-                                                                        @"sequence…", shown]);
+        if (self.showStatus) {
+            self.showStatus([NSString stringWithFormat:@"(%@) was pressed. Waiting for the next key of the sequence…", shown]);
+        }
         return YES;
     }
     if (!_pending.empty()) {
         // The second key doesn't complete anything: say so, and don't let it type or run something else.
         NSMutableString *shown = [NSMutableString string];
         for (const gw::KeyChord &pendingChord : pressed) {
-            if (shown.length > 0) [shown appendString:@" "];
-            [shown appendString:@(ChordText(pendingChord).c_str())];
+            if (shown.length > 0) {
+                [shown appendString:@" "];
+            }
+            [shown appendString:StringFromUTF8(ChordText(pendingChord))];
         }
         [self clearPending];
-        if (self.showStatus) self.showStatus([NSString stringWithFormat:@"(%@) is not a command.", shown]);
+        if (self.showStatus) {
+            self.showStatus([NSString stringWithFormat:@"(%@) is not a command.", shown]);
+        }
         return YES;
     }
     return NO;

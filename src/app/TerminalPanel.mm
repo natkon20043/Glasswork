@@ -76,7 +76,12 @@
 
 - (void)updateColors {
     [self.effectiveAppearance performAsCurrentDrawingAppearance:^{
-        CGFloat alpha = self->_selected ? 0.14 : (self->_hovered ? 0.07 : 0);
+        CGFloat alpha = 0;
+        if (self->_selected) {
+            alpha = 0.14;
+        } else if (self->_hovered) {
+            alpha = 0.07;
+        }
         self.layer.backgroundColor = [NSColor.labelColor colorWithAlphaComponent:alpha].CGColor;
     }];
 }
@@ -101,11 +106,15 @@
 - (void)mouseExited:(NSEvent *)event { _hovered = NO; [self updateColors]; }
 
 - (void)mouseDown:(NSEvent *)event {
-    if (self.onSelect) self.onSelect();
+    if (self.onSelect) {
+        self.onSelect();
+    }
 }
 
 - (void)closeClicked:(id)sender {
-    if (self.onClose) self.onClose();
+    if (self.onClose) {
+        self.onClose();
+    }
 }
 
 - (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
@@ -185,7 +194,9 @@
     __weak GWTerminalPanel *weakSelf = self;
     _terminalView.onOpenPath = ^(NSString *path, NSInteger line, NSInteger column) {
         GWTerminalPanel *strongSelf = weakSelf;
-        if (strongSelf.onOpenPath) strongSelf.onOpenPath(path, line, column);
+        if (strongSelf.onOpenPath) {
+            strongSelf.onOpenPath(path, line, column);
+        }
     };
     _terminalView.baseFolderProvider = ^NSString *{ return weakSelf.projectFolder; };
 
@@ -205,6 +216,10 @@
     // The program in the foreground changes without telling us; look now and then.
     _titleTimer = [NSTimer scheduledTimerWithTimeInterval:1.5 repeats:YES block:^(NSTimer *timer) {
         GWTerminalPanel *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            [timer invalidate];  // the panel is gone
+            return;
+        }
         for (GWTerminalSession *session in strongSelf->_sessions) {
             [session refreshProcessName];
         }
@@ -234,8 +249,13 @@
     GWTerminalTab *tab = [GWTerminalTab new];
     tab.onSelect = ^{
         GWTerminalPanel *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
         NSUInteger index = [strongSelf->_tabs indexOfObject:[strongSelf tabForSession:weakSession]];
-        if (index != NSNotFound) [strongSelf selectIndex:static_cast<NSInteger>(index)];
+        if (index != NSNotFound) {
+            [strongSelf selectIndex:static_cast<NSInteger>(index)];
+        }
     };
     tab.onClose = ^{
         [weakSelf closeSession:weakSession];
@@ -284,7 +304,9 @@
     if (_sessions.count == 0) {
         _selected = -1;
         _terminalView.session = nil;
-        if (self.onHide) self.onHide();
+        if (self.onHide) {
+            self.onHide();
+        }
         return;
     }
     [self selectIndex:MIN(static_cast<NSInteger>(index), static_cast<NSInteger>(_sessions.count) - 1)];
@@ -337,7 +359,9 @@
 - (void)addClicked:(id)sender { [self newTerminalRunning:nil]; }
 - (void)killClicked:(id)sender { [self closeCurrentTerminal]; }
 - (void)hideClicked:(id)sender {
-    if (self.onHide) self.onHide();
+    if (self.onHide) {
+        self.onHide();
+    }
 }
 
 @end

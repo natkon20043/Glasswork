@@ -8,6 +8,8 @@
 
 namespace gw {
 
+// ---- Suggestions
+
 /// Document words starting with `prefix`, for files without a language server. The word being typed at
 /// `caret` is excluded. Commonest first, then alphabetical; an all-lowercase prefix matches any case.
 /// Reads only lines within `lineRadius` of the caret.

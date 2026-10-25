@@ -4,12 +4,15 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// ---- Diff text
+
 /// Removed lines (red) then added lines (green) in a monospaced font; shared with the diff previews in chat.
 NSAttributedString *GWDiffAttributedText(NSArray<NSString *> *oldLines, NSArray<NSString *> *newLines, CGFloat pointSize);
 
 /// What a gutter change bar shows: old and new lines, with buttons for neighbouring changes, stage and revert.
 @interface GWChangePopover : NSObject
 
+// ---- Showing
 + (void)showRelativeToRect:(NSRect)rect
                     ofView:(NSView *)view
                      title:(NSString *)title

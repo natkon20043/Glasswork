@@ -208,6 +208,18 @@ TEST(toolSummariesAreShortAndReadable) {
     CHECK(!blocks[2].tool.changesFiles());
 }
 
+TEST(aLongSummaryIsNeverCutInsideACharacter) {
+    // 89 ASCII letters, then "é" (two bytes) straddling the 90-byte cut.
+    std::string command = std::string(89, 'a') + "\xC3\xA9 and more";
+    gw::claude::ToolCall tool;
+    tool.name = "Bash";
+    tool.input = Json{{"command", command}};
+    tool.inputComplete = true;
+    std::string summary = tool.summary();
+    std::string expected = "Bash  " + std::string(89, 'a') + "…";
+    CHECK_EQ(summary, expected);
+}
+
 TEST(messagesWeSendAreValidStreamJson) {
     Json user = Json::parse(gw::claude::userMessageLine("hello \"world\"\nline two"));
     CHECK_EQ(user["type"].get<std::string>(), std::string("user"));

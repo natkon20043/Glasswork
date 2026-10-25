@@ -77,6 +77,7 @@ add_library(glasswork_core STATIC
     src/core/ClaudeSession.cpp
     src/core/RemoteHost.cpp
     src/core/Vim.cpp
+    src/core/CursorSmear.cpp
     src/core/Extensions.cpp)
 target_include_directories(glasswork_core PUBLIC src/core)
 target_link_libraries(glasswork_core PUBLIC nlohmann_json::nlohmann_json onig CURL::libcurl)
@@ -124,6 +125,9 @@ add_test(NAME search COMMAND glasswork_search_tests)
 add_executable(glasswork_remote_tests tests/remote_tests.cpp)
 target_link_libraries(glasswork_remote_tests PRIVATE glasswork_core)
 add_test(NAME remote COMMAND glasswork_remote_tests)
+add_executable(glasswork_cursor_smear_tests tests/cursor_smear_tests.cpp)
+target_link_libraries(glasswork_cursor_smear_tests PRIVATE glasswork_core)
+add_test(NAME cursor_smear COMMAND glasswork_cursor_smear_tests)
 add_executable(glasswork_vim_tests tests/vim_tests.cpp)
 target_link_libraries(glasswork_vim_tests PRIVATE glasswork_core)
 add_test(NAME vim COMMAND glasswork_vim_tests)

@@ -140,9 +140,15 @@ TEST(realLldbStopsAtABreakpointAndReadsVariables) {
     std::atomic<bool> initialized{false};
     std::atomic<bool> terminated{false};
     connection.onEvent = [&](const std::string& event, const Json&) {
-        if (event == "stopped") stopped = true;
-        if (event == "initialized") initialized = true;
-        if (event == "terminated" || event == "exited") terminated = true;
+        if (event == "stopped") {
+            stopped = true;
+        }
+        if (event == "initialized") {
+            initialized = true;
+        }
+        if (event == "terminated" || event == "exited") {
+            terminated = true;
+        }
     };
     std::string error;
     CHECK(connection.start(gw::dap::defaultAdapterCommand(), directory.string(), &error));
@@ -166,7 +172,9 @@ TEST(realLldbStopsAtABreakpointAndReadsVariables) {
     std::atomic<bool> gotThreads{false};
     int threadId = 0;
     connection.request("threads", Json::object(), [&](bool success, const Json& body, const std::string&) {
-        if (success && !body["threads"].empty()) threadId = body["threads"][0]["id"].get<int>();
+        if (success && !body["threads"].empty()) {
+            threadId = body["threads"][0]["id"].get<int>();
+        }
         gotThreads = true;
     });
     CHECK(waitUntil([&] { return gotThreads.load(); }));
@@ -188,7 +196,9 @@ TEST(realLldbStopsAtABreakpointAndReadsVariables) {
     connection.request("scopes", {{"frameId", frameId}}, [&](bool success, const Json& body, const std::string&) {
         if (success) {
             for (const Json& scope : body["scopes"]) {
-                if (scope.value("name", "") == "Locals") localsReference = scope["variablesReference"].get<int>();
+                if (scope.value("name", "") == "Locals") {
+                    localsReference = scope["variablesReference"].get<int>();
+                }
             }
         }
         gotScopes = true;
@@ -201,7 +211,9 @@ TEST(realLldbStopsAtABreakpointAndReadsVariables) {
     connection.request("variables", {{"variablesReference", localsReference}}, [&](bool success, const Json& body, const std::string&) {
         if (success) {
             for (const Json& variable : body["variables"]) {
-                if (variable.value("name", "") == "answer") answerValue = variable.value("value", "");
+                if (variable.value("name", "") == "answer") {
+                    answerValue = variable.value("value", "");
+                }
             }
         }
         gotVariables = true;

@@ -14,7 +14,9 @@ namespace {
 using json = nlohmann::json;
 
 std::string lowerCase(std::string text) {
-    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    for (char& character : text) {
+        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+    }
     return text;
 }
 
@@ -22,7 +24,9 @@ std::map<std::string, std::string> readTable(const json& object, const char* nam
     std::map<std::string, std::string> table;
     if (object.contains(name) && object[name].is_object()) {
         for (const auto& [key, value] : object[name].items()) {
-            if (value.is_string()) table[key] = value.get<std::string>();
+            if (value.is_string()) {
+                table[key] = value.get<std::string>();
+            }
         }
     }
     return table;
@@ -70,13 +74,18 @@ std::optional<IconTheme> IconTheme::load(const std::filesystem::path& file) {
         result.hasLight_ = true;
         fillTables(theme["light"], result.light_);
     }
-    result.hidesExplorerArrows_ = theme.value("hidesExplorerArrows", false);
+    if (theme.contains("hidesExplorerArrows") && theme["hidesExplorerArrows"].is_boolean()) {
+        result.hidesExplorerArrows_ = theme["hidesExplorerArrows"].get<bool>();
+    }
     return result;
 }
 
 std::filesystem::path IconTheme::pathForDefinition(const std::string& id) const {
     auto found = definitions_.find(id);
-    return found == definitions_.end() ? std::filesystem::path() : found->second;
+    if (found == definitions_.end()) {
+        return std::filesystem::path();
+    }
+    return found->second;
 }
 
 const IconTheme::Tables& IconTheme::tablesFor(bool lightTheme) const {
@@ -93,11 +102,16 @@ std::filesystem::path IconTheme::iconForFile(const std::string& filename, const 
             auto found = (light_.*table).find(key);
             if (found != (light_.*table).end()) {
                 std::filesystem::path path = pathForDefinition(found->second);
-                if (!path.empty()) return path;
+                if (!path.empty()) {
+                    return path;
+                }
             }
         }
         auto found = (dark_.*table).find(key);
-        return found == (dark_.*table).end() ? std::filesystem::path() : pathForDefinition(found->second);
+        if (found == (dark_.*table).end()) {
+            return std::filesystem::path();
+        }
+        return pathForDefinition(found->second);
     };
 
     if (std::filesystem::path path = lookup(&Tables::fileNames, name); !path.empty()) {
@@ -106,7 +120,9 @@ std::filesystem::path IconTheme::iconForFile(const std::string& filename, const 
     // Extensions, the longest first: "a.test.js" tries "test.js" and then "js".
     for (size_t dot = name.find('.'); dot != std::string::npos; dot = name.find('.', dot + 1)) {
         std::string extension = name.substr(dot + 1);
-        if (extension.empty()) continue;
+        if (extension.empty()) {
+            continue;
+        }
         if (std::filesystem::path path = lookup(&Tables::fileExtensions, extension); !path.empty()) {
             return path;
         }
@@ -116,7 +132,10 @@ std::filesystem::path IconTheme::iconForFile(const std::string& filename, const 
             return path;
         }
     }
-    std::string fallback = !light.file.empty() ? light.file : dark_.file;
+    std::string fallback = light.file;
+    if (fallback.empty()) {
+        fallback = dark_.file;
+    }
     return pathForDefinition(fallback);
 }
 
@@ -127,19 +146,36 @@ std::filesystem::path IconTheme::iconForFolder(const std::string& name, bool exp
             auto found = (light_.*table).find(key);
             if (found != (light_.*table).end()) {
                 std::filesystem::path path = pathForDefinition(found->second);
-                if (!path.empty()) return path;
+                if (!path.empty()) {
+                    return path;
+                }
             }
         }
         auto found = (dark_.*table).find(key);
-        return found == (dark_.*table).end() ? std::filesystem::path() : pathForDefinition(found->second);
+        if (found == (dark_.*table).end()) {
+            return std::filesystem::path();
+        }
+        return pathForDefinition(found->second);
     };
+
+    // Tables of icons for particular folder names, open or closed.
+    auto rootNames = &Tables::rootFolderNames;
+    auto names = &Tables::folderNames;
+    auto rootIcon = &Tables::rootFolder;
+    auto icon = &Tables::folder;
+    if (expanded) {
+        rootNames = &Tables::rootFolderNamesExpanded;
+        names = &Tables::folderNamesExpanded;
+        rootIcon = &Tables::rootFolderExpanded;
+        icon = &Tables::folderExpanded;
+    }
 
     std::filesystem::path byName;
     if (root) {
-        byName = lookup(expanded ? &Tables::rootFolderNamesExpanded : &Tables::rootFolderNames);
+        byName = lookup(rootNames);
     }
     if (byName.empty()) {
-        byName = lookup(expanded ? &Tables::folderNamesExpanded : &Tables::folderNames);
+        byName = lookup(names);
     }
     if (!byName.empty()) {
         return byName;
@@ -147,14 +183,17 @@ std::filesystem::path IconTheme::iconForFolder(const std::string& name, bool exp
     const Tables& chosen = tablesFor(lightTheme);
     auto pick = [&](const std::string Tables::*field) {
         const std::string& fromLight = chosen.*field;
-        return !fromLight.empty() ? fromLight : dark_.*field;
+        if (!fromLight.empty()) {
+            return fromLight;
+        }
+        return dark_.*field;
     };
     std::string id;
     if (root) {
-        id = expanded ? pick(&Tables::rootFolderExpanded) : pick(&Tables::rootFolder);
+        id = pick(rootIcon);
     }
     if (id.empty()) {
-        id = expanded ? pick(&Tables::folderExpanded) : pick(&Tables::folder);
+        id = pick(icon);
     }
     if (id.empty()) {
         id = pick(&Tables::folder);  // a theme with no open-folder icon uses the closed one

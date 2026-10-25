@@ -450,10 +450,16 @@ function createApi(runtime) {
                         await walk(full, depth + 1);
                     }
                 } else {
-                    if (includeRegex && !includeRegex.test(full)) continue;
-                    if (excludeRegex && excludeRegex.test(full)) continue;
+                    if (includeRegex && !includeRegex.test(full)) {
+                        continue;
+                    }
+                    if (excludeRegex && excludeRegex.test(full)) {
+                        continue;
+                    }
                     found.push(Uri.file(full));
-                    if (maxResults && found.length >= maxResults) return;
+                    if (maxResults && found.length >= maxResults) {
+                        return;
+                    }
                 }
             }
         }

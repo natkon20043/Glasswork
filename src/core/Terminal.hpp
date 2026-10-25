@@ -28,8 +28,6 @@ enum class MouseMode { None, Press, PressRelease, Drag, Motion };
 
 /// Default, one of 256 palette entries, or full RGB, packed in one number to keep cells small.
 struct TermColor {
-    uint32_t packed = 0;
-
     static TermColor defaultColor() { return TermColor{0}; }
     static TermColor indexed(uint8_t index) { return TermColor{(1u << 24) | index}; }
     static TermColor rgb(uint8_t red, uint8_t green, uint8_t blue) {
@@ -44,18 +42,20 @@ struct TermColor {
     uint8_t green() const { return static_cast<uint8_t>((packed >> 8) & 0xFF); }
     uint8_t blue() const { return static_cast<uint8_t>(packed & 0xFF); }
     bool operator==(const TermColor&) const = default;
+
+    uint32_t packed = 0;
 };
 
 struct Cell {
-    uint32_t character = ' ';
-    TermColor foreground;
-    TermColor background;
-    uint16_t attributes = 0;
-
     bool isBlank() const {
         return character == ' ' && foreground.isDefault() && background.isDefault() && (attributes & ~kWideEnd) == 0;
     }
     bool operator==(const Cell&) const = default;
+
+    uint32_t character = ' ';
+    TermColor foreground;
+    TermColor background;
+    uint16_t attributes = 0;
 };
 
 /// One line of the screen or of the history above it.
@@ -136,7 +136,8 @@ private:
     };
 
     struct Charset {
-        char designation = 'B';  // 'B' ASCII, '0' DEC line drawing
+        /// 'B' ASCII, '0' DEC line drawing.
+        char designation = 'B';
     };
 
     struct SavedCursor {

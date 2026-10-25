@@ -11,18 +11,24 @@
 namespace gw {
 
 struct Position {
+    auto operator<=>(const Position&) const = default;
+
     size_t line = 0;
     /// UTF-8 byte offset within the line; the UI converts to UTF-16 for display.
     size_t column = 0;
-    auto operator<=>(const Position&) const = default;
 };
 
 struct Range {
+    bool empty() const { return start == end; }
+    Range normalized() const {
+        if (start <= end) {
+            return *this;
+        }
+        return Range{end, start};
+    }
+
     Position start;
     Position end;
-
-    bool empty() const { return start == end; }
-    Range normalized() const { return start <= end ? *this : Range{end, start}; }
 };
 
 /// The text as a list of lines without their endings, stored in a LineStore.
@@ -73,6 +79,8 @@ private:
 
 /// Byte offset of the UTF-8 character boundary at or before `column`.
 size_t floorToCharacter(std::string_view line, size_t column);
+/// `text` with every byte that isn't part of valid UTF-8 replaced by U+FFFD.
+std::string withValidUtf8(std::string_view text);
 bool isWordByte(unsigned char byte);
 
 }  // namespace gw

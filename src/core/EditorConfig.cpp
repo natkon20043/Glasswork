@@ -24,7 +24,9 @@ std::string trimmed(std::string_view text) {
 }
 
 std::string lowered(std::string text) {
-    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    for (char& character : text) {
+        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+    }
     return text;
 }
 
@@ -42,8 +44,12 @@ std::vector<std::string> splitAlternatives(const std::string& text) {
     std::string current;
     int depth = 0;
     for (char c : text) {
-        if (c == '{') ++depth;
-        if (c == '}') --depth;
+        if (c == '{') {
+            ++depth;
+        }
+        if (c == '}') {
+            --depth;
+        }
         if (c == ',' && depth == 0) {
             parts.push_back(current);
             current.clear();
@@ -68,7 +74,9 @@ std::string braceToRegex(const std::string& inside, bool& ok) {
             if (first <= last && last - first <= 200) {
                 std::string result = "(?:";
                 for (int value = first; value <= last; ++value) {
-                    if (value > first) result += "|";
+                    if (value > first) {
+                        result += "|";
+                    }
                     result += std::to_string(value);
                 }
                 return result + ")";
@@ -85,7 +93,9 @@ std::string braceToRegex(const std::string& inside, bool& ok) {
     }
     std::string result = "(?:";
     for (size_t index = 0; index < parts.size(); ++index) {
-        if (index > 0) result += "|";
+        if (index > 0) {
+            result += "|";
+        }
         result += globToRegex(parts[index]);
     }
     return result + ")";
@@ -116,7 +126,9 @@ std::string globToRegex(const std::string& glob) {
                     set.erase(0, 1);
                 }
                 for (char member : set) {
-                    if (member == '\\' || member == '[') regex += '\\';
+                    if (member == '\\' || member == '[') {
+                        regex += '\\';
+                    }
                     regex += member;
                 }
                 regex += "]";
@@ -127,10 +139,15 @@ std::string globToRegex(const std::string& glob) {
             int depth = 0;
             size_t close = std::string::npos;
             for (size_t j = i; j < glob.size(); ++j) {
-                if (glob[j] == '{') ++depth;
-                if (glob[j] == '}' && --depth == 0) {
-                    close = j;
-                    break;
+                if (glob[j] == '{') {
+                    ++depth;
+                }
+                if (glob[j] == '}') {
+                    --depth;
+                    if (depth == 0) {
+                        close = j;
+                        break;
+                    }
                 }
             }
             bool ok = false;
@@ -154,45 +171,71 @@ std::string globToRegex(const std::string& glob) {
 }
 
 std::optional<bool> parseBool(const std::string& value) {
-    if (value == "true") return true;
-    if (value == "false") return false;
+    if (value == "true") {
+        return true;
+    }
+    if (value == "false") {
+        return false;
+    }
     return std::nullopt;
+}
+
+/// A column count from 1 to 32, or nothing if the value isn't one.
+std::optional<int> parseColumns(const std::string& value) {
+    try {
+        int size = std::stoi(value);
+        if (size > 0 && size <= 32) {
+            return size;
+        }
+    } catch (const std::exception&) {
+    }
+    return std::nullopt;
+}
+
+/// "unset" removes what an earlier file or section said about `key`.
+void unsetProperty(const std::string& key, EditorConfigResult& result) {
+    if (key == "indent_style") {
+        result.useTabs.reset();
+    } else if (key == "indent_size") {
+        result.indentSize.reset();
+    } else if (key == "tab_width") {
+        result.tabWidth.reset();
+    } else if (key == "end_of_line") {
+        result.endOfLine.reset();
+    } else if (key == "trim_trailing_whitespace") {
+        result.trimTrailingWhitespace.reset();
+    } else if (key == "insert_final_newline") {
+        result.insertFinalNewline.reset();
+    }
 }
 
 void applyProperty(const std::string& key, const std::string& rawValue, EditorConfigResult& result) {
     std::string value = lowered(rawValue);
     if (value == "unset") {
-        // "unset" removes what an earlier file or section said.
-        if (key == "indent_style") result.useTabs.reset();
-        else if (key == "indent_size") result.indentSize.reset();
-        else if (key == "tab_width") result.tabWidth.reset();
-        else if (key == "end_of_line") result.endOfLine.reset();
-        else if (key == "trim_trailing_whitespace") result.trimTrailingWhitespace.reset();
-        else if (key == "insert_final_newline") result.insertFinalNewline.reset();
+        unsetProperty(key, result);
         return;
     }
     if (key == "indent_style") {
-        if (value == "tab") result.useTabs = true;
-        else if (value == "space") result.useTabs = false;
+        if (value == "tab") {
+            result.useTabs = true;
+        } else if (value == "space") {
+            result.useTabs = false;
+        }
     } else if (key == "indent_size") {
         if (value == "tab") {
             // "tab" means: use tab_width for the size.
             result.indentSize.reset();
-        } else {
-            try {
-                int size = std::stoi(value);
-                if (size > 0 && size <= 32) result.indentSize = size;
-            } catch (const std::exception&) {
-            }
+        } else if (std::optional<int> size = parseColumns(value)) {
+            result.indentSize = size;
         }
     } else if (key == "tab_width") {
-        try {
-            int size = std::stoi(value);
-            if (size > 0 && size <= 32) result.tabWidth = size;
-        } catch (const std::exception&) {
+        if (std::optional<int> size = parseColumns(value)) {
+            result.tabWidth = size;
         }
     } else if (key == "end_of_line") {
-        if (value == "lf" || value == "crlf" || value == "cr") result.endOfLine = value;
+        if (value == "lf" || value == "crlf" || value == "cr") {
+            result.endOfLine = value;
+        }
     } else if (key == "trim_trailing_whitespace") {
         result.trimTrailingWhitespace = parseBool(value);
     } else if (key == "insert_final_newline") {
@@ -223,7 +266,10 @@ bool applyEditorConfigText(std::string_view text, const std::filesystem::path& c
                            const std::filesystem::path& file, EditorConfigResult& result) {
     std::error_code error;
     std::filesystem::path relative = std::filesystem::relative(file, configFolder, error);
-    std::string relativePath = error ? file.string() : relative.generic_string();
+    std::string relativePath = relative.generic_string();
+    if (error) {
+        relativePath = file.string();
+    }
 
     bool isRoot = false;
     bool sectionMatches = false;
@@ -247,7 +293,9 @@ bool applyEditorConfigText(std::string_view text, const std::filesystem::path& c
         std::string key = lowered(trimmed(content.substr(0, equals)));
         std::string value = trimmed(content.substr(equals + 1));
         if (!inSection) {
-            if (key == "root" && lowered(value) == "true") isRoot = true;
+            if (key == "root" && lowered(value) == "true") {
+                isRoot = true;
+            }
             continue;
         }
         if (sectionMatches) {

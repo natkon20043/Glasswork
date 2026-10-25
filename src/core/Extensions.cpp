@@ -23,7 +23,9 @@ namespace {
 
 std::optional<std::string> readFile(const fs::path& path) {
     std::ifstream file(path, std::ios::binary);
-    if (!file) return std::nullopt;
+    if (!file) {
+        return std::nullopt;
+    }
     std::ostringstream contents;
     contents << file.rdbuf();
     return contents.str();
@@ -31,24 +33,51 @@ std::optional<std::string> readFile(const fs::path& path) {
 
 json readJson(const fs::path& path) {
     auto text = readFile(path);
-    if (!text) return json();
+    if (!text) {
+        return json();
+    }
     return parseJsonc(*text);
 }
 
 std::string lowercase(std::string text) {
-    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return std::tolower(c); });
+    for (char& character : text) {
+        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+    }
     return text;
+}
+
+/// Whether `text` is safe to use as part of a folder name: letters, digits, "-", "_", "." and "+",
+/// and not "." or "..". Extension ids and versions come from the network and from what people
+/// type, and end up in paths that are created and deleted.
+bool isSafeNamePart(const std::string& text) {
+    if (text.empty() || text == "." || text == "..") {
+        return false;
+    }
+    for (unsigned char character : text) {
+        bool letterOrDigit = std::isalnum(character) != 0;
+        bool punctuation = character == '-' || character == '_' || character == '.' || character == '+';
+        if (!letterOrDigit && !punctuation) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /// Labels like "%displayName%" are looked up in the extension's package.nls.json.
 std::string localize(const json& value, const json& strings) {
-    if (!value.is_string()) return "";
+    if (!value.is_string()) {
+        return "";
+    }
     std::string text = value.get<std::string>();
     if (text.size() > 2 && text.front() == '%' && text.back() == '%' && strings.is_object()) {
         auto found = strings.find(text.substr(1, text.size() - 2));
         if (found != strings.end()) {
-            if (found->is_string()) return found->get<std::string>();
-            if (found->is_object() && found->contains("message")) return (*found)["message"].get<std::string>();
+            if (found->is_string()) {
+                return found->get<std::string>();
+            }
+            if (found->is_object() && found->contains("message") && (*found)["message"].is_string()) {
+                return (*found)["message"].get<std::string>();
+            }
         }
     }
     return text;
@@ -56,9 +85,13 @@ std::string localize(const json& value, const json& strings) {
 
 std::vector<std::string> stringList(const json& value) {
     std::vector<std::string> list;
-    if (!value.is_array()) return list;
+    if (!value.is_array()) {
+        return list;
+    }
     for (const auto& item : value) {
-        if (item.is_string()) list.push_back(item.get<std::string>());
+        if (item.is_string()) {
+            list.push_back(item.get<std::string>());
+        }
     }
     return list;
 }
@@ -70,12 +103,16 @@ json localizeAll(const json& value, const json& strings) {
     }
     if (value.is_array()) {
         json result = json::array();
-        for (const auto& item : value) result.push_back(localizeAll(item, strings));
+        for (const auto& item : value) {
+            result.push_back(localizeAll(item, strings));
+        }
         return result;
     }
     if (value.is_object()) {
         json result = json::object();
-        for (const auto& [key, item] : value.items()) result[key] = localizeAll(item, strings);
+        for (const auto& [key, item] : value.items()) {
+            result[key] = localizeAll(item, strings);
+        }
         return result;
     }
     return value;
@@ -83,15 +120,22 @@ json localizeAll(const json& value, const json& strings) {
 
 std::optional<Extension> readExtension(const fs::path& root) {
     json manifest = readJson(root / "package.json");
-    if (!manifest.is_object()) return std::nullopt;
+    if (!manifest.is_object()) {
+        return std::nullopt;
+    }
     json strings = readJson(root / "package.nls.json");
 
     Extension extension;
     extension.root = root;
     extension.id = manifest.value("publisher", "unknown") + "." + manifest.value("name", root.filename().string());
     extension.version = manifest.value("version", "");
-    extension.displayName = manifest.contains("displayName") ? localize(manifest["displayName"], strings) : extension.id;
-    extension.description = manifest.contains("description") ? localize(manifest["description"], strings) : "";
+    extension.displayName = extension.id;
+    if (manifest.contains("displayName")) {
+        extension.displayName = localize(manifest["displayName"], strings);
+    }
+    if (manifest.contains("description")) {
+        extension.description = localize(manifest["description"], strings);
+    }
     extension.hasCode = manifest.contains("main") && manifest["main"].is_string();
     if (extension.hasCode) {
         // Only extensions with code are handed to the extension host; keep the manifest for them.
@@ -100,7 +144,9 @@ std::optional<Extension> readExtension(const fs::path& root) {
 
     const json contributes = manifest.value("contributes", json::object());
     for (const auto& language : contributes.value("languages", json::array())) {
-        if (!language.is_object() || !language.contains("id")) continue;
+        if (!language.is_object() || !language.contains("id")) {
+            continue;
+        }
         LanguageInfo info;
         info.id = language["id"].get<std::string>();
         info.extensions = stringList(language.value("extensions", json::array()));
@@ -112,7 +158,9 @@ std::optional<Extension> readExtension(const fs::path& root) {
         extension.languages.push_back(std::move(info));
     }
     for (const auto& grammar : contributes.value("grammars", json::array())) {
-        if (!grammar.is_object() || !grammar.contains("scopeName") || !grammar.contains("path")) continue;
+        if (!grammar.is_object() || !grammar.contains("scopeName") || !grammar.contains("path")) {
+            continue;
+        }
         GrammarInfo info;
         info.language = grammar.value("language", "");
         info.scopeName = grammar["scopeName"].get<std::string>();
@@ -123,23 +171,40 @@ std::optional<Extension> readExtension(const fs::path& root) {
         extension.keybindingsJson = contributes["keybindings"].dump();
     }
     for (const auto& snippet : contributes.value("snippets", json::array())) {
-        if (!snippet.is_object() || !snippet.contains("language") || !snippet.contains("path")) continue;
-        if (!snippet["language"].is_string() || !snippet["path"].is_string()) continue;
+        if (!snippet.is_object() || !snippet.contains("language") || !snippet.contains("path")) {
+            continue;
+        }
+        if (!snippet["language"].is_string() || !snippet["path"].is_string()) {
+            continue;
+        }
         extension.snippets.emplace_back(snippet["language"].get<std::string>(), root / snippet["path"].get<std::string>());
     }
     for (const auto& theme : contributes.value("iconThemes", json::array())) {
-        if (!theme.is_object() || !theme.contains("path") || !theme["path"].is_string()) continue;
+        if (!theme.is_object() || !theme.contains("path") || !theme["path"].is_string()) {
+            continue;
+        }
         IconThemeInfo info;
         info.id = theme.value("id", "");
-        info.label = theme.contains("label") ? localize(theme["label"], strings) : info.id;
+        info.label = info.id;
+        if (theme.contains("label")) {
+            info.label = localize(theme["label"], strings);
+        }
         info.path = root / theme["path"].get<std::string>();
         info.extensionId = extension.id;
-        if (!info.id.empty()) extension.iconThemes.push_back(std::move(info));
+        if (!info.id.empty()) {
+            extension.iconThemes.push_back(std::move(info));
+        }
     }
     for (const auto& theme : contributes.value("themes", json::array())) {
-        if (!theme.is_object() || !theme.contains("path")) continue;
+        if (!theme.is_object() || !theme.contains("path")) {
+            continue;
+        }
         ThemeInfo info;
-        info.label = theme.contains("label") ? localize(theme["label"], strings) : theme.value("id", "Theme");
+        if (theme.contains("label")) {
+            info.label = localize(theme["label"], strings);
+        } else {
+            info.label = theme.value("id", "Theme");
+        }
         info.uiTheme = theme.value("uiTheme", "vs-dark");
         info.path = root / theme["path"].get<std::string>();
         info.extensionId = extension.id;
@@ -165,7 +230,9 @@ std::optional<std::string> httpGet(const std::string& url, std::ofstream* file =
     static std::once_flag once;
     std::call_once(once, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
     CURL* curl = curl_easy_init();
-    if (!curl) return std::nullopt;
+    if (!curl) {
+        return std::nullopt;
+    }
     std::string body;
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -184,11 +251,15 @@ std::optional<std::string> httpGet(const std::string& url, std::ofstream* file =
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
     curl_easy_cleanup(curl);
     if (result != CURLE_OK) {
-        if (error) *error = curl_easy_strerror(result);
+        if (error) {
+            *error = curl_easy_strerror(result);
+        }
         return std::nullopt;
     }
     if (status < 200 || status >= 300) {
-        if (error) *error = "HTTP " + std::to_string(status);
+        if (error) {
+            *error = "HTTP " + std::to_string(status);
+        }
         return std::nullopt;
     }
     return body;
@@ -196,7 +267,8 @@ std::optional<std::string> httpGet(const std::string& url, std::ofstream* file =
 
 /// Unzips with macOS's own `ditto` (a .vsix is a zip archive).
 bool unzip(const fs::path& archive, const fs::path& destination) {
-    std::string archivePath = archive.string(), destinationPath = destination.string();
+    std::string archivePath = archive.string();
+    std::string destinationPath = destination.string();
     const char* arguments[] = {"/usr/bin/ditto", "-x", "-k", archivePath.c_str(), destinationPath.c_str(), nullptr};
     pid_t process;
     if (posix_spawn(&process, "/usr/bin/ditto", nullptr, nullptr, const_cast<char* const*>(arguments), environ) != 0) {
@@ -217,10 +289,16 @@ ExtensionManager::ExtensionManager(fs::path directory) : directory_(std::move(di
 std::string ExtensionManager::contributedKeybindingsJson() const {
     json all = json::array();
     for (const Extension& extension : extensions_) {
-        if (extension.keybindingsJson.empty()) continue;
+        if (extension.keybindingsJson.empty()) {
+            continue;
+        }
         json entries = json::parse(extension.keybindingsJson, nullptr, false);
-        if (!entries.is_array()) continue;
-        for (const json& entry : entries) all.push_back(entry);
+        if (!entries.is_array()) {
+            continue;
+        }
+        for (const json& entry : entries) {
+            all.push_back(entry);
+        }
     }
     return all.dump();
 }
@@ -236,12 +314,23 @@ void ExtensionManager::scan() {
     std::error_code code;
     std::vector<fs::path> roots;
     for (const auto& entry : fs::directory_iterator(directory_, code)) {
-        if (entry.is_directory() && fs::exists(entry.path() / "package.json")) roots.push_back(entry.path());
+        if (entry.is_directory() && fs::exists(entry.path() / "package.json")) {
+            roots.push_back(entry.path());
+        }
     }
     std::sort(roots.begin(), roots.end());
     for (const auto& root : roots) {
-        auto extension = readExtension(root);
-        if (!extension) continue;
+        // A manifest with a value of the wrong type (a number where a name should be) is skipped,
+        // rather than stopping every other extension from loading.
+        std::optional<Extension> extension;
+        try {
+            extension = readExtension(root);
+        } catch (const std::exception&) {
+            continue;
+        }
+        if (!extension) {
+            continue;
+        }
         if (disabledIds_.count(extension->id) > 0) {
             disabled_.push_back(std::move(*extension));  // known, but contributing nothing
             continue;
@@ -252,12 +341,18 @@ void ExtensionManager::scan() {
             merged.id = language.id;
             merged.extensions.insert(merged.extensions.end(), language.extensions.begin(), language.extensions.end());
             merged.filenames.insert(merged.filenames.end(), language.filenames.begin(), language.filenames.end());
-            if (merged.aliases.empty()) merged.aliases = language.aliases;
-            if (merged.configuration.empty()) merged.configuration = language.configuration;
+            if (merged.aliases.empty()) {
+                merged.aliases = language.aliases;
+            }
+            if (merged.configuration.empty()) {
+                merged.configuration = language.configuration;
+            }
         }
         for (const auto& grammar : extension->grammars) {
             grammarsByScope_[grammar.scopeName] = grammar;
-            if (!grammar.language.empty()) scopeByLanguage_[grammar.language] = grammar.scopeName;
+            if (!grammar.language.empty()) {
+                scopeByLanguage_[grammar.language] = grammar.scopeName;
+            }
         }
         for (const auto& [language, file] : extension->snippets) {
             snippetLibrary_.addSource(language, file);
@@ -269,7 +364,9 @@ void ExtensionManager::scan() {
     if (!userSnippets_.empty()) {
         std::vector<fs::path> files;
         for (const auto& entry : fs::directory_iterator(userSnippets_, code)) {
-            if (entry.is_regular_file()) files.push_back(entry.path());
+            if (entry.is_regular_file()) {
+                files.push_back(entry.path());
+            }
         }
         std::sort(files.begin(), files.end());
         for (const auto& file : files) {
@@ -311,7 +408,9 @@ std::optional<std::string> ExtensionManager::languageForExactFile(const fs::path
     for (const auto& [id, language] : languages_) {
         for (const auto& name : language.filenames) {
             // Case does not matter: the CMake extension lists "CMakelists.txt" but projects write "CMakeLists.txt".
-            if (lowercase(name) == lower) return id;
+            if (lowercase(name) == lower) {
+                return id;
+            }
         }
     }
     // Longest matching extension wins (".d.ts" over ".ts").
@@ -343,54 +442,82 @@ std::optional<std::string> ExtensionManager::languageForExactFile(const fs::path
 
 std::string ExtensionManager::languageName(const std::string& id) const {
     auto found = languages_.find(id);
-    if (found != languages_.end() && !found->second.aliases.empty()) return found->second.aliases.front();
-    return id.empty() ? "Plain Text" : id;
+    if (found != languages_.end() && !found->second.aliases.empty()) {
+        return found->second.aliases.front();
+    }
+    if (id.empty()) {
+        return "Plain Text";
+    }
+    return id;
 }
 
 const GrammarInfo* ExtensionManager::grammarForLanguage(const std::string& language) const {
     auto scope = scopeByLanguage_.find(language);
-    return scope == scopeByLanguage_.end() ? nullptr : grammarForScope(scope->second);
+    if (scope == scopeByLanguage_.end()) {
+        return nullptr;
+    }
+    return grammarForScope(scope->second);
 }
 
 const GrammarInfo* ExtensionManager::grammarForScope(const std::string& scopeName) const {
     auto found = grammarsByScope_.find(scopeName);
-    return found == grammarsByScope_.end() ? nullptr : &found->second;
+    if (found == grammarsByScope_.end()) {
+        return nullptr;
+    }
+    return &found->second;
 }
 
 std::vector<ThemeInfo> ExtensionManager::themes() const {
     std::vector<ThemeInfo> themes;
-    for (const auto& extension : extensions_) themes.insert(themes.end(), extension.themes.begin(), extension.themes.end());
+    for (const auto& extension : extensions_) {
+        themes.insert(themes.end(), extension.themes.begin(), extension.themes.end());
+    }
     return themes;
 }
 
 std::vector<IconThemeInfo> ExtensionManager::iconThemes() const {
     std::vector<IconThemeInfo> themes;
-    for (const auto& extension : extensions_) themes.insert(themes.end(), extension.iconThemes.begin(), extension.iconThemes.end());
+    for (const auto& extension : extensions_) {
+        themes.insert(themes.end(), extension.iconThemes.begin(), extension.iconThemes.end());
+    }
     return themes;
 }
 
 LanguageConfiguration ExtensionManager::configuration(const std::string& language) const {
     LanguageConfiguration configuration;
     auto found = languages_.find(language);
-    if (found == languages_.end() || found->second.configuration.empty()) return configuration;
+    if (found == languages_.end() || found->second.configuration.empty()) {
+        return configuration;
+    }
     json document = readJson(found->second.configuration);
-    if (!document.is_object()) return configuration;
+    if (!document.is_object()) {
+        return configuration;
+    }
 
     if (document.contains("comments") && document["comments"].is_object()) {
         const json& comments = document["comments"];
         if (comments.contains("lineComment") && comments["lineComment"].is_string()) {
             configuration.lineComment = comments["lineComment"].get<std::string>();
         }
-        if (comments.contains("blockComment") && comments["blockComment"].is_array() && comments["blockComment"].size() == 2) {
-            configuration.blockComment = {comments["blockComment"][0].get<std::string>(),
-                                          comments["blockComment"][1].get<std::string>()};
+        const json& block = comments.value("blockComment", json());
+        bool blockIsPair = block.is_array() && block.size() == 2 && block[0].is_string() && block[1].is_string();
+        if (blockIsPair) {
+            configuration.blockComment = {block[0].get<std::string>(), block[1].get<std::string>()};
         }
     }
-    for (const auto& pair : document.value("autoClosingPairs", json::array())) {
-        if (pair.is_array() && pair.size() == 2 && pair[0].is_string() && pair[1].is_string()) {
-            configuration.autoClosingPairs.emplace_back(pair[0].get<std::string>(), pair[1].get<std::string>());
-        } else if (pair.is_object() && pair.contains("open") && pair.contains("close")) {
-            configuration.autoClosingPairs.emplace_back(pair["open"].get<std::string>(), pair["close"].get<std::string>());
+    const json& pairs = document.value("autoClosingPairs", json::array());
+    if (pairs.is_array()) {
+        for (const auto& pair : pairs) {
+            // Either ["(", ")"] or {"open": "(", "close": ")"}.
+            if (pair.is_array() && pair.size() == 2 && pair[0].is_string() && pair[1].is_string()) {
+                configuration.autoClosingPairs.emplace_back(pair[0].get<std::string>(), pair[1].get<std::string>());
+            } else if (pair.is_object()) {
+                std::string open = stringOr(pair, "open");
+                std::string close = stringOr(pair, "close");
+                if (!open.empty() && !close.empty()) {
+                    configuration.autoClosingPairs.emplace_back(open, close);
+                }
+            }
         }
     }
     return configuration;
@@ -402,8 +529,8 @@ std::string urlEncode(const std::string& text) {
     static const char* hex = "0123456789ABCDEF";
     std::string encoded;
     for (unsigned char character : text) {
-        bool plain = (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
-                     (character >= '0' && character <= '9') || character == '-' || character == '_' || character == '.' || character == '~';
+        bool letterOrDigit = std::isalnum(character) != 0;
+        bool plain = letterOrDigit || character == '-' || character == '_' || character == '.' || character == '~';
         if (plain) {
             encoded += static_cast<char>(character);
         } else {
@@ -424,17 +551,23 @@ std::vector<ExtensionManager::MarketplaceEntry> ExtensionManager::parseSearchRes
         return entries;
     }
     for (const auto& item : answer["extensions"]) {
-        if (!item.is_object() || !item.contains("name") || !item.contains("namespace")) continue;
+        if (!item.is_object() || !item.contains("name") || !item.contains("namespace")) {
+            continue;
+        }
         MarketplaceEntry entry;
         entry.publisher = item.value("namespace", "");
         entry.id = entry.publisher + "." + item.value("name", "");
         entry.displayName = stringOr(item, "displayName", item.value("name", ""));
         entry.description = stringOr(item, "description");
         entry.version = item.value("version", "");
-        entry.downloads = item.contains("downloadCount") && item["downloadCount"].is_number() ? item["downloadCount"].get<long>() : 0;
-        entry.rating = item.contains("averageRating") && item["averageRating"].is_number() ? item["averageRating"].get<double>() : 0;
-        if (item.contains("files") && item["files"].is_object() && item["files"].contains("icon") && item["files"]["icon"].is_string()) {
-            entry.iconURL = item["files"]["icon"].get<std::string>();
+        if (item.contains("downloadCount") && item["downloadCount"].is_number()) {
+            entry.downloads = item["downloadCount"].get<long>();
+        }
+        if (item.contains("averageRating") && item["averageRating"].is_number()) {
+            entry.rating = item["averageRating"].get<double>();
+        }
+        if (item.contains("files") && item["files"].is_object()) {
+            entry.iconURL = stringOr(item["files"], "icon");
         }
         entries.push_back(std::move(entry));
     }
@@ -442,15 +575,21 @@ std::vector<ExtensionManager::MarketplaceEntry> ExtensionManager::parseSearchRes
 }
 
 std::vector<ExtensionManager::MarketplaceEntry> ExtensionManager::searchOpenVSX(const std::string& query, size_t limit, std::string* error) {
-    std::string url = "https://open-vsx.org/api/-/search?size=" + std::to_string(limit) + "&sortBy=" +
-                      std::string(query.empty() ? "downloadCount" : "relevance") + "&sortOrder=desc";
+    std::string sortBy = "relevance";
+    if (query.empty()) {
+        sortBy = "downloadCount";
+    }
+    std::string url = "https://open-vsx.org/api/-/search?size=" + std::to_string(limit) + "&sortBy=" + sortBy +
+                      "&sortOrder=desc";
     if (!query.empty()) {
         url += "&query=" + urlEncode(query);
     }
     std::string problem;
     auto body = httpGet(url, nullptr, &problem);
     if (!body) {
-        if (error) *error = "Couldn't reach Open VSX (" + problem + ").";
+        if (error) {
+            *error = "Couldn't reach Open VSX (" + problem + ").";
+        }
         return {};
     }
     return parseSearchResults(*body);
@@ -464,21 +603,37 @@ ExtensionManager::InstallResult ExtensionManager::installFromOpenVSX(const std::
         result.message = "Extension IDs look like publisher.name (for example vscode.cpp).";
         return result;
     }
-    std::string publisher = id.substr(0, dot), name = id.substr(dot + 1);
+    if (!isSafeNamePart(id)) {
+        result.message = "Extension IDs use only letters, digits, \"-\", \"_\" and \".\".";
+        return result;
+    }
+    std::string publisher = id.substr(0, dot);
+    std::string name = id.substr(dot + 1);
 
     std::string error;
     auto metadata = httpGet("https://open-vsx.org/api/" + publisher + "/" + name + "/latest", nullptr, &error);
     if (!metadata) {
-        result.message = error == "HTTP 404" ? id + " isn't on Open VSX." : "Couldn't reach Open VSX (" + error + ").";
+        if (error == "HTTP 404") {
+            result.message = id + " isn't on Open VSX.";
+        } else {
+            result.message = "Couldn't reach Open VSX (" + error + ").";
+        }
         return result;
     }
     json info = json::parse(*metadata, nullptr, false);
-    if (!info.is_object() || !info.contains("files") || !info["files"].contains("download")) {
+    std::string url;
+    if (info.is_object() && info.contains("files") && info["files"].is_object()) {
+        url = stringOr(info["files"], "download");
+    }
+    if (url.empty()) {
         result.message = "Open VSX didn't return a download for " + id + ".";
         return result;
     }
-    result.version = info.value("version", "");
-    std::string url = info["files"]["download"].get<std::string>();
+    result.version = stringOr(info, "version");
+    if (!isSafeNamePart(result.version)) {
+        result.message = "Open VSX gave " + id + " a version that can't be used as a folder name.";
+        return result;
+    }
 
     fs::path work = fs::temp_directory_path() / ("glasswork-install-" + id);
     std::error_code code;
@@ -501,7 +656,9 @@ ExtensionManager::InstallResult ExtensionManager::installFromOpenVSX(const std::
     // Replace any installed version of the same extension.
     for (const auto& entry : fs::directory_iterator(directory, code)) {
         std::string folder = entry.path().filename().string();
-        if (folder.rfind(id + "-", 0) == 0) fs::remove_all(entry.path(), code);
+        if (folder.rfind(id + "-", 0) == 0) {
+            fs::remove_all(entry.path(), code);
+        }
     }
     fs::path destination = directory / (id + "-" + result.version);
     fs::rename(unpacked / "extension", destination, code);
@@ -518,7 +675,9 @@ ExtensionManager::InstallResult ExtensionManager::installFromOpenVSX(const std::
 bool ExtensionManager::uninstall(const std::string& id) {
     bool removed = false;
     for (const auto& extension : extensions_) {
-        if (extension.id != id) continue;
+        if (extension.id != id) {
+            continue;
+        }
         std::error_code code;
         fs::remove_all(extension.root, code);
         removed = !code;
@@ -531,8 +690,12 @@ bool ExtensionManager::uninstall(const std::string& id) {
 
 tm::Grammar* GrammarRegistry::forScope(const std::string& scopeName) {
     std::lock_guard lock(mutex_);
-    if (auto found = loaded_.find(scopeName); found != loaded_.end()) return found->second.get();
-    if (failed_.count(scopeName)) return nullptr;
+    if (auto found = loaded_.find(scopeName); found != loaded_.end()) {
+        return found->second.get();
+    }
+    if (failed_.count(scopeName)) {
+        return nullptr;
+    }
     const GrammarInfo* info = extensions_.grammarForScope(scopeName);
     if (!info) {
         failed_.insert(scopeName);
@@ -548,7 +711,10 @@ tm::Grammar* GrammarRegistry::forScope(const std::string& scopeName) {
 
 tm::Grammar* GrammarRegistry::forLanguage(const std::string& language) {
     const GrammarInfo* info = extensions_.grammarForLanguage(language);
-    return info ? forScope(info->scopeName) : nullptr;
+    if (info == nullptr) {
+        return nullptr;
+    }
+    return forScope(info->scopeName);
 }
 
 void GrammarRegistry::clear() {

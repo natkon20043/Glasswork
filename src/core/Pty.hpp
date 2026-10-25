@@ -64,6 +64,7 @@ private:
     int master_ = -1;
     int processId_ = -1;
     std::atomic<bool> running_{false};
+    std::atomic<bool> stopping_{false};
     std::atomic<size_t> unacknowledged_{0};
     std::mutex writeMutex_;
     std::thread reader_;

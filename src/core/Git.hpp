@@ -22,17 +22,17 @@ enum class ChangeKind {
 // ---- Types
 
 struct FileChange {
+    bool isUntracked() const { return unstaged == ChangeKind::Untracked; }
+    bool isConflicted() const { return staged == ChangeKind::Conflicted; }
+    bool hasStagedChange() const { return staged != ChangeKind::None && staged != ChangeKind::Conflicted; }
+    bool hasUnstagedChange() const { return unstaged != ChangeKind::None; }
+
     /// Relative to the repository root, "/" separators.
     std::string path;
     /// Where a renamed or copied file used to be.
     std::string originalPath;
     ChangeKind staged = ChangeKind::None;
     ChangeKind unstaged = ChangeKind::None;
-
-    bool isUntracked() const { return unstaged == ChangeKind::Untracked; }
-    bool isConflicted() const { return staged == ChangeKind::Conflicted; }
-    bool hasStagedChange() const { return staged != ChangeKind::None && staged != ChangeKind::Conflicted; }
-    bool hasUnstagedChange() const { return unstaged != ChangeKind::None; }
 };
 
 struct Status {

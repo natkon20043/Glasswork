@@ -1,4 +1,7 @@
 #import "Debugger.h"
+#import "Strings.h"
+
+#include "JsonText.hpp"
 
 #include "Dap.hpp"
 
@@ -9,6 +12,19 @@
 
 @implementation GWDebugVariable
 @end
+
+/// A whole number from an adapter's reply, or `fallback` when the key is missing or holds
+/// something else (a reply of an unexpected shape must not end the app).
+static NSInteger IntegerOr(const gw::dap::Json &object, const char *key, NSInteger fallback) {
+    if (!object.is_object()) {
+        return fallback;
+    }
+    auto found = object.find(key);
+    if (found == object.end() || !found->is_number_integer()) {
+        return fallback;
+    }
+    return found->get<NSInteger>();
+}
 
 @implementation GWDebugger {
     std::unique_ptr<gw::dap::Connection> _connection;
@@ -41,7 +57,9 @@
 
 - (void)setState:(GWDebugState)state {
     _state = state;
-    if (self.onChange) self.onChange();
+    if (self.onChange) {
+        self.onChange();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -70,7 +88,7 @@
         dispatch_async(dispatch_get_main_queue(), ^{
             GWDebugger *strongSelf = weakSelf;
             if (strongSelf != nil && strongSelf->_generation == generation) {
-                [strongSelf handleEvent:@(eventName.c_str()) body:*sharedBody];
+                [strongSelf handleEvent:StringFromUTF8(eventName) body:*sharedBody];
             }
         });
     };
@@ -86,7 +104,9 @@
     if (!_connection->start(gw::dap::defaultAdapterCommand(), directory.UTF8String, &error)) {
         _connection.reset();
         [self setState:GWDebugStateIdle];
-        if (self.onError) self.onError([NSString stringWithFormat:@"Couldn't start the debugger: %s", error.c_str()]);
+        if (self.onError) {
+            self.onError([NSString stringWithFormat:@"Couldn't start the debugger: %@", StringFromUTF8(error)]);
+        }
         return;
     }
 
@@ -103,7 +123,7 @@
                 return;
             }
             if (!success) {
-                [strongSelf failWithMessage:[NSString stringWithFormat:@"The debugger didn't start: %s", text.c_str()]];
+                [strongSelf failWithMessage:[NSString stringWithFormat:@"The debugger didn't start: %@", StringFromUTF8(text)]];
                 return;
             }
             [strongSelf sendLaunch:program arguments:arguments directory:directory];
@@ -134,14 +154,16 @@
         dispatch_async(dispatch_get_main_queue(), ^{
             GWDebugger *strongSelf = weakSelf;
             if (strongSelf != nil && strongSelf->_generation == generation) {
-                [strongSelf failWithMessage:[NSString stringWithFormat:@"The program couldn't be started: %s", text.c_str()]];
+                [strongSelf failWithMessage:[NSString stringWithFormat:@"The program couldn't be started: %@", StringFromUTF8(text)]];
             }
         });
     });
 }
 
 - (void)failWithMessage:(NSString *)message {
-    if (self.onError) self.onError(message);
+    if (self.onError) {
+        self.onError(message);
+    }
     [self endSessionWithExitCode:-1 report:NO];
 }
 
@@ -179,19 +201,19 @@
     if ([event isEqualToString:@"initialized"]) {
         [self sendAllBreakpointsThenConfigurationDone];
     } else if ([event isEqualToString:@"stopped"]) {
-        _threadId = body.value("threadId", static_cast<int>(_threadId));
+        _threadId = IntegerOr(body, "threadId", _threadId);
         [self loadStackAfterStop];
     } else if ([event isEqualToString:@"continued"]) {
         [_frames removeAllObjects];
         [self setState:GWDebugStateRunning];
     } else if ([event isEqualToString:@"output"]) {
-        std::string text = body.value("output", "");
-        std::string category = body.value("category", "console");
+        std::string text = gw::stringOr(body, "output");
+        std::string category = gw::stringOr(body, "category", "console");
         if (self.onOutput && !text.empty()) {
-            self.onOutput(@(text.c_str()), @(category.c_str()));
+            self.onOutput(StringFromUTF8(text), StringFromUTF8(category));
         }
     } else if ([event isEqualToString:@"exited"]) {
-        NSInteger code = body.value("exitCode", 0);
+        NSInteger code = IntegerOr(body, "exitCode", 0);
         if (self.onOutput) {
             self.onOutput([NSString stringWithFormat:@"The program exited with code %ld.\n", (long)code], @"console");
         }
@@ -277,11 +299,14 @@
                 if (success && sharedBody->contains("stackFrames")) {
                     for (const gw::dap::Json &item : (*sharedBody)["stackFrames"]) {
                         GWDebugFrame *frame = [GWDebugFrame new];
-                        frame.frameId = item.value("id", 0);
-                        frame.name = @(item.value("name", "").c_str());
-                        frame.line = item.value("line", 0);
-                        if (item.contains("source") && item["source"].contains("path")) {
-                            frame.path = @(item["source"]["path"].get<std::string>().c_str());
+                        frame.frameId = IntegerOr(item, "id", 0);
+                        frame.name = StringFromUTF8(gw::stringOr(item, "name"));
+                        frame.line = IntegerOr(item, "line", 0);
+                        if (item.contains("source")) {
+                            std::string path = gw::stringOr(item["source"], "path");
+                            if (!path.empty()) {
+                                frame.path = StringFromUTF8(path);
+                            }
                         }
                         [inner->_frames addObject:frame];
                     }
@@ -308,7 +333,7 @@
     _connection->request("threads", gw::dap::Json::object(), [weakSelf, generation, loadStack](bool success, const gw::dap::Json &body, const std::string &) {
         NSInteger first = 1;
         if (success && body.contains("threads") && !body["threads"].empty()) {
-            first = body["threads"][0].value("id", 1);
+            first = IntegerOr(body["threads"][0], "id", 1);
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             GWDebugger *strongSelf = weakSelf;
@@ -324,8 +349,12 @@
         return;
     }
     _selectedFrame = index;
-    if (self.onChange) self.onChange();
-    if (self.onLocation) self.onLocation(_frames[static_cast<NSUInteger>(index)]);
+    if (self.onChange) {
+        self.onChange();
+    }
+    if (self.onLocation) {
+        self.onLocation(_frames[static_cast<NSUInteger>(index)]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -349,7 +378,11 @@
     if (!_connection || _state != GWDebugStateRunning) {
         return;
     }
-    _connection->request("pause", {{"threadId", _threadId == 0 ? 1 : _threadId}}, [](bool, const gw::dap::Json &, const std::string &) {});
+    NSInteger thread = _threadId;
+    if (thread == 0) {
+        thread = 1;  // nothing has stopped yet: the main thread
+    }
+    _connection->request("pause", {{"threadId", thread}}, [](bool, const gw::dap::Json &, const std::string &) {});
 }
 
 // ---------------------------------------------------------------------------
@@ -357,10 +390,10 @@
 
 - (GWDebugVariable *)variableFromJson:(const gw::dap::Json &)item {
     GWDebugVariable *variable = [GWDebugVariable new];
-    variable.name = @(item.value("name", "").c_str());
-    variable.value = @(item.value("value", "").c_str());
-    variable.type = @(item.value("type", "").c_str());
-    variable.reference = item.value("variablesReference", 0);
+    variable.name = StringFromUTF8(gw::stringOr(item, "name"));
+    variable.value = StringFromUTF8(gw::stringOr(item, "value"));
+    variable.type = StringFromUTF8(gw::stringOr(item, "type"));
+    variable.reference = IntegerOr(item, "variablesReference", 0);
     return variable;
 }
 
@@ -434,7 +467,7 @@
     __weak GWDebugger *weakSelf = self;
     void (^copiedCompletion)(NSString *, NSString *) = [completion copy];
     _connection->request("evaluate", arguments, [weakSelf, generation, copiedCompletion](bool success, const gw::dap::Json &body, const std::string &message) {
-        std::string result = body.value("result", "");
+        std::string result = gw::stringOr(body, "result");
         std::string error = message;
         dispatch_async(dispatch_get_main_queue(), ^{
             GWDebugger *strongSelf = weakSelf;
@@ -442,9 +475,13 @@
                 return;
             }
             if (success) {
-                copiedCompletion(@(result.c_str()), nil);
+                copiedCompletion(StringFromUTF8(result), nil);
             } else {
-                copiedCompletion(nil, error.empty() ? @"The expression couldn't be evaluated." : @(error.c_str()));
+                NSString *problem = @"The expression couldn't be evaluated.";
+                if (!error.empty()) {
+                    problem = StringFromUTF8(error);
+                }
+                copiedCompletion(nil, problem);
             }
         });
     });

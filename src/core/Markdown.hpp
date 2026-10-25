@@ -62,6 +62,8 @@ struct Block {
     std::string alignments;
 };
 
+// ---- Parsing
+
 /// Chat-style Markdown. Never fails: invalid or half-streamed constructs come out as plain text.
 std::vector<Block> parse(std::string_view text);
 

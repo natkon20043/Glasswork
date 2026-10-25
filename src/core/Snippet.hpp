@@ -16,8 +16,10 @@ struct SnippetSpan {
 
 /// Snippet text plus the places Tab visits.
 struct ParsedSnippet {
+    // ---- Getters
     bool hasOnlyFinalStop() const;
 
+    // ---- Variables
     std::string text;
     /// In Tab order ($1, $2... then $0). A stop has several spans when the number repeats; they mirror
     /// each other. The last stop is the final caret (the text end if there is no $0).
@@ -26,6 +28,8 @@ struct ParsedSnippet {
 
 /// Variable name without the dollar sign (TM_FILENAME, CURRENT_YEAR) -> its value.
 using SnippetVariables = std::map<std::string, std::string>;
+
+// ---- Variables and parsing
 
 /// File and clock variables only (TM_FILENAME, TM_DIRECTORY, WORKSPACE_NAME, CURRENT_*, UUID...).
 /// `filePath` and `workspaceFolder` may be empty. The caller adds editor ones (TM_SELECTED_TEXT, CLIPBOARD...).

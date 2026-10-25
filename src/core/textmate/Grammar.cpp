@@ -1,5 +1,6 @@
 #include "Grammar.hpp"
 
+#include "../JsonText.hpp"
 #include "../Jsonc.hpp"
 
 #include <nlohmann/json.hpp>
@@ -14,7 +15,9 @@ using nlohmann::json;
 
 Rule* Repository::find(const std::string& name) const {
     for (const Repository* repository = this; repository; repository = repository->parent) {
-        if (auto found = repository->entries.find(name); found != repository->entries.end()) return found->second;
+        if (auto found = repository->entries.find(name); found != repository->entries.end()) {
+            return found->second;
+        }
     }
     return nullptr;
 }
@@ -22,7 +25,9 @@ Rule* Repository::find(const std::string& name) const {
 std::unique_ptr<Grammar> Grammar::load(const std::filesystem::path& path, GrammarLookup lookup, std::string* error) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
-        if (error) *error = "Couldn't read grammar " + path.string();
+        if (error) {
+            *error = "Couldn't read grammar " + path.string();
+        }
         return nullptr;
     }
     std::ostringstream contents;
@@ -33,13 +38,17 @@ std::unique_ptr<Grammar> Grammar::load(const std::filesystem::path& path, Gramma
 std::unique_ptr<Grammar> Grammar::parse(const std::string& text, GrammarLookup lookup, std::string* error) {
     json document = gw::parseJsonc(text);
     if (document.is_discarded() || !document.is_object()) {
-        if (error) *error = "Grammar isn't valid JSON (only JSON grammars are supported).";
+        if (error) {
+            *error = "Grammar isn't valid JSON (only JSON grammars are supported).";
+        }
         return nullptr;
     }
     std::unique_ptr<Grammar> grammar(new Grammar());
     grammar->lookup_ = std::move(lookup);
-    grammar->scopeName_ = document.value("scopeName", "");
-    if (document.contains("repository")) grammar->parseRepository(document["repository"], grammar->repository_);
+    grammar->scopeName_ = gw::stringOr(document, "scopeName");
+    if (document.contains("repository")) {
+        grammar->parseRepository(document["repository"], grammar->repository_);
+    }
 
     Rule& root = grammar->rules_.emplace_back();
     root.kind = Rule::Kind::Group;
@@ -48,7 +57,9 @@ std::unique_ptr<Grammar> Grammar::parse(const std::string& text, GrammarLookup l
     root.name = grammar->scopeName_;
     if (document.contains("patterns") && document["patterns"].is_array()) {
         for (const auto& pattern : document["patterns"]) {
-            if (Rule* rule = grammar->parseRule(pattern, &grammar->repository_)) root.patterns.push_back(rule);
+            if (Rule* rule = grammar->parseRule(pattern, &grammar->repository_)) {
+                root.patterns.push_back(rule);
+            }
         }
     }
     grammar->root_ = &root;
@@ -56,15 +67,21 @@ std::unique_ptr<Grammar> Grammar::parse(const std::string& text, GrammarLookup l
 }
 
 void Grammar::parseRepository(const json& object, Repository& into) {
-    if (!object.is_object()) return;
+    if (!object.is_object()) {
+        return;
+    }
     // Register every entry before parsing bodies isn't needed: includes resolve lazily.
     for (const auto& [key, value] : object.items()) {
-        if (Rule* rule = parseRule(value, &into)) into.entries[key] = rule;
+        if (Rule* rule = parseRule(value, &into)) {
+            into.entries[key] = rule;
+        }
     }
 }
 
 Rule* Grammar::parseRule(const json& object, const Repository* repository) {
-    if (!object.is_object()) return nullptr;
+    if (!object.is_object()) {
+        return nullptr;
+    }
     Rule& rule = rules_.emplace_back();
     rule.grammar = this;
     rule.repository = repository;
@@ -77,15 +94,18 @@ Rule* Grammar::parseRule(const json& object, const Repository* repository) {
         rule.repository = &nested;
     }
 
-    auto text = [&](const char* key) -> std::string {
-        auto found = object.find(key);
-        return found != object.end() && found->is_string() ? found->get<std::string>() : std::string();
-    };
+    auto text = [&](const char* key) { return gw::stringOr(object, key); };
     rule.name = text("name");
     rule.contentName = text("contentName");
-    rule.applyEndPatternLast = object.contains("applyEndPatternLast") &&
-                               (object["applyEndPatternLast"].is_boolean() ? object["applyEndPatternLast"].get<bool>()
-                                                                          : object["applyEndPatternLast"] == 1);
+    // Grammars write this as true or as 1.
+    if (object.contains("applyEndPatternLast")) {
+        const json& value = object["applyEndPatternLast"];
+        if (value.is_boolean()) {
+            rule.applyEndPatternLast = value.get<bool>();
+        } else {
+            rule.applyEndPatternLast = value == 1;
+        }
+    }
 
     if (object.contains("include")) {
         rule.kind = Rule::Kind::Include;
@@ -95,12 +115,16 @@ Rule* Grammar::parseRule(const json& object, const Repository* repository) {
 
     if (object.contains("patterns") && object["patterns"].is_array()) {
         for (const auto& pattern : object["patterns"]) {
-            if (Rule* child = parseRule(pattern, rule.repository)) rule.patterns.push_back(child);
+            if (Rule* child = parseRule(pattern, rule.repository)) {
+                rule.patterns.push_back(child);
+            }
         }
     }
 
     std::map<int, Rule*> shared;
-    if (object.contains("captures")) shared = parseCaptures(object["captures"], rule.repository);
+    if (object.contains("captures")) {
+        shared = parseCaptures(object["captures"], rule.repository);
+    }
 
     if (object.contains("match")) {
         rule.kind = Rule::Kind::Match;
@@ -127,7 +151,9 @@ Rule* Grammar::parseRule(const json& object, const Repository* repository) {
                     ++index;  // skip the escaped character
                 }
             }
-            if (!rule.endHasBackReferences) rule.end = Regex::get(rule.endSource);
+            if (!rule.endHasBackReferences) {
+                rule.end = Regex::get(rule.endSource);
+            }
         }
     } else {
         rule.kind = Rule::Kind::Group;
@@ -141,7 +167,9 @@ std::map<int, Rule*> Grammar::parseCaptures(const json& object, const Repository
         for (const auto& [key, value] : object.items()) {
             char* end = nullptr;
             long index = std::strtol(key.c_str(), &end, 10);
-            if (end == key.c_str() || !value.is_object()) continue;
+            if (end == key.c_str() || !value.is_object()) {
+                continue;
+            }
             Rule* rule = parseRule(value, repository);
             if (rule) {
                 rule->kind = Rule::Kind::Group;  // a capture is a name plus optional patterns
@@ -163,8 +191,12 @@ std::map<int, Rule*> Grammar::parseCaptures(const json& object, const Repository
 
 Rule* Grammar::resolve(Rule* include, Grammar* base) {
     const std::string& reference = include->include;
-    if (reference == "$base") return base ? base->root() : root_;
-    if (include->resolved) return include->resolved;
+    if (reference == "$base") {
+        return base ? base->root() : root_;
+    }
+    if (include->resolved) {
+        return include->resolved;
+    }
 
     Rule* target = nullptr;
     if (reference == "$self") {
@@ -175,7 +207,9 @@ Rule* Grammar::resolve(Rule* include, Grammar* base) {
         auto hash = reference.find('#');
         std::string scope = reference.substr(0, hash);
         Grammar* other = scope == scopeName_ ? this : grammarFor(scope);
-        if (other) target = hash == std::string::npos ? other->root() : other->repositoryRule(reference.substr(hash + 1));
+        if (other) {
+            target = hash == std::string::npos ? other->root() : other->repositoryRule(reference.substr(hash + 1));
+        }
     }
     include->resolved = target;
     return target;
@@ -183,7 +217,9 @@ Rule* Grammar::resolve(Rule* include, Grammar* base) {
 
 const std::vector<Rule*>& Grammar::candidates(Rule* container, Grammar* base) {
     auto key = std::make_pair(container, base);
-    if (auto found = candidateCache_.find(key); found != candidateCache_.end()) return found->second;
+    if (auto found = candidateCache_.find(key); found != candidateCache_.end()) {
+        return found->second;
+    }
     std::vector<Rule*> out;
     std::vector<Rule*> visiting;
     flatten(container, base, out, visiting);
@@ -191,13 +227,17 @@ const std::vector<Rule*>& Grammar::candidates(Rule* container, Grammar* base) {
 }
 
 void Grammar::flatten(Rule* container, Grammar* base, std::vector<Rule*>& out, std::vector<Rule*>& visiting) {
-    if (std::find(visiting.begin(), visiting.end(), container) != visiting.end()) return;  // include cycle
+    if (std::find(visiting.begin(), visiting.end(), container) != visiting.end()) {
+        return; // include cycle
+    }
     visiting.push_back(container);
     for (Rule* pattern : container->patterns) {
         Rule* rule = pattern;
         if (rule->kind == Rule::Kind::Include) {
             rule = rule->grammar->resolve(rule, base);
-            if (!rule) continue;
+            if (!rule) {
+                continue;
+            }
         }
         if (rule->kind == Rule::Kind::Group) {
             rule->grammar->flatten(rule, base, out, visiting);

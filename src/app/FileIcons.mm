@@ -1,4 +1,5 @@
 #import "FileIcons.h"
+#import "Strings.h"
 
 #import "Services.h"
 
@@ -16,11 +17,21 @@ struct FileKind {
 FileKind KindFor(NSString *filename) {
     NSString *name = filename.lowercaseString;
     NSString *extension = name.pathExtension;
-    if ([name isEqualToString:@"cmakelists.txt"] || [extension isEqualToString:@"cmake"]) return {"hammer.fill", 0x4BA3E3};
-    if ([name isEqualToString:@"makefile"]) return {"hammer.fill", 0x8B9BB4};
-    if ([name hasPrefix:@"readme"]) return {"book.fill", 0x5AA9E6};
-    if ([name hasPrefix:@"license"]) return {"checkmark.seal.fill", 0xE6B450};
-    if ([name hasPrefix:@".git"]) return {"arrow.triangle.branch", 0xF1502F};
+    if ([name isEqualToString:@"cmakelists.txt"] || [extension isEqualToString:@"cmake"]) {
+        return {"hammer.fill", 0x4BA3E3};
+    }
+    if ([name isEqualToString:@"makefile"]) {
+        return {"hammer.fill", 0x8B9BB4};
+    }
+    if ([name hasPrefix:@"readme"]) {
+        return {"book.fill", 0x5AA9E6};
+    }
+    if ([name hasPrefix:@"license"]) {
+        return {"checkmark.seal.fill", 0xE6B450};
+    }
+    if ([name hasPrefix:@".git"]) {
+        return {"arrow.triangle.branch", 0xF1502F};
+    }
 
     static NSDictionary<NSString *, NSArray *> *byExtension = @{
         @"cpp": @[@"c.square.fill", @0x659AD2], @"cc": @[@"c.square.fill", @0x659AD2], @"cxx": @[@"c.square.fill", @0x659AD2],
@@ -38,7 +49,9 @@ FileKind KindFor(NSString *filename) {
         @"gif": @[@"photo.fill", @0xA78BFA], @"svg": @[@"photo.fill", @0xFFB13B],
     };
     NSArray *kind = byExtension[extension];
-    if (kind) return {[kind[0] UTF8String], static_cast<uint32_t>([kind[1] unsignedIntValue])};
+    if (kind) {
+        return {[kind[0] UTF8String], static_cast<uint32_t>([kind[1] unsignedIntValue])};
+    }
     return {"doc.fill", 0x9CA3AF};
 }
 
@@ -78,7 +91,7 @@ namespace {
 /// Loaded SVGs by path, so scrolling a long folder doesn't read the same file again and again.
 NSImage *ThemeImageAtPath(const std::filesystem::path &path) {
     static NSMutableDictionary<NSString *, NSImage *> *cache = [NSMutableDictionary dictionary];
-    NSString *key = @(path.c_str());
+    NSString *key = StringFromUTF8(path);
     NSImage *image = cache[key];
     if (image == nil) {
         image = [[NSImage alloc] initWithContentsOfFile:key];

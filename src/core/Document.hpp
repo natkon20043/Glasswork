@@ -15,11 +15,11 @@
 namespace gw {
 
 struct Selection {
-    Position anchor;
-    Position caret;
-
     Range range() const { return Range{anchor, caret}.normalized(); }
     bool empty() const { return anchor == caret; }
+
+    Position anchor;
+    Position caret;
 };
 
 /// Lines from `firstLine` on were touched; `lineDelta` lines were added (negative: removed).

@@ -21,44 +21,42 @@ struct RemoteEntry {
     bool isDirectory = false;
 };
 
-/// Understands "host:/path", "user@host:/path" and "ssh://user@host/path". Nullopt if the text is
-/// not one of those (a plain local path, for example). A path of "~" or "~/x" is kept as typed.
+// ---- Parsing
+
+/// "host:/path", "user@host:/path" or "ssh://user@host/path"; nullopt for anything else. "~" and
+/// "~/x" are kept as typed.
 std::optional<RemoteLocation> parseRemoteLocation(const std::string& text);
 
-/// Works with a Linux machine reachable over SSH (Tailscale SSH included) by running the system
-/// `ssh`. Every call blocks: use them from a background queue (or accept a short pause).
-/// Connections are shared between calls, so only the first one pays for the handshake.
+/// A Linux machine reachable with the system `ssh` (Tailscale SSH included). Every call blocks, so
+/// use them from a background queue. Calls share one connection.
 class RemoteHost {
 public:
+    // ---- Constructors
     explicit RemoteHost(std::string destination);
 
+    // ---- Getters
     const std::string& destination() const { return destination_; }
 
-    /// The folder's entries (hidden ones included, "." and ".." not). Symbolic links count as
-    /// what they point to.
+    // ---- Files and folders
+    /// Hidden entries included; links count as what they point to.
     bool listDirectory(const std::string& path, std::vector<RemoteEntry>* entries, std::string* error) const;
-
-    /// The whole file.
     bool readFile(const std::string& path, std::string* contents, std::string* error) const;
-
-    /// Replaces the file: the new text goes to a temporary file next to it first, so a dropped
-    /// connection never leaves half a file behind. Keeps the old file's permissions.
+    /// Written beside the file and swapped in, keeping its permissions; through a link, the target changes.
     bool writeFile(const std::string& path, const std::string& contents, std::string* error) const;
-
-    /// The home folder, and `path` made absolute ("~" and "~/x" expanded). Nullopt on failure.
+    /// `path` made absolute, "~" expanded.
     std::optional<std::string> resolvePath(const std::string& path, std::string* error) const;
 
-    /// Arguments for an interactive shell in `folder` on the remote machine (for a terminal).
+    // ---- Terminal
+    /// Arguments for an interactive shell in `folder`.
     std::vector<std::string> shellCommand(const std::string& folder) const;
 
 private:
-    /// Runs `command` on the remote machine, with `input` as its standard input.
+    // ---- Private functions
     bool run(const std::string& command, const std::string& input, double timeoutSeconds, std::string* output,
              std::string* error) const;
-
-    /// Options shared by every ssh call: no prompts, a connect timeout, a shared connection.
     std::vector<std::string> baseArguments() const;
 
+    // ---- Private variables
     std::string destination_;
 };
 

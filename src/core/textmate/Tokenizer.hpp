@@ -12,9 +12,11 @@ namespace gw::tm {
 /// One entry in an interned scope path, e.g. `source.cpp` > `string.quoted.double.cpp`. Never freed, so
 /// a pointer identifies a path for the app's lifetime and themes can cache by pointer.
 struct ScopeNode {
+    // ---- Getters
     /// Outermost first.
     std::vector<std::string> path() const;
 
+    // ---- Variables
     const ScopeNode* parent = nullptr;
     std::string name;
     size_t depth = 0;
@@ -29,11 +31,13 @@ struct Token {
 
 /// One open region on the tokenizer's stack.
 struct Frame {
+    // ---- Comparing
     bool operator==(const Frame& other) const {
         return rule == other.rule && end == other.end && nameScopes == other.nameScopes &&
                contentScopes == other.contentScopes && beganAtLineEnd == other.beganAtLineEnd;
     }
 
+    // ---- Variables
     /// Whose patterns apply inside the region.
     Rule* rule = nullptr;
     /// How the region ends, back-references filled in.
@@ -47,8 +51,10 @@ struct Frame {
 /// Stack of open regions between lines. Comparing states tells the highlighter when an edit stopped
 /// rippling down the file.
 struct State {
+    // ---- Comparing
     bool operator==(const State& other) const { return frames == other.frames; }
 
+    // ---- Variables
     std::vector<Frame> frames;
 };
 
@@ -56,6 +62,8 @@ struct LineResult {
     std::vector<Token> tokens;
     State state;
 };
+
+// ---- Tokenizing
 
 /// `name` may hold several space-separated scopes.
 const ScopeNode* pushScopes(const ScopeNode* parent, const std::string& name);

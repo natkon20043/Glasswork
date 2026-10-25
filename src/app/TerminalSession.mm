@@ -1,4 +1,5 @@
 #import "TerminalSession.h"
+#import "Strings.h"
 #import "Services.h"
 
 #include "Pty.hpp"
@@ -42,12 +43,16 @@ static const size_t kSliceBytes = 192 * 1024;
     _screen->onBell = [weakSelf]() {
         dispatch_async(dispatch_get_main_queue(), ^{
             GWTerminalSession *strongSelf = weakSelf;
-            if (strongSelf.onBell) strongSelf.onBell();
+            if (strongSelf.onBell) {
+                strongSelf.onBell();
+            }
         });
     };
     _screen->onTitleChange = [weakSelf](const std::string &) {
         GWTerminalSession *strongSelf = weakSelf;
-        if (strongSelf.onTitleChange) strongSelf.onTitleChange();
+        if (strongSelf.onTitleChange) {
+            strongSelf.onTitleChange();
+        }
     };
 
     _pty->onOutput = [weakSelf](std::string_view bytes) {
@@ -83,7 +88,7 @@ static const size_t kSliceBytes = 192 * 1024;
 - (NSString *)displayTitle {
     const std::string &title = _screen->title();
     if (!title.empty()) {
-        return @(title.c_str());
+        return StringFromUTF8(title);
     }
     return _processName.length > 0 ? _processName : @"shell";
 }
@@ -224,10 +229,10 @@ static const size_t kSliceBytes = 192 * 1024;
 
 - (NSString *)currentDirectory {
     if (!_screen->workingDirectory().empty()) {
-        return @(_screen->workingDirectory().c_str());
+        return StringFromUTF8(_screen->workingDirectory());
     }
     std::string directory = _pty ? _pty->currentDirectory() : std::string();
-    return directory.empty() ? nil : @(directory.c_str());
+    return directory.empty() ? nil : StringFromUTF8(directory);
 }
 
 - (void)refreshProcessName {
@@ -235,7 +240,7 @@ static const size_t kSliceBytes = 192 * 1024;
         return;
     }
     std::string name = _pty->foregroundProcessName();
-    NSString *text = name.empty() ? @"" : @(name.c_str());
+    NSString *text = name.empty() ? @"" : StringFromUTF8(name);
     if (![text isEqualToString:_processName]) {
         _processName = text;
         if (self.onTitleChange) {

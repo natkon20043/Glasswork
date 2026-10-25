@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <unistd.h>
@@ -47,7 +48,9 @@ struct Session {
         for (int attempt = 0; attempt < seconds * 100; ++attempt) {
             {
                 std::lock_guard<std::mutex> lock(mutex);
-                if (raw.find(text) != std::string::npos) return true;
+                if (raw.find(text) != std::string::npos) {
+                    return true;
+                }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
@@ -160,11 +163,15 @@ TEST(aLoginShellStartsAndRunsCommands) {
 TEST(aFullScreenProgramDrawsCorrectly) {
     // vim uses the alternate screen, cursor addressing, scroll regions, colors and bracketed
     // paste: a good check that the emulator agrees with a real terminal program.
-    if (access("/usr/bin/vim", X_OK) != 0) return;
+    if (access("/usr/bin/vim", X_OK) != 0) {
+        return;
+    }
     std::string path = "/private/tmp/glasswork-pty-vim-test.txt";
     {
         FILE* file = fopen(path.c_str(), "w");
-        for (int line = 1; line <= 60; ++line) fprintf(file, "line %d of the test file\n", line);
+        for (int line = 1; line <= 60; ++line) {
+            fprintf(file, "line %d of the test file\n", line);
+        }
         fclose(file);
     }
     gw::PtyOptions options;
@@ -208,6 +215,24 @@ TEST(hugeOutputDoesNotFloodMemory) {
     CHECK(session.started);
     CHECK(session.waitForExit(30));
     CHECK(session.screen.historyCount() > 1000);
+}
+
+TEST(closingATerminalNobodyIsReadingDoesNotHang) {
+    // A program floods the terminal while the screen never catches up (nothing acknowledges the
+    // output), and one that ignores the hang-up signal. Closing either must still finish promptly.
+    for (const char* script : {"yes", "trap '' HUP; while true; do sleep 1; done"}) {
+        auto pty = std::make_unique<gw::Pty>();
+        pty->onOutput = [](std::string_view) {};
+        gw::PtyOptions options;
+        options.program = "/bin/sh";
+        options.arguments = {"-c", script};
+        CHECK(pty->start(options));
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        auto start = std::chrono::steady_clock::now();
+        pty.reset();
+        double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        CHECK(seconds < 3);
+    }
 }
 
 }  // namespace

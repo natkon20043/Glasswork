@@ -90,7 +90,9 @@ public:
 
 private:
     void skipSpace() {
-        while (position_ < text_.size() && std::isspace(static_cast<unsigned char>(text_[position_]))) ++position_;
+        while (position_ < text_.size() && std::isspace(static_cast<unsigned char>(text_[position_]))) {
+            ++position_;
+        }
     }
 
     bool consume(const std::string& token) {
@@ -159,9 +161,13 @@ private:
         if (position_ < text_.size() && (text_[position_] == '\'' || text_[position_] == '"')) {
             char quote = text_[position_++];
             size_t start = position_;
-            while (position_ < text_.size() && text_[position_] != quote) ++position_;
+            while (position_ < text_.size() && text_[position_] != quote) {
+                ++position_;
+            }
             std::string value = text_.substr(start, position_ - start);
-            if (position_ < text_.size()) ++position_;
+            if (position_ < text_.size()) {
+                ++position_;
+            }
             return value;
         }
         return readName();
@@ -194,7 +200,9 @@ private:
                 if (end != std::string::npos) {
                     std::string pattern = text_.substr(position_ + 1, end - position_ - 1);
                     position_ = end + 1;
-                    while (position_ < text_.size() && std::isalpha(static_cast<unsigned char>(text_[position_]))) ++position_;  // flags
+                    while (position_ < text_.size() && std::isalpha(static_cast<unsigned char>(text_[position_]))) {
+                        ++position_; // flags
+                    }
                     try {
                         return std::regex_search(actual, std::regex(pattern, std::regex::ECMAScript | std::regex::icase));
                     } catch (const std::regex_error&) {
@@ -279,23 +287,37 @@ KeybindingTable::Match KeybindingTable::match(const std::vector<KeyChord>& press
     }
     // Later entries beat earlier ones; the user's beat everything else.
     std::vector<const KeyBinding*> ordered;
-    for (auto entry = userBindings_.rbegin(); entry != userBindings_.rend(); ++entry) ordered.push_back(&*entry);
-    for (auto entry = bindings_.rbegin(); entry != bindings_.rend(); ++entry) ordered.push_back(&*entry);
+    for (auto entry = userBindings_.rbegin(); entry != userBindings_.rend(); ++entry) {
+        ordered.push_back(&*entry);
+    }
+    for (auto entry = bindings_.rbegin(); entry != bindings_.rend(); ++entry) {
+        ordered.push_back(&*entry);
+    }
 
     // A user entry "-command" with these keys switches the other bindings for that command off.
     auto removed = [&](const KeyBinding& candidate) {
         for (const KeyBinding& user : userBindings_) {
-            if (user.removes && user.command == candidate.command && user.chords == candidate.chords) return true;
+            if (user.removes && user.command == candidate.command && user.chords == candidate.chords) {
+                return true;
+            }
         }
         return false;
     };
 
     for (const KeyBinding* binding : ordered) {
-        if (binding->removes || removed(*binding)) continue;
-        if (binding->chords.size() < pressed.size()) continue;
+        if (binding->removes || removed(*binding)) {
+            continue;
+        }
+        if (binding->chords.size() < pressed.size()) {
+            continue;
+        }
         bool samePrefix = std::equal(pressed.begin(), pressed.end(), binding->chords.begin());
-        if (!samePrefix) continue;
-        if (!evaluateWhenClause(binding->when, context)) continue;
+        if (!samePrefix) {
+            continue;
+        }
+        if (!evaluateWhenClause(binding->when, context)) {
+            continue;
+        }
         if (binding->chords.size() == pressed.size()) {
             result.kind = MatchKind::Complete;
             result.binding = binding;

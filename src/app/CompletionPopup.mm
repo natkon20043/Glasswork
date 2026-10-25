@@ -1,4 +1,5 @@
 #import "CompletionPopup.h"
+#import "Strings.h"
 
 #import "MarkdownView.h"
 #import "ShadowedGlass.h"
@@ -261,10 +262,16 @@ void iconForKind(NSInteger kind, NSString **symbol, NSColor **color) {
 
 - (void)moveSelectionBy:(NSInteger)delta {
     NSInteger count = static_cast<NSInteger>(_shownItems.count);
-    if (count == 0) return;
+    if (count == 0) {
+        return;
+    }
     NSInteger next = _table.selectedRow + delta;
-    if (next < 0) next = count - 1;
-    if (next >= count) next = 0;
+    if (next < 0) {
+        next = count - 1;
+    }
+    if (next >= count) {
+        next = 0;
+    }
     if (std::abs(delta) > 1) {
         next = std::max<NSInteger>(0, std::min<NSInteger>(count - 1, _table.selectedRow + delta));
     }
@@ -309,7 +316,7 @@ void iconForKind(NSInteger kind, NSString **symbol, NSColor **color) {
     }
     constexpr CGFloat kDocWidth = 380;
     if (documentation.length > 3000) {
-        documentation = [[documentation substringToIndex:3000] stringByAppendingString:@"\n\n…"];
+        documentation = [PrefixOfString(documentation, 3000) stringByAppendingString:@"\n\n…"];
     }
 
     NSStackView *stack = [NSStackView stackViewWithViews:@[]];
@@ -499,7 +506,7 @@ static NSPopover *gHoverPopover = nil;
         return;
     }
     if (markdown.length > 2400) {
-        markdown = [[markdown substringToIndex:2400] stringByAppendingString:@"\n\n…"];
+        markdown = [PrefixOfString(markdown, 2400) stringByAppendingString:@"\n\n…"];
     }
     NSStackView *stack = [NSStackView stackViewWithViews:@[]];
     stack.orientation = NSUserInterfaceLayoutOrientationVertical;

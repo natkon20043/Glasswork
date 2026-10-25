@@ -9,6 +9,15 @@ namespace gw {
 
 /// What .editorconfig says about one file; unmentioned options stay unset.
 struct EditorConfigResult {
+    // ---- Getters
+    std::optional<int> columnsPerIndent() const {
+        if (indentSize) {
+            return indentSize;
+        }
+        return tabWidth;
+    }
+
+    // ---- Variables
     std::optional<bool> useTabs;
     std::optional<int> indentSize;
     std::optional<int> tabWidth;
@@ -16,12 +25,9 @@ struct EditorConfigResult {
     std::optional<std::string> endOfLine;
     std::optional<bool> trimTrailingWhitespace;
     std::optional<bool> insertFinalNewline;
-
-    std::optional<int> columnsPerIndent() const {
-        if (indentSize) return indentSize;
-        return tabWidth;
-    }
 };
+
+// ---- Reading
 
 /// Walks up from the file's folder (stopping at `root = true`); closer files and later sections win.
 EditorConfigResult editorConfigFor(const std::filesystem::path& file);

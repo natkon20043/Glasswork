@@ -10,8 +10,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// caret. Changes apply live and are saved to settings.json.
 @interface GWColorInspector : NSObject
 
+// ---- Constructors
 + (instancetype)shared;
 
+// ---- Showing
 /// Opens or refreshes the panel for the caret in `editor`.
 - (void)showForEditor:(GWEditorView *)editor;
 /// Re-reads the caret's name and scopes if the panel is open.

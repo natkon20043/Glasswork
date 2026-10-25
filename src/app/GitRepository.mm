@@ -1,4 +1,5 @@
 #import "GitRepository.h"
+#import "Strings.h"
 
 #include <unordered_map>
 
@@ -145,7 +146,7 @@ std::string signatureOf(const gw::git::Status &status, const std::vector<gw::git
     _signature = std::move(signature);
     _status = std::move(status);
     _log = std::move(log);
-    _root = _status.isRepository ? @(_status.root.c_str()) : nil;
+    _root = _status.isRepository ? StringFromUTF8(_status.root) : nil;
 
     if (changed) {
         [self postChange];

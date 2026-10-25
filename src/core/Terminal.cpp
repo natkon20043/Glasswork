@@ -45,17 +45,27 @@ uint32_t lineDrawingCharacter(uint32_t codePoint) {
 }
 
 int hexValue(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
     return -1;
 }
+
+constexpr size_t kMostParameters = 32;
 
 /// Decodes %XX escapes in a path from a "file://" address.
 std::string percentDecode(std::string_view text) {
     std::string decoded;
     for (size_t index = 0; index < text.size(); ++index) {
-        if (text[index] == '%' && index + 2 < text.size() && hexValue(text[index + 1]) >= 0 && hexValue(text[index + 2]) >= 0) {
+        bool escaped = text[index] == '%' && index + 2 < text.size() && hexValue(text[index + 1]) >= 0 &&
+                       hexValue(text[index + 2]) >= 0;
+        if (escaped) {
             decoded += static_cast<char>(hexValue(text[index + 1]) * 16 + hexValue(text[index + 2]));
             index += 2;
         } else {
@@ -139,9 +149,13 @@ void Screen::resize(int columns, int rows) {
         bool cursorAtBottom = cursorRow_ >= rows;
         if (cursorAtBottom && !usingAlternate_) {
             Row top = std::move(grid_.rows.front());
-            while (!top.cells.empty() && top.cells.back().isBlank()) top.cells.pop_back();
+            while (!top.cells.empty() && top.cells.back().isBlank()) {
+                top.cells.pop_back();
+            }
             history_.push_back(std::move(top));
-            if (history_.size() > historyLimit_) history_.pop_front();
+            if (history_.size() > historyLimit_) {
+                history_.pop_front();
+            }
         }
         if (cursorAtBottom) {
             grid_.rows.erase(grid_.rows.begin());
@@ -176,8 +190,12 @@ void Screen::resize(int columns, int rows) {
     cursorColumn_ = std::clamp(cursorColumn_, 0, columns_ - 1);
     pendingWrap_ = false;
     tabStops_.assign(static_cast<size_t>(columns_), false);
-    for (int column = 8; column < columns_; column += 8) tabStops_[static_cast<size_t>(column)] = true;
-    for (Row& row : grid_.rows) touch(row);
+    for (int column = 8; column < columns_; column += 8) {
+        tabStops_[static_cast<size_t>(column)] = true;
+    }
+    for (Row& row : grid_.rows) {
+        touch(row);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -253,9 +271,13 @@ void Screen::scrollUp(int count, bool keepHistory) {
     if (keepHistory && !usingAlternate_ && scrollTop_ == 0) {
         for (int index = 0; index < count; ++index) {
             Row line = grid_.rows[static_cast<size_t>(index)];
-            while (!line.cells.empty() && line.cells.back().isBlank()) line.cells.pop_back();
+            while (!line.cells.empty() && line.cells.back().isBlank()) {
+                line.cells.pop_back();
+            }
             history_.push_back(std::move(line));
-            if (history_.size() > historyLimit_) history_.pop_front();
+            if (history_.size() > historyLimit_) {
+                history_.pop_front();
+            }
         }
     }
     // The rows keep their revision when they move: their content hasn't changed, so a view can
@@ -373,7 +395,9 @@ void Screen::deleteCharacters(int count) {
 void Screen::tabForward(int count) {
     for (int step = 0; step < count; ++step) {
         int column = cursorColumn_ + 1;
-        while (column < columns_ - 1 && !tabStops_[static_cast<size_t>(column)]) ++column;
+        while (column < columns_ - 1 && !tabStops_[static_cast<size_t>(column)]) {
+            ++column;
+        }
         cursorColumn_ = std::min(column, columns_ - 1);
     }
     pendingWrap_ = false;
@@ -382,7 +406,9 @@ void Screen::tabForward(int count) {
 void Screen::tabBackward(int count) {
     for (int step = 0; step < count; ++step) {
         int column = cursorColumn_ - 1;
-        while (column > 0 && !tabStops_[static_cast<size_t>(column)]) --column;
+        while (column > 0 && !tabStops_[static_cast<size_t>(column)]) {
+            --column;
+        }
         cursorColumn_ = std::max(column, 0);
     }
     pendingWrap_ = false;
@@ -415,7 +441,9 @@ void Screen::switchScreen(bool alternate, bool clearAlternate, bool saveRestoreC
         return;
     }
     if (alternate) {
-        if (saveRestoreCursor) saveCursor();
+        if (saveRestoreCursor) {
+            saveCursor();
+        }
         savedPrimary_.rows = std::move(grid_.rows);
         grid_.rows.assign(static_cast<size_t>(rows_), Row{});
         for (Row& line : grid_.rows) {
@@ -427,10 +455,16 @@ void Screen::switchScreen(bool alternate, bool clearAlternate, bool saveRestoreC
     } else {
         grid_.rows = std::move(savedPrimary_.rows);
         savedPrimary_.rows.clear();
-        if (static_cast<int>(grid_.rows.size()) != rows_) grid_.rows.resize(static_cast<size_t>(rows_));
-        for (Row& line : grid_.rows) touch(line);
+        if (static_cast<int>(grid_.rows.size()) != rows_) {
+            grid_.rows.resize(static_cast<size_t>(rows_));
+        }
+        for (Row& line : grid_.rows) {
+            touch(line);
+        }
         usingAlternate_ = false;
-        if (saveRestoreCursor) restoreCursor();
+        if (saveRestoreCursor) {
+            restoreCursor();
+        }
     }
     scrollTop_ = 0;
     scrollBottom_ = rows_ - 1;
@@ -457,7 +491,9 @@ void Screen::reset() {
     scrollTop_ = 0;
     scrollBottom_ = rows_ - 1;
     tabStops_.assign(static_cast<size_t>(columns_), false);
-    for (int column = 8; column < columns_; column += 8) tabStops_[static_cast<size_t>(column)] = true;
+    for (int column = 8; column < columns_; column += 8) {
+        tabStops_[static_cast<size_t>(column)] = true;
+    }
     eraseRows(0, rows_);
     cursorRow_ = cursorColumn_ = 0;
     pendingWrap_ = false;
@@ -511,13 +547,17 @@ void Screen::printCharacter(uint32_t codePoint) {
     Cell cell = pen_;
     cell.character = codePoint;
     cell.attributes &= static_cast<uint16_t>(~(kWideStart | kWideEnd));
-    if (width == 2) cell.attributes |= kWideStart;
+    if (width == 2) {
+        cell.attributes |= kWideStart;
+    }
 
     // Overwriting half of a wide character blanks the other half.
     Row& line = liveRow(cursorRow_);
     ensureWidth(line, columns_);
     size_t cellIndex = static_cast<size_t>(cursorColumn_);
-    if ((line.cells[cellIndex].attributes & kWideEnd) && cursorColumn_ > 0) line.cells[cellIndex - 1] = blankCell();
+    if ((line.cells[cellIndex].attributes & kWideEnd) && cursorColumn_ > 0) {
+        line.cells[cellIndex - 1] = blankCell();
+    }
     if ((line.cells[cellIndex].attributes & kWideStart) && cellIndex + 1 < line.cells.size()) {
         line.cells[cellIndex + 1] = blankCell();
     }
@@ -549,10 +589,14 @@ void Screen::write(std::string_view bytes) {
 void Screen::handleControl(uint8_t byte) {
     switch (byte) {
         case 0x07:
-            if (onBell) onBell();
+            if (onBell) {
+                onBell();
+            }
             break;
         case 0x08:  // backspace
-            if (cursorColumn_ > 0) --cursorColumn_;
+            if (cursorColumn_ > 0) {
+                --cursorColumn_;
+            }
             pendingWrap_ = false;
             break;
         case 0x09:  // tab
@@ -562,7 +606,9 @@ void Screen::handleControl(uint8_t byte) {
         case 0x0B:
         case 0x0C:
             lineFeed();
-            if (newlineMode_) cursorColumn_ = 0;
+            if (newlineMode_) {
+                cursorColumn_ = 0;
+            }
             break;
         case 0x0D:
             cursorColumn_ = 0;
@@ -586,7 +632,9 @@ void Screen::feed(uint8_t byte) {
             return;
 
         case ParserState::Escape:
-            if (byte == 0x1B) return;  // ESC ESC
+            if (byte == 0x1B) {
+                return; // ESC ESC
+            }
             if (byte < 0x20) {         // a control inside an escape sequence still acts
                 handleControl(byte);
                 return;
@@ -607,7 +655,9 @@ void Screen::feed(uint8_t byte) {
                 for (int rowIndex = 0; rowIndex < rows_; ++rowIndex) {
                     Row& line = liveRow(rowIndex);
                     line.cells.assign(static_cast<size_t>(columns_), Cell{});
-                    for (Cell& cell : line.cells) cell.character = 'E';
+                    for (Cell& cell : line.cells) {
+                        cell.character = 'E';
+                    }
                     touch(line);
                 }
             }
@@ -630,14 +680,20 @@ void Screen::feed(uint8_t byte) {
                 return;
             }
             if (byte >= '0' && byte <= '9' && state_ != ParserState::CsiIntermediate) {
-                if (currentParameter_ < 0) currentParameter_ = 0;
+                if (currentParameter_ < 0) {
+                    currentParameter_ = 0;
+                }
                 currentParameter_ = std::min(currentParameter_ * 10 + (byte - '0'), 1000000);
                 state_ = ParserState::CsiParameter;
                 return;
             }
             if ((byte == ';' || byte == ':') && state_ != ParserState::CsiIntermediate) {
-                parameters_.push_back(currentParameter_);
-                subParameter_.push_back(subNext_);
+                // No real sequence has more than a few dozen numbers; extra ones are dropped, so
+                // a stream of semicolons can't grow the list without end.
+                if (parameters_.size() < kMostParameters) {
+                    parameters_.push_back(currentParameter_);
+                    subParameter_.push_back(subNext_);
+                }
                 subNext_ = byte == ':';
                 currentParameter_ = -1;
                 state_ = ParserState::CsiParameter;
@@ -653,7 +709,8 @@ void Screen::feed(uint8_t byte) {
                 return;
             }
             if (byte >= 0x40 && byte <= 0x7E) {
-                if (currentParameter_ >= 0 || !parameters_.empty()) {
+                bool hasParameter = currentParameter_ >= 0 || !parameters_.empty();
+                if (hasParameter && parameters_.size() < kMostParameters) {
                     parameters_.push_back(currentParameter_);
                     subParameter_.push_back(subNext_);
                 }
@@ -720,12 +777,16 @@ void Screen::handleGround(uint8_t byte) {
             utf8Remaining_ = 0;
             printCharacter(kReplacementCharacter);
         }
-        if (byte != 0x7F) printCharacter(byte);
+        if (byte != 0x7F) {
+            printCharacter(byte);
+        }
         return;
     }
     // UTF-8
     if (byte >= 0xC2 && byte <= 0xF4) {
-        if (utf8Remaining_ > 0) printCharacter(kReplacementCharacter);
+        if (utf8Remaining_ > 0) {
+            printCharacter(kReplacementCharacter);
+        }
         if (byte < 0xE0) {
             utf8Code_ = byte & 0x1F;
             utf8Remaining_ = 1;
@@ -812,12 +873,16 @@ void Screen::handleEscapeFinal(uint8_t byte) {
 // Control sequences
 
 int Screen::parameter(size_t index, int fallback) const {
-    if (index >= parameters_.size() || parameters_[index] < 0) return fallback;
+    if (index >= parameters_.size() || parameters_[index] < 0) {
+        return fallback;
+    }
     return parameters_[index];
 }
 
 void Screen::reply(const std::string& bytes) {
-    if (onReply) onReply(bytes);
+    if (onReply) {
+        onReply(bytes);
+    }
 }
 
 void Screen::applyGraphicRendition() {
@@ -861,11 +926,23 @@ void Screen::applyGraphicRendition() {
                 std::vector<int> values;
                 size_t next = index + 1;
                 if (colon) {
-                    while (next < parameters_.size() && subParameter_[next]) values.push_back(parameters_[next++]);
+                    while (next < parameters_.size() && subParameter_[next]) {
+                        values.push_back(parameters_[next++]);
+                    }
                 } else {
-                    if (next < parameters_.size()) values.push_back(parameters_[next++]);
-                    size_t need = (!values.empty() && values[0] == 2) ? 3 : ((!values.empty() && values[0] == 5) ? 1 : 0);
-                    for (size_t taken = 0; taken < need && next < parameters_.size(); ++taken) values.push_back(parameters_[next++]);
+                    if (next < parameters_.size()) {
+                        values.push_back(parameters_[next++]);
+                    }
+                    // 38;2;r;g;b is a true color (three more numbers), 38;5;n a palette index (one).
+                    size_t need = 0;
+                    if (!values.empty() && values[0] == 2) {
+                        need = 3;
+                    } else if (!values.empty() && values[0] == 5) {
+                        need = 1;
+                    }
+                    for (size_t taken = 0; taken < need && next < parameters_.size(); ++taken) {
+                        values.push_back(parameters_[next++]);
+                    }
                 }
                 index = next - 1;
                 TermColor color;
@@ -881,15 +958,24 @@ void Screen::applyGraphicRendition() {
                                            static_cast<uint8_t>(std::clamp(values[first + 2], 0, 255)));
                     valid = true;
                 }
-                if (valid && code == 38) pen_.foreground = color;
-                if (valid && code == 48) pen_.background = color;
+                if (valid && code == 38) {
+                    pen_.foreground = color;
+                }
+                if (valid && code == 48) {
+                    pen_.background = color;
+                }
                 break;
             }
             default:
-                if (code >= 30 && code <= 37) pen_.foreground = TermColor::indexed(static_cast<uint8_t>(code - 30));
-                else if (code >= 40 && code <= 47) pen_.background = TermColor::indexed(static_cast<uint8_t>(code - 40));
-                else if (code >= 90 && code <= 97) pen_.foreground = TermColor::indexed(static_cast<uint8_t>(code - 90 + 8));
-                else if (code >= 100 && code <= 107) pen_.background = TermColor::indexed(static_cast<uint8_t>(code - 100 + 8));
+                if (code >= 30 && code <= 37) {
+                    pen_.foreground = TermColor::indexed(static_cast<uint8_t>(code - 30));
+                } else if (code >= 40 && code <= 47) {
+                    pen_.background = TermColor::indexed(static_cast<uint8_t>(code - 40));
+                } else if (code >= 90 && code <= 97) {
+                    pen_.foreground = TermColor::indexed(static_cast<uint8_t>(code - 90 + 8));
+                } else if (code >= 100 && code <= 107) {
+                    pen_.background = TermColor::indexed(static_cast<uint8_t>(code - 100 + 8));
+                }
                 break;
         }
     }
@@ -899,8 +985,11 @@ void Screen::setMode(bool enable, bool priv) {
     for (size_t index = 0; index < parameters_.size(); ++index) {
         int mode = parameters_[index];
         if (!priv) {
-            if (mode == 4) insertMode_ = enable;
-            else if (mode == 20) newlineMode_ = enable;
+            if (mode == 4) {
+                insertMode_ = enable;
+            } else if (mode == 20) {
+                newlineMode_ = enable;
+            }
             continue;
         }
         switch (mode) {
@@ -916,8 +1005,11 @@ void Screen::setMode(bool enable, bool priv) {
                 switchScreen(enable, false, false);
                 break;
             case 1048:
-                if (enable) saveCursor();
-                else restoreCursor();
+                if (enable) {
+                    saveCursor();
+                } else {
+                    restoreCursor();
+                }
                 break;
             case 1049:
                 switchScreen(enable, true, true);
@@ -1036,9 +1128,13 @@ void Screen::handleCsiFinal(uint8_t byte) {
         }
         case 'K': {  // erase in the line: 0 to the end, 1 to the start, 2 all
             int mode = parameter(0, 0);
-            if (mode == 0) eraseCells(cursorRow_, cursorColumn_, columns_);
-            else if (mode == 1) eraseCells(cursorRow_, 0, cursorColumn_ + 1);
-            else if (mode == 2) eraseCells(cursorRow_, 0, columns_);
+            if (mode == 0) {
+                eraseCells(cursorRow_, cursorColumn_, columns_);
+            } else if (mode == 1) {
+                eraseCells(cursorRow_, 0, cursorColumn_ + 1);
+            } else if (mode == 2) {
+                eraseCells(cursorRow_, 0, columns_);
+            }
             pendingWrap_ = false;
             break;
         }
@@ -1053,18 +1149,27 @@ void Screen::handleCsiFinal(uint8_t byte) {
             scrollUp(count(0));
             break;
         case 'T':  // scroll the text down
-            if (parameters_.size() <= 1) scrollDown(count(0));
+            if (parameters_.size() <= 1) {
+                scrollDown(count(0));
+            }
             break;
         case 'b':  // repeat the last printed character
-            for (int repeat = 0; repeat < std::min(count(0), 10000); ++repeat) printCharacter(lastPrinted_);
+            for (int repeat = 0; repeat < std::min(count(0), 10000); ++repeat) {
+                printCharacter(lastPrinted_);
+            }
             break;
         case 'c':  // "what are you?" (device attributes)
-            if (parameter(0, 0) == 0) reply("\x1b[?62;22c");
+            if (parameter(0, 0) == 0) {
+                reply("\x1b[?62;22c");
+            }
             break;
         case 'g': {  // clear tab stops: 0 here, 3 all
             int mode = parameter(0, 0);
-            if (mode == 0) tabStops_[static_cast<size_t>(cursorColumn_)] = false;
-            else if (mode == 3) std::fill(tabStops_.begin(), tabStops_.end(), false);
+            if (mode == 0) {
+                tabStops_[static_cast<size_t>(cursorColumn_)] = false;
+            } else if (mode == 3) {
+                std::fill(tabStops_.begin(), tabStops_.end(), false);
+            }
             break;
         }
         case 'h':  // switch a mode on
@@ -1080,17 +1185,23 @@ void Screen::handleCsiFinal(uint8_t byte) {
             reportDeviceStatus(parameter(0, 0), priv);
             break;
         case 'r':  // set the scrolling region
-            if (!priv) setScrollRegion(parameter(0, 1) - 1, parameter(1, rows_) - 1);
+            if (!priv) {
+                setScrollRegion(parameter(0, 1) - 1, parameter(1, rows_) - 1);
+            }
             break;
         case 's':  // save the cursor
-            if (parameters_.empty()) saveCursor();
+            if (parameters_.empty()) {
+                saveCursor();
+            }
             break;
         case 'u':  // restore the cursor
             restoreCursor();
             break;
         case 't': {  // window reports; only the text area size (18) is answered
             int kind = parameter(0, 0);
-            if (kind == 18) reply("\x1b[8;" + std::to_string(rows_) + ";" + std::to_string(columns_) + "t");
+            if (kind == 18) {
+                reply("\x1b[8;" + std::to_string(rows_) + ";" + std::to_string(columns_) + "t");
+            }
             break;
         }
         default:
@@ -1110,7 +1221,9 @@ void Screen::handleOsc() {
         case 1:
         case 2:
             title_ = text;
-            if (onTitleChange) onTitleChange(title_);
+            if (onTitleChange) {
+                onTitleChange(title_);
+            }
             break;
         case 7: {
             // file://host/path
@@ -1118,7 +1231,9 @@ void Screen::handleOsc() {
                 size_t slash = text.find('/', 7);
                 if (slash != std::string::npos) {
                     workingDirectory_ = percentDecode(std::string_view(text).substr(slash));
-                    if (onDirectoryChange) onDirectoryChange(workingDirectory_);
+                    if (onDirectoryChange) {
+                        onDirectoryChange(workingDirectory_);
+                    }
                 }
             }
             break;
@@ -1172,14 +1287,20 @@ std::string Screen::textInRange(long startRow, int startColumn, long endRow, int
                 continue;
             }
             const Cell& cell = line.cells[static_cast<size_t>(column)];
-            if (cell.attributes & kWideEnd) continue;
+            if (cell.attributes & kWideEnd) {
+                continue;
+            }
             appendCharacter(cell.character == 0 ? ' ' : cell.character);
         }
         // Trailing blanks are not text — unless the line continues onto the next.
         if (!line.wrapped || rowIndex == endRow) {
-            while (text.size() > before && text.back() == ' ') text.pop_back();
+            while (text.size() > before && text.back() == ' ') {
+                text.pop_back();
+            }
         }
-        if (rowIndex != endRow && !line.wrapped) text += '\n';
+        if (rowIndex != endRow && !line.wrapped) {
+            text += '\n';
+        }
     }
     return text;
 }

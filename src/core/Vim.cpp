@@ -1018,7 +1018,10 @@ void VimEngine::applyOperator(Document& document, const std::string& op, const R
 
 bool VimEngine::runOperator(Document& document, const Command& command) {
     const TextBuffer& buffer = document.buffer();
-    int count = std::max(1, command.count1) * std::max(1, command.count2);
+    // "2d3w" deletes six words. Each count is at most 99999, so the product is worked out wide
+    // and kept to that same limit.
+    long long product = static_cast<long long>(std::max(1, command.count1)) * std::max(1, command.count2);
+    int count = static_cast<int>(std::min<long long>(product, 99999));
     bool hasCount = command.count1 > 0 || command.count2 > 0;
     Position from = document.selection.caret;
     Region region;
@@ -1135,8 +1138,12 @@ void VimEngine::replaceCharacters(Document& document, const std::string& with, i
 void VimEngine::changeCase(Document& document, const Region& region, int mode) {
     const TextBuffer& buffer = document.buffer();
     commandChanges_ = true;
-    Position start = region.linewise ? Position{region.range.start.line, 0} : region.range.start;
-    Position end = region.linewise ? Position{region.range.end.line, buffer.line(region.range.end.line).size()} : region.range.end;
+    Position start = region.range.start;
+    Position end = region.range.end;
+    if (region.linewise) {
+        start = {region.range.start.line, 0};
+        end = {region.range.end.line, buffer.line(region.range.end.line).size()};
+    }
     std::string text = buffer.text({start, end});
     for (char& c : text) {
         unsigned char byte = static_cast<unsigned char>(c);
@@ -1202,7 +1209,9 @@ ExCommand splitCommand(std::string_view text) {
         ++at;
     }
     size_t restStart = text.find_first_not_of(' ', at);
-    command.rest = restStart == std::string_view::npos ? "" : std::string(text.substr(restStart));
+    if (restStart != std::string_view::npos) {
+        command.rest = std::string(text.substr(restStart));
+    }
     return command;
 }
 
@@ -1278,6 +1287,20 @@ std::string replacementFormat(const std::string& replacement) {
         }
     }
     return format;
+}
+
+/// "/" and "?" search forward and back; "n" and "N" go to the next and previous match.
+VimAction searchActionForKey(const std::string& key) {
+    if (key == "/") {
+        return VimAction::Search;
+    }
+    if (key == "?") {
+        return VimAction::SearchBackward;
+    }
+    if (key == "n") {
+        return VimAction::SearchNext;
+    }
+    return VimAction::SearchPrevious;
 }
 
 }  // namespace
@@ -1376,8 +1399,14 @@ std::string VimEngine::substitute(Document& document, size_t first, size_t last,
     if (parts.empty() || parts[0].empty()) {
         return "E35: No previous regular expression";
     }
-    std::string replacement = parts.size() > 1 ? parts[1] : "";
-    std::string flags = parts.size() > 2 ? parts[2] : "";
+    std::string replacement;
+    if (parts.size() > 1) {
+        replacement = parts[1];
+    }
+    std::string flags;
+    if (parts.size() > 2) {
+        flags = parts[2];
+    }
     bool everyMatch = flags.find('g') != std::string::npos;
     auto options = std::regex::ECMAScript;
     if (flags.find('i') != std::string::npos) {
@@ -1391,15 +1420,26 @@ std::string VimEngine::substitute(Document& document, size_t first, size_t last,
         return "E486: Invalid pattern: " + parts[0];
     }
     std::string format = replacementFormat(replacement);
-    auto matchFlags = everyMatch ? std::regex_constants::format_default : std::regex_constants::format_first_only;
+    auto matchFlags = std::regex_constants::format_first_only;
+    if (everyMatch) {
+        matchFlags = std::regex_constants::format_default;
+    }
 
     document.beginUndoGroup();
     size_t changedLines = 0;
     size_t lastChanged = first;
     // From the bottom up, so a replacement that adds line breaks doesn't move the lines still to do.
+    bool tooComplex = false;
     for (size_t line = std::min(last, document.buffer().lineCount() - 1) + 1; line-- > first;) {
         std::string original(document.buffer().line(line));
-        std::string changed = std::regex_replace(original, pattern, format, matchFlags);
+        std::string changed;
+        try {
+            changed = std::regex_replace(original, pattern, format, matchFlags);
+        } catch (const std::regex_error&) {
+            // A pattern that backtracks too much on this line gives up instead of running forever.
+            tooComplex = true;
+            break;
+        }
         if (changed != original) {
             document.replace({{line, 0}, {line, original.size()}}, changed);
             ++changedLines;
@@ -1407,6 +1447,9 @@ std::string VimEngine::substitute(Document& document, size_t first, size_t last,
         }
     }
     document.endUndoGroup();
+    if (tooComplex) {
+        return "E363: Pattern too complex: " + parts[0];
+    }
     if (changedLines == 0) {
         return "E486: Pattern not found: " + parts[0];
     }
@@ -1516,7 +1559,7 @@ void VimEngine::executeNormal(Document& document, const Command& command) {
         showVisual(document);
     } else if (key == "/" || key == "?" || key == "n" || key == "N") {
         if (onAction) {
-            onAction(key == "/" ? VimAction::Search : key == "?" ? VimAction::SearchBackward : key == "n" ? VimAction::SearchNext : VimAction::SearchPrevious);
+            onAction(searchActionForKey(key));
         }
     } else {
         std::optional<Motion> motion = motionFor(document, key, count, hasCount, caret, false);
@@ -1593,7 +1636,13 @@ void VimEngine::executeVisual(Document& document, const Command& command) {
         joinLines(document, static_cast<int>(lines));
     } else if (key == "~" || key == "u" || key == "U") {
         mode_ = VimMode::Normal;
-        changeCase(document, region, key == "~" ? 0 : key == "u" ? 1 : 2);
+        int caseMode = 2;  // "U": upper case
+        if (key == "~") {
+            caseMode = 0;
+        } else if (key == "u") {
+            caseMode = 1;
+        }
+        changeCase(document, region, caseMode);
     } else if (key.size() == 2 && key[0] == 'r') {
         mode_ = VimMode::Normal;
         std::string text = region.linewise ? linesText(buffer, region.range.start.line, region.range.end.line)
@@ -1633,7 +1682,7 @@ void VimEngine::executeVisual(Document& document, const Command& command) {
         }
     } else if (key == "/" || key == "?" || key == "n" || key == "N") {
         if (onAction) {
-            onAction(key == "/" ? VimAction::Search : key == "?" ? VimAction::SearchBackward : key == "n" ? VimAction::SearchNext : VimAction::SearchPrevious);
+            onAction(searchActionForKey(key));
         }
     } else {
         std::optional<Motion> motion = motionFor(document, key, count, hasCount, cursor_, false);

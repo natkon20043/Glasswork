@@ -87,6 +87,19 @@ TEST(readsAndWritesThroughSsh) {
     CHECK_EQ(contents, std::string("second"));
     CHECK(!fs::exists(target.string() + ".glasswork-save"));
 
+    // An executable script stays executable, and saving through a link changes the file it
+    // points to while the link stays a link.
+    fs::path script = folder / "run.sh";
+    CHECK(host.writeFile(script.string(), "echo one\n", &error));
+    fs::permissions(script, fs::perms::owner_all | fs::perms::group_read | fs::perms::others_read);
+    fs::path link = folder / "link.sh";
+    fs::create_symlink(script, link);
+    CHECK(host.writeFile(link.string(), "echo two\n", &error));
+    CHECK(fs::is_symlink(link));
+    CHECK(host.readFile(script.string(), &contents, &error));
+    CHECK_EQ(contents, std::string("echo two\n"));
+    CHECK((fs::status(script).permissions() & fs::perms::owner_exec) != fs::perms::none);
+
     CHECK(!host.readFile((folder / "missing").string(), &contents, &error));
     CHECK(!error.empty());
 

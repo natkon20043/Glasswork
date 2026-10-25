@@ -264,6 +264,7 @@ int main(int argc, char** argv) {
             }
         }
         report("score 60,000 paths, one thread", millisecondsSince(start), "ms");
+        std::printf("    (%zu of them match)\n", matches);
     }
 
     // ---- Diff

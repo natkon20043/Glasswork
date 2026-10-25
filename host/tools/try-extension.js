@@ -54,7 +54,9 @@ async function main() {
         fs.mkdirSync(folder, { recursive: true });
         const meta = await getJson(`https://open-vsx.org/api/${publisher}/${name}`);
         const url = meta.files && meta.files.download;
-        if (!url) throw new Error('not found on Open VSX: ' + JSON.stringify(meta).slice(0, 200));
+        if (!url) {
+            throw new Error('not found on Open VSX: ' + JSON.stringify(meta).slice(0, 200));
+        }
         const vsix = path.join(cache, `${id}.vsix`);
         await download(url, vsix);
         const unpack = path.join(cache, `${id}-unpack`);

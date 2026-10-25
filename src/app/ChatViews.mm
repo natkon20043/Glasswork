@@ -1,4 +1,5 @@
 #import "ChatViews.h"
+#import "Strings.h"
 
 #import "ChangePopover.h"
 #import "MarkdownView.h"
@@ -29,7 +30,7 @@ NSString *stringFromJson(const gw::claude::Json &object, const char *key) {
     if (found == object.end() || !found->is_string()) {
         return @"";
     }
-    return @(found->get<std::string>().c_str()) ?: @"";
+    return StringFromUTF8(found->get<std::string>());
 }
 
 NSArray<NSString *> *linesOf(NSString *text) {
@@ -44,18 +45,42 @@ NSArray<NSString *> *linesOf(NSString *text) {
 }
 
 NSString *symbolForTool(const std::string &name) {
-    if (name == "Read") return @"doc.text";
-    if (name == "Write") return @"doc.badge.plus";
-    if (name == "Edit" || name == "MultiEdit") return @"pencil";
-    if (name == "NotebookEdit") return @"book";
-    if (name == "Bash") return @"terminal";
-    if (name == "Grep") return @"magnifyingglass";
-    if (name == "Glob") return @"square.grid.2x2";
-    if (name == "WebFetch" || name == "WebSearch") return @"globe";
-    if (name == "Task" || name == "Agent") return @"person.2";
-    if (name == "TodoWrite") return @"checklist";
-    if (name == "ExitPlanMode") return @"list.bullet.clipboard";
-    if (name == "AskUserQuestion") return @"questionmark.bubble";
+    if (name == "Read") {
+        return @"doc.text";
+    }
+    if (name == "Write") {
+        return @"doc.badge.plus";
+    }
+    if (name == "Edit" || name == "MultiEdit") {
+        return @"pencil";
+    }
+    if (name == "NotebookEdit") {
+        return @"book";
+    }
+    if (name == "Bash") {
+        return @"terminal";
+    }
+    if (name == "Grep") {
+        return @"magnifyingglass";
+    }
+    if (name == "Glob") {
+        return @"square.grid.2x2";
+    }
+    if (name == "WebFetch" || name == "WebSearch") {
+        return @"globe";
+    }
+    if (name == "Task" || name == "Agent") {
+        return @"person.2";
+    }
+    if (name == "TodoWrite") {
+        return @"checklist";
+    }
+    if (name == "ExitPlanMode") {
+        return @"list.bullet.clipboard";
+    }
+    if (name == "AskUserQuestion") {
+        return @"questionmark.bubble";
+    }
     return @"wrench.and.screwdriver";
 }
 
@@ -471,7 +496,7 @@ void styleCard(NSView *view, CGFloat radius) {
             if (!lineValue.is_string() || shownLines >= 80) {
                 continue;
             }
-            NSString *line = @(lineValue.get<std::string>().c_str()) ?: @"";
+            NSString *line = StringFromUTF8(lineValue.get<std::string>());
             unichar marker = line.length > 0 ? [line characterAtIndex:0] : ' ';
             NSColor *background = nil;
             NSColor *foreground = NSColor.secondaryLabelColor;
@@ -544,7 +569,7 @@ void styleCard(NSView *view, CGFloat radius) {
         NSString *command = stringFromJson(input, "command");
         NSMutableString *body = [NSMutableString stringWithFormat:@"$ %@", command];
         if (tool.hasResult && tool.resultText.size() > 0) {
-            NSArray<NSString *> *lines = linesOf(@(tool.resultText.c_str()) ?: @"");
+            NSArray<NSString *> *lines = linesOf(StringFromUTF8(tool.resultText));
             NSUInteger shown = MIN(lines.count, 24UL);
             [body appendString:@"\n"];
             [body appendString:[[lines subarrayWithRange:NSMakeRange(0, shown)] componentsJoinedByString:@"\n"]];
@@ -586,7 +611,7 @@ void styleCard(NSView *view, CGFloat radius) {
         [sig appendString:@"error"];
         *signature = sig;
         GWAutoTextView *view = [[GWAutoTextView alloc] initAutoSizing];
-        [view setAttributedContent:[[NSAttributedString alloc] initWithString:@(tool.resultText.c_str()) ?: @"" attributes:@{
+        [view setAttributedContent:[[NSAttributedString alloc] initWithString:StringFromUTF8(tool.resultText) attributes:@{
             NSFontAttributeName: [NSFont systemFontOfSize:11.5],
             NSForegroundColorAttributeName: NSColor.systemRedColor,
         }]];
@@ -606,14 +631,14 @@ void styleCard(NSView *view, CGFloat radius) {
     // "Edit  hello.txt" → bold "Edit" and quieter "hello.txt".
     std::string summary = tool.summary();
     size_t gap = summary.find("  ");
-    NSString *name = @(tool.name.c_str());
+    NSString *name = StringFromUTF8(tool.name);
     NSString *rest = @"";
     if (gap != std::string::npos) {
-        rest = @(summary.substr(gap + 2).c_str()) ?: @"";
+        rest = StringFromUTF8(summary.substr(gap + 2));
     }
     _title.stringValue = tool.name == "ExitPlanMode" ? @"Plan" : (name ?: @"Tool");
     _detail.stringValue = rest;
-    _detail.toolTip = @(_filePath.c_str());
+    _detail.toolTip = StringFromUTF8(_filePath);
     _openButton.hidden = _filePath.empty();
 
     // Status glyph.
@@ -684,7 +709,7 @@ void styleCard(NSView *view, CGFloat radius) {
     _permissionRow.hidden = !pending;
     if (pending) {
         NSString *question = nil;
-        NSString *file = _filePath.empty() ? @"" : [@(_filePath.c_str()) lastPathComponent];
+        NSString *file = _filePath.empty() ? @"" : [StringFromUTF8(_filePath) lastPathComponent];
         if (tool.name == "Bash") {
             question = @"Run this command?";
         } else if (tool.name == "ExitPlanMode") {
@@ -735,26 +760,26 @@ void styleCard(NSView *view, CGFloat radius) {
 
 - (void)openClicked:(id)sender {
     if (!_filePath.empty() && self.onOpenPath) {
-        self.onOpenPath(@(_filePath.c_str()), 0);
+        self.onOpenPath(StringFromUTF8(_filePath), 0);
     }
 }
 
 - (void)denyClicked:(id)sender {
     if (self.onPermission) {
         NSString *message = _toolName == "ExitPlanMode" ? @"The user wants to keep planning. Ask what to change." : nil;
-        self.onPermission(@(_requestId.c_str()), GWPermissionChoiceDeny, message);
+        self.onPermission(StringFromUTF8(_requestId), GWPermissionChoiceDeny, message);
     }
 }
 
 - (void)allowClicked:(id)sender {
     if (self.onPermission) {
-        self.onPermission(@(_requestId.c_str()), GWPermissionChoiceAllow, nil);
+        self.onPermission(StringFromUTF8(_requestId), GWPermissionChoiceAllow, nil);
     }
 }
 
 - (void)allowAllClicked:(id)sender {
     if (self.onPermission) {
-        self.onPermission(@(_requestId.c_str()), GWPermissionChoiceAllowAllEdits, nil);
+        self.onPermission(StringFromUTF8(_requestId), GWPermissionChoiceAllowAllEdits, nil);
     }
 }
 
@@ -859,10 +884,10 @@ void styleCard(NSView *view, CGFloat radius) {
         switch (block.kind) {
             case gw::claude::Block::Kind::Text:
                 ((GWMarkdownView *)view).projectRoot = self.projectRoot;
-                [(GWMarkdownView *)view setMarkdown:@(block.text.c_str()) ?: @""];
+                [(GWMarkdownView *)view setMarkdown:StringFromUTF8(block.text)];
                 break;
             case gw::claude::Block::Kind::Thinking:
-                [(GWThinkingView *)view setText:@(block.text.c_str()) ?: @"" finished:block.finished];
+                [(GWThinkingView *)view setText:StringFromUTF8(block.text) finished:block.finished];
                 break;
             case gw::claude::Block::Kind::Tool:
                 [(GWToolCardView *)view updateWithTool:block.tool turnIsRunning:running && !block.tool.hasResult];

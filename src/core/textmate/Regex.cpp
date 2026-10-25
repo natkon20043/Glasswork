@@ -40,7 +40,9 @@ Regex::Regex(const std::string& source) : source_(source) {
     regex_t* compiled = nullptr;
     int result = onig_new(&compiled, begin, begin + source.size(), ONIG_OPTION_CAPTURE_GROUP, ONIG_ENCODING_UTF8,
                           ONIG_SYNTAX_ONIGURUMA, &error);
-    if (result == ONIG_NORMAL) regex_ = compiled;
+    if (result == ONIG_NORMAL) {
+        regex_ = compiled;
+    }
 
     FirstBytes first = analyzeFirstBytes(source);
     hasFirstBytes_ = first.restricted;
@@ -52,18 +54,26 @@ void Regex::setFirstByteSkippingEnabled(bool enabled) {
 }
 
 Regex::~Regex() {
-    if (regex_) onig_free(regex_);
+    if (regex_) {
+        onig_free(regex_);
+    }
 }
 
 Match Regex::search(const std::string& text, size_t from) const {
     Match match;
-    if (!regex_ || from > text.size()) return match;
+    if (!regex_ || from > text.size()) {
+        return match;
+    }
 
     // Skip ahead to the first byte a match could begin with; if there is none, there is no match.
     size_t begin = from;
     if (hasFirstBytes_ && gFirstByteSkipping.load(std::memory_order_relaxed)) {
-        while (begin < text.size() && !firstBytes_[static_cast<unsigned char>(text[begin])]) ++begin;
-        if (begin >= text.size()) return match;
+        while (begin < text.size() && !firstBytes_[static_cast<unsigned char>(text[begin])]) {
+            ++begin;
+        }
+        if (begin >= text.size()) {
+            return match;
+        }
     }
 
     auto* start = reinterpret_cast<const OnigUChar*>(text.data());
@@ -81,7 +91,9 @@ Match Regex::search(const std::string& text, size_t from) const {
 }
 
 const Regex& Regex::withoutAnchor() const {
-    if (!anchored_) return *this;
+    if (!anchored_) {
+        return *this;
+    }
     static std::mutex mutex;
     std::lock_guard lock(mutex);
     if (!unanchored_) {
@@ -110,9 +122,13 @@ std::shared_ptr<Regex> Regex::get(const std::string& source) {
     static std::mutex mutex;
     static std::unordered_map<std::string, std::shared_ptr<Regex>> cache;
     std::lock_guard lock(mutex);
-    if (auto found = cache.find(source); found != cache.end()) return found->second;
+    if (auto found = cache.find(source); found != cache.end()) {
+        return found->second;
+    }
     // End patterns with back-references compile one variant per match; keep the cache bounded.
-    if (cache.size() > 20000) cache.clear();
+    if (cache.size() > 20000) {
+        cache.clear();
+    }
     auto regex = std::make_shared<Regex>(source);
     cache.emplace(source, regex);
     return regex;
@@ -123,7 +139,9 @@ std::string escapeForRegex(const std::string& text) {
     std::string escaped;
     escaped.reserve(text.size() * 2);
     for (char character : text) {
-        if (special.find(character) != std::string::npos) escaped += '\\';
+        if (special.find(character) != std::string::npos) {
+            escaped += '\\';
+        }
         escaped += character;
     }
     return escaped;

@@ -21,6 +21,8 @@ struct Section {
     bool divider = false;
 };
 
+// ---- Finding
+
 std::vector<Section> findSections(const TextBuffer& buffer);
 
 /// The last MARK at or above `line`, or -1.

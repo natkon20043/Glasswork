@@ -73,7 +73,10 @@ bool GlobPattern::matches(const std::string& relativePath) const {
     }
     if (matchesNameAnywhere_) {
         size_t slash = relativePath.rfind('/');
-        std::string name = slash == std::string::npos ? relativePath : relativePath.substr(slash + 1);
+        std::string name = relativePath;
+        if (slash != std::string::npos) {
+            name = relativePath.substr(slash + 1);
+        }
         return std::regex_match(name, regex_);
     }
     return false;

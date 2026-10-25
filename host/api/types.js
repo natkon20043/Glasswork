@@ -158,11 +158,19 @@ class Position {
         let line = this.line;
         let newCharacter = this.character;
         if (typeof lineOrChange === 'object' && lineOrChange !== null) {
-            if (lineOrChange.line !== undefined) line = lineOrChange.line;
-            if (lineOrChange.character !== undefined) newCharacter = lineOrChange.character;
+            if (lineOrChange.line !== undefined) {
+                line = lineOrChange.line;
+            }
+            if (lineOrChange.character !== undefined) {
+                newCharacter = lineOrChange.character;
+            }
         } else {
-            if (lineOrChange !== undefined) line = lineOrChange;
-            if (character !== undefined) newCharacter = character;
+            if (lineOrChange !== undefined) {
+                line = lineOrChange;
+            }
+            if (character !== undefined) {
+                newCharacter = character;
+            }
         }
         return new Position(line, newCharacter);
     }
@@ -234,11 +242,17 @@ class Range {
             newStart = startOrChange;
             newEnd = end || this.end;
         } else if (isChange) {
-            if (startOrChange.start !== undefined) newStart = startOrChange.start;
-            if (startOrChange.end !== undefined) newEnd = startOrChange.end;
+            if (startOrChange.start !== undefined) {
+                newStart = startOrChange.start;
+            }
+            if (startOrChange.end !== undefined) {
+                newEnd = startOrChange.end;
+            }
         } else if (startOrChange) {
             newStart = startOrChange;
-            if (end) newEnd = end;
+            if (end) {
+                newEnd = end;
+            }
         }
         return new Range(newStart, newEnd);
     }
@@ -726,7 +740,9 @@ class SemanticTokensBuilder {
         if (Array.isArray(modifiers) && this.legend) {
             for (const modifier of modifiers) {
                 const index = this.legend.tokenModifiers.indexOf(modifier);
-                if (index >= 0) modifierBits |= 1 << index;
+                if (index >= 0) {
+                    modifierBits |= 1 << index;
+                }
             }
         } else if (typeof modifiers === 'number') {
             modifierBits = modifiers;

@@ -75,7 +75,10 @@ const Fold* FoldSet::foldContaining(size_t line) const {
         return nullptr;
     }
     const Fold& candidate = *(after - 1);
-    return line <= candidate.last ? &candidate : nullptr;
+    if (line > candidate.last) {
+        return nullptr;
+    }
+    return &candidate;
 }
 
 bool FoldSet::isHidden(size_t line) const {
@@ -89,10 +92,10 @@ void FoldSet::fold(size_t first, size_t last) {
     }
     // A bigger fold that already contains this one wins.
     for (const Fold& existing : folds_) {
-        if (existing.first <= first && existing.last >= last && !(existing.first == first && existing.last == last)) {
-            if (existing.first < first) {
-                return;
-            }
+        bool containsNew = existing.first <= first && existing.last >= last;
+        bool sameFold = existing.first == first && existing.last == last;
+        if (containsNew && !sameFold) {
+            return;
         }
     }
     std::vector<Fold> kept;
@@ -108,23 +111,21 @@ void FoldSet::fold(size_t first, size_t last) {
 }
 
 void FoldSet::unfold(size_t first) {
-    folds_.erase(std::remove_if(folds_.begin(), folds_.end(), [first](const Fold& fold) { return fold.first == first; }),
-                 folds_.end());
+    auto startsThere = [first](const Fold& fold) { return fold.first == first; };
+    folds_.erase(std::remove_if(folds_.begin(), folds_.end(), startsThere), folds_.end());
 }
 
 bool FoldSet::unfoldContaining(size_t line) {
     size_t before = folds_.size();
-    folds_.erase(std::remove_if(folds_.begin(), folds_.end(),
-                                [line](const Fold& fold) { return line >= fold.first && line <= fold.last; }),
-                 folds_.end());
+    auto contains = [line](const Fold& fold) { return line >= fold.first && line <= fold.last; };
+    folds_.erase(std::remove_if(folds_.begin(), folds_.end(), contains), folds_.end());
     return folds_.size() != before;
 }
 
 bool FoldSet::unfoldHiding(size_t line) {
     size_t before = folds_.size();
-    folds_.erase(std::remove_if(folds_.begin(), folds_.end(),
-                                [line](const Fold& fold) { return line > fold.first && line <= fold.last; }),
-                 folds_.end());
+    auto hides = [line](const Fold& fold) { return line > fold.first && line <= fold.last; };
+    folds_.erase(std::remove_if(folds_.begin(), folds_.end(), hides), folds_.end());
     return folds_.size() != before;
 }
 

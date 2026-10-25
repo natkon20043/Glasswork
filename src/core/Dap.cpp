@@ -23,6 +23,24 @@ void trace(const char* direction, const Json& message) {
     std::fprintf(stderr, "[dap %s] %s\n", direction, text.c_str());
 }
 
+/// The "format" of a failed response's body.error, which adapters use for the human-readable
+/// reason. Empty if any part of it is missing or not the expected shape.
+std::string errorFormat(const Json& response) {
+    auto body = response.find("body");
+    if (body == response.end() || !body->is_object()) {
+        return std::string();
+    }
+    auto error = body->find("error");
+    if (error == body->end() || !error->is_object()) {
+        return std::string();
+    }
+    auto format = error->find("format");
+    if (format == error->end() || !format->is_string()) {
+        return std::string();
+    }
+    return format->get<std::string>();
+}
+
 }  // namespace
 
 std::vector<std::string> defaultAdapterCommand() {
@@ -93,8 +111,12 @@ void Connection::stop() {
         stopping_ = true;
     }
     if (!alreadyStopping && process_.isRunning()) {
-        Json message = {{"seq", nextSequence_.fetch_add(1)}, {"type", "request"}, {"command", "disconnect"},
-                        {"arguments", {{"terminateDebuggee", true}}}};
+        Json message = {
+            {"seq", nextSequence_.fetch_add(1)},
+            {"type", "request"},
+            {"command", "disconnect"},
+            {"arguments", {{"terminateDebuggee", true}}},
+        };
         send(message);
         process_.closeInput();
     }
@@ -115,7 +137,14 @@ void Connection::handleOutput(std::string_view bytes) {
         }
     }
     for (const Json& message : messages) {
-        handleMessage(message);
+        // A message of an unexpected shape is dropped; it must not end the app from this thread.
+        try {
+            handleMessage(message);
+        } catch (const std::exception& problem) {
+            if (traceEnabled()) {
+                std::fprintf(stderr, "[dap] dropped a message: %s\n", problem.what());
+            }
+        }
     }
 }
 
@@ -137,8 +166,8 @@ void Connection::handleMessage(const Json& message) {
         }
         bool success = message.value("success", false);
         std::string text = message.value("message", "");
-        if (!success && text.empty() && message.contains("body") && message["body"].contains("error")) {
-            text = message["body"]["error"].value("format", "");
+        if (!success && text.empty()) {
+            text = errorFormat(message);
         }
         handler(success, message.value("body", Json::object()), text);
         return;
@@ -169,8 +198,13 @@ void Connection::handleMessage(const Json& message) {
             success = true;
             body = handler(message.value("command", ""), message.value("arguments", Json::object()), success);
         }
-        Json reply = {{"seq", nextSequence_.fetch_add(1)}, {"type", "response"}, {"request_seq", message.value("seq", 0)},
-                      {"success", success}, {"command", message.value("command", "")}};
+        Json reply = {
+            {"seq", nextSequence_.fetch_add(1)},
+            {"type", "response"},
+            {"request_seq", message.value("seq", 0)},
+            {"success", success},
+            {"command", message.value("command", "")},
+        };
         if (success) {
             reply["body"] = body;
         } else {

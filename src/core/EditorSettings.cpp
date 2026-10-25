@@ -139,7 +139,9 @@ EditorSettings parseSettings(const std::string& jsonc, std::string* error) {
     readValue(document, "workbench.iconTheme", settings.iconTheme);
     if (document.contains("extensions.disabled") && document["extensions.disabled"].is_array()) {
         for (const auto& id : document["extensions.disabled"]) {
-            if (id.is_string()) settings.disabledExtensions.push_back(id.get<std::string>());
+            if (id.is_string()) {
+                settings.disabledExtensions.push_back(id.get<std::string>());
+            }
         }
     }
     readValue(document, "editor.highlightOccurrences", settings.highlightOccurrences);

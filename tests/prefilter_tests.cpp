@@ -31,7 +31,9 @@ std::string readLines(const fs::path& path, size_t maxLines) {
     std::string line;
     size_t count = 0;
     while (count < maxLines && std::getline(file, line)) {
-        if (line.size() > 4000) line.resize(4000);
+        if (line.size() > 4000) {
+            line.resize(4000);
+        }
         text += line;
         text += '\n';
         ++count;
@@ -51,7 +53,9 @@ Signature tokenize(gw::tm::Grammar* grammar, const gw::TextBuffer& buffer) {
         const auto* tokens = highlighter.tokens(buffer, line, 1000000);
         std::vector<std::tuple<uint32_t, uint32_t, const void*>> row;
         if (tokens != nullptr) {
-            for (const auto& token : *tokens) row.emplace_back(token.start, token.end, token.scopes);
+            for (const auto& token : *tokens) {
+                row.emplace_back(token.start, token.end, token.scopes);
+            }
         }
         signature.lines.push_back(std::move(row));
     }
@@ -117,7 +121,9 @@ int main() {
 
         bool same = without == with;
         ++compared;
-        if (!same) ++failures;
+        if (!same) {
+            ++failures;
+        }
         std::printf("%s  %-12s %5zu lines   %7.0f ms → %7.0f ms   (%s)\n", same ? "ok  " : "FAIL", sample.language, buffer.lineCount(),
                     withoutMs, withMs, fs::path(used).filename().c_str());
     }

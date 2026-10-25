@@ -1,5 +1,7 @@
 #include "ClaudeProtocol.hpp"
 
+#include "TextBuffer.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -74,14 +76,18 @@ std::string textOfContent(const Json& content) {
 
 std::string baseName(const std::string& path) {
     size_t slash = path.rfind('/');
-    return slash == std::string::npos ? path : path.substr(slash + 1);
+    if (slash == std::string::npos) {
+        return path;
+    }
+    return path.substr(slash + 1);
 }
 
+/// The first line of `text`, cut to about `limit` bytes (never inside a character, which would
+/// leave text the interface can't show).
 std::string firstLine(const std::string& text, size_t limit) {
-    size_t newline = text.find('\n');
-    std::string line = newline == std::string::npos ? text : text.substr(0, newline);
+    std::string line = text.substr(0, text.find('\n'));
     if (line.size() > limit) {
-        line = line.substr(0, limit) + "…";
+        line = line.substr(0, floorToCharacter(line, limit)) + "…";
     }
     return line;
 }

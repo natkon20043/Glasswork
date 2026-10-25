@@ -1,5 +1,7 @@
 #include "LspServer.hpp"
 
+#include "JsonText.hpp"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -67,13 +69,16 @@ std::string resolveProgram(const std::string& program) {
     if (program.empty()) {
         return std::string();
     }
+    std::string path = program;
     if (program == "xcrun") {
-        return access("/usr/bin/xcrun", X_OK) == 0 ? std::string("/usr/bin/xcrun") : std::string();
+        path = "/usr/bin/xcrun";
+    } else if (program.find('/') == std::string::npos) {
+        return findExecutable(program);
     }
-    if (program.find('/') != std::string::npos) {
-        return access(program.c_str(), X_OK) == 0 ? program : std::string();
+    if (access(path.c_str(), X_OK) != 0) {
+        return std::string();
     }
-    return findExecutable(program);
+    return path;
 }
 
 std::string findTypeScriptServer(const std::string& serverProgram, const std::string& projectFolder, const std::string& home) {
@@ -87,7 +92,8 @@ std::string findTypeScriptServer(const std::string& serverProgram, const std::st
     if (problem) {
         return std::string();
     }
-    for (fs::path folder = real.parent_path(); folder.has_parent_path() && folder != folder.parent_path(); folder = folder.parent_path()) {
+    fs::path folder = real.parent_path();
+    for (; folder.has_parent_path() && folder != folder.parent_path(); folder = folder.parent_path()) {
         if (folder.filename() == "node_modules") {
             fs::path candidate = folder / "typescript" / "lib" / "tsserver.js";
             if (fs::exists(candidate, problem)) {
@@ -98,7 +104,10 @@ std::string findTypeScriptServer(const std::string& serverProgram, const std::st
     }
     fs::path kept = fs::path(home) / "Library" / "Application Support" / "Glasswork" / "typescript" / "node_modules" /
                     "typescript" / "lib" / "tsserver.js";
-    return !home.empty() && fs::exists(kept, problem) ? kept.string() : std::string();
+    if (home.empty() || !fs::exists(kept, problem)) {
+        return std::string();
+    }
+    return kept.string();
 }
 
 std::vector<Diagnostic> parseDiagnostics(const Json& array) {
@@ -113,12 +122,19 @@ std::vector<Diagnostic> parseDiagnostics(const Json& array) {
         Diagnostic diagnostic;
         diagnostic.original = item;
         diagnostic.range = item["range"];
-        diagnostic.severity = item.value("severity", 1);
-        diagnostic.message = item.value("message", "");
-        diagnostic.source = item.value("source", "");
+        diagnostic.severity = 1;
+        if (item.contains("severity") && item["severity"].is_number_integer()) {
+            diagnostic.severity = item["severity"].get<int>();
+        }
+        diagnostic.message = stringOr(item, "message");
+        diagnostic.source = stringOr(item, "source");
         if (item.contains("code")) {
             const Json& code = item["code"];
-            diagnostic.code = code.is_string() ? code.get<std::string>() : code.dump();
+            if (code.is_string()) {
+                diagnostic.code = code.get<std::string>();
+            } else {
+                diagnostic.code = code.dump();
+            }
         }
         result.push_back(std::move(diagnostic));
     }
@@ -140,11 +156,15 @@ public:
         ProcessOptions options;
         options.workingDirectory = workingDirectory_;
         process_.onOutput = [this](std::string_view bytes) {
-            if (onOutput) onOutput(bytes);
+            if (onOutput) {
+                onOutput(bytes);
+            }
         };
         process_.onErrorOutput = [](std::string_view) {};  // servers log to stderr; nobody reads it
         process_.onExit = [this](int code) {
-            if (onExit) onExit(code);
+            if (onExit) {
+                onExit(code);
+            }
         };
         return process_.start(argv_, options, error);
     }
@@ -317,7 +337,10 @@ void LanguageServer::finishHandshake(const Json& result, const std::string& erro
     // The server refused to start (for example it could not find TypeScript). There is no result to
     // read, and nothing more can be asked of it: say why, then stop it.
     if (!error.empty() || !result.is_object()) {
-        std::string reason = error.empty() ? "it sent no usable reply to the start-up request" : error;
+        std::string reason = error;
+        if (reason.empty()) {
+            reason = "it sent no usable reply to the start-up request";
+        }
         auto showMessage = copyCallback(onShowMessage);
         if (showMessage) {
             showMessage(1, "The language server could not start: " + reason);
@@ -465,11 +488,21 @@ void LanguageServer::didChangeWatchedFiles(const std::vector<FileEvent>& events)
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (const FileEvent& event : events) {
-            int kindBit = event.type == 1 ? 1 : (event.type == 2 ? 2 : 4);
+            // LSP change types 1 created, 2 changed, 3 deleted; a watcher's kinds are bits 1, 2, 4.
+            int kindBit = 4;
+            if (event.type == 1) {
+                kindBit = 1;
+            } else if (event.type == 2) {
+                kindBit = 2;
+            }
             for (const Watcher& watcher : watchers_) {
-                if ((watcher.kinds & kindBit) == 0) continue;
+                if ((watcher.kinds & kindBit) == 0) {
+                    continue;
+                }
                 std::string prefix = watcher.base + "/";
-                if (event.path.rfind(prefix, 0) != 0) continue;  // outside the folder the pattern is for
+                if (event.path.rfind(prefix, 0) != 0) {
+                    continue; // outside the folder the pattern is for
+                }
                 if (watcher.pattern->matches(event.path.substr(prefix.size()))) {
                     changes.push_back({{"uri", fileURI(event.path)}, {"type", event.type}});
                     break;
@@ -531,7 +564,14 @@ void LanguageServer::handleOutput(std::string_view bytes) {
         }
     }
     for (const Json& message : messages) {
-        handleMessage(message);
+        // A message of an unexpected shape is dropped; it must not end the app from this thread.
+        try {
+            handleMessage(message);
+        } catch (const std::exception& problem) {
+            if (traceEnabled()) {
+                std::fprintf(stderr, "[lsp] dropped a message: %s\n", problem.what());
+            }
+        }
     }
 }
 
@@ -563,7 +603,10 @@ std::string capabilityKeyForMethod(const std::string& method) {
         {"workspace/executeCommand", "executeCommandProvider"},
     };
     auto found = keys.find(method);
-    return found == keys.end() ? std::string() : found->second;
+    if (found == keys.end()) {
+        return std::string();
+    }
+    return found->second;
 }
 
 namespace {
@@ -572,7 +615,13 @@ namespace {
 /// (two completion providers with different trigger characters trigger on both sets).
 Json mergeCapability(const Json& existing, const Json& incoming) {
     if (!existing.is_object() || !incoming.is_object()) {
-        return incoming.is_object() ? incoming : (existing.is_object() ? existing : Json(true));
+        if (incoming.is_object()) {
+            return incoming;
+        }
+        if (existing.is_object()) {
+            return existing;
+        }
+        return Json(true);
     }
     Json merged = existing;
     for (const auto& [key, value] : incoming.items()) {
@@ -614,9 +663,14 @@ void LanguageServer::registerCapabilities(const Json& registrations) {
         std::string id = registration.value("id", "");
         if (registration.value("method", "") == "workspace/didChangeWatchedFiles") {
             // Not a capability: a list of file patterns the server wants to hear about.
-            Json options = registration.contains("registerOptions") ? registration["registerOptions"] : Json::object();
+            Json options = Json::object();
+            if (registration.contains("registerOptions")) {
+                options = registration["registerOptions"];
+            }
             for (const Json& watcher : options.value("watchers", Json::array())) {
-                if (!watcher.is_object() || !watcher.contains("globPattern")) continue;
+                if (!watcher.is_object() || !watcher.contains("globPattern")) {
+                    continue;
+                }
                 Watcher entry;
                 entry.registrationId = id;
                 entry.kinds = watcher.value("kind", 7);
@@ -627,11 +681,23 @@ void LanguageServer::registerCapabilities(const Json& registrations) {
                     pattern = glob.get<std::string>();
                 } else if (glob.is_object() && glob.contains("pattern")) {
                     pattern = glob.value("pattern", "");
-                    Json base = glob.contains("baseUri") ? glob["baseUri"] : Json();
-                    std::string baseUri = base.is_string() ? base.get<std::string>() : (base.is_object() ? base.value("uri", "") : "");
-                    if (!baseUri.empty()) entry.base = pathFromURI(baseUri);
+                    Json base;
+                    if (glob.contains("baseUri")) {
+                        base = glob["baseUri"];
+                    }
+                    std::string baseUri;
+                    if (base.is_string()) {
+                        baseUri = base.get<std::string>();
+                    } else if (base.is_object()) {
+                        baseUri = base.value("uri", "");
+                    }
+                    if (!baseUri.empty()) {
+                        entry.base = pathFromURI(baseUri);
+                    }
                 }
-                if (pattern.empty()) continue;
+                if (pattern.empty()) {
+                    continue;
+                }
                 entry.pattern = std::make_shared<GlobPattern>(pattern);
                 watchers_.push_back(std::move(entry));
             }
@@ -641,11 +707,16 @@ void LanguageServer::registerCapabilities(const Json& registrations) {
         if (key.empty()) {
             continue;
         }
-        Json options = registration.contains("registerOptions") ? registration["registerOptions"] : Json(true);
-        if (!capabilities_.contains(key)) {
+        Json options = Json(true);
+        if (registration.contains("registerOptions")) {
+            options = registration["registerOptions"];
+        }
+        Json current;
+        if (capabilities_.contains(key)) {
+            current = capabilities_[key];
+        } else {
             dynamicOnlyKeys_.insert(key);
         }
-        Json current = capabilities_.contains(key) ? capabilities_[key] : Json();
         if (!current.is_null()) {
             capabilities_[key] = mergeCapability(current, options);
         } else if (options.is_object()) {
@@ -666,8 +737,8 @@ void LanguageServer::unregisterCapabilities(const Json& unregisterations) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (const Json& item : unregisterations) {
         std::string id = item.value("id", "");
-        watchers_.erase(std::remove_if(watchers_.begin(), watchers_.end(), [&](const Watcher& watcher) { return watcher.registrationId == id; }),
-                        watchers_.end());
+        auto registeredWithId = [&](const Watcher& watcher) { return watcher.registrationId == id; };
+        watchers_.erase(std::remove_if(watchers_.begin(), watchers_.end(), registeredWithId), watchers_.end());
         auto found = registrationKeys_.find(id);
         if (found == registrationKeys_.end()) {
             continue;
@@ -708,8 +779,10 @@ void LanguageServer::handleMessage(const Json& message) {
 
 /// An answer to one of our requests: finds who asked and hands it over.
 void LanguageServer::handleResponse(const Json& message) {
-    // An answer to one of our requests.
-    int identifier = message["id"].is_number_integer() ? message["id"].get<int>() : -1;
+    int identifier = -1;
+    if (message["id"].is_number_integer()) {
+        identifier = message["id"].get<int>();
+    }
     ResponseHandler handler;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -724,14 +797,20 @@ void LanguageServer::handleResponse(const Json& message) {
     if (message.contains("error")) {
         error = message["error"].value("message", "Language server error");
     }
-    handler(error.empty() ? message.value("result", Json()) : Json(), error);
-    return;
+    if (error.empty()) {
+        handler(message.value("result", Json()), error);
+    } else {
+        handler(Json(), error);
+    }
 }
 
 /// The server is asking us something. We say no politely, except where "nothing" is a fine answer.
 void LanguageServer::handleServerRequest(const Json& message) {
-    // The server is asking us something. Say no politely, except where "nothing" is a fine answer.
     std::string method = message["method"].get<std::string>();
+    Json params = Json::object();
+    if (message.contains("params") && message["params"].is_object()) {
+        params = message["params"];
+    }
     Json result;
     if (method == "workspace/configuration") {
         std::function<Json(const std::string&, const std::string&)> provider;
@@ -740,7 +819,7 @@ void LanguageServer::handleServerRequest(const Json& message) {
             provider = onConfiguration;
         }
         result = Json::array();
-        for (const Json& item : message["params"].value("items", Json::array())) {
+        for (const Json& item : params.value("items", Json::array())) {
             Json value;  // null: not set
             if (provider && item.is_object()) {
                 value = provider(item.value("section", ""), item.value("scopeUri", ""));
@@ -751,13 +830,13 @@ void LanguageServer::handleServerRequest(const Json& message) {
         auto handler = copyCallback(onShowMessageRequest);
         if (handler) {
             std::vector<std::string> actions;
-            for (const Json& action : message["params"].value("actions", Json::array())) {
+            for (const Json& action : params.value("actions", Json::array())) {
                 actions.push_back(action.value("title", ""));
             }
             std::shared_ptr<Liveness> liveness = liveness_;
             Json requestId = message["id"];
-            Json originalActions = message["params"].value("actions", Json::array());
-            handler(message["params"].value("type", 3), message["params"].value("message", ""), actions,
+            Json originalActions = params.value("actions", Json::array());
+            handler(params.value("type", 3), params.value("message", ""), actions,
                     [liveness, requestId, originalActions](const std::string& chosen) {
                         std::lock_guard<std::mutex> lock(liveness->mutex);
                         if (liveness->server == nullptr) {
@@ -781,7 +860,7 @@ void LanguageServer::handleServerRequest(const Json& message) {
             // The answer goes out whenever the app has made (or refused) the changes.
             std::shared_ptr<Liveness> liveness = liveness_;
             Json requestId = message["id"];
-            handler(message["params"].value("edit", Json::object()), [liveness, requestId](bool applied) {
+            handler(params.value("edit", Json::object()), [liveness, requestId](bool applied) {
                 std::lock_guard<std::mutex> lock(liveness->mutex);
                 if (liveness->server != nullptr) {
                     liveness->server->replyToApplyEdit(requestId, applied);
@@ -791,10 +870,10 @@ void LanguageServer::handleServerRequest(const Json& message) {
         }
         result = {{"applied", false}};
     } else if (method == "client/registerCapability") {
-        registerCapabilities(message["params"].value("registrations", Json::array()));
+        registerCapabilities(params.value("registrations", Json::array()));
         result = Json();
     } else if (method == "client/unregisterCapability") {
-        unregisterCapabilities(message["params"].value("unregisterations", Json::array()));
+        unregisterCapabilities(params.value("unregisterations", Json::array()));
         result = Json();
     } else if (method == "window/workDoneProgress/create") {
         result = Json();
@@ -805,18 +884,24 @@ void LanguageServer::handleServerRequest(const Json& message) {
         return;
     }
     transport_->write(frameMessage({{"jsonrpc", "2.0"}, {"id", message["id"]}, {"result", result}}));
-    return;
 }
 
 /// Something the server tells us and expects no answer to: messages, progress and problems found.
 void LanguageServer::handleNotification(const Json& message) {
     std::string method = message["method"].get<std::string>();
-    const Json parameters = message.contains("params") ? message["params"] : Json::object();
+    Json parameters = Json::object();
+    if (message.contains("params")) {
+        parameters = message["params"];
+    }
     if (method == "window/showMessage" || method == "window/logMessage") {
         std::function<void(int, const std::string&)> handler;
         {
             std::lock_guard<std::mutex> lock(callbackMutex_);
-            handler = method == "window/showMessage" ? onShowMessage : onLogMessage;
+            if (method == "window/showMessage") {
+                handler = onShowMessage;
+            } else {
+                handler = onLogMessage;
+            }
         }
         if (handler) {
             handler(parameters.value("type", 3), parameters.value("message", ""));
@@ -831,9 +916,16 @@ void LanguageServer::handleNotification(const Json& message) {
             std::string token;
             if (parameters.contains("token")) {
                 const Json& tokenValue = parameters["token"];
-                token = tokenValue.is_string() ? tokenValue.get<std::string>() : tokenValue.dump();
+                if (tokenValue.is_string()) {
+                    token = tokenValue.get<std::string>();
+                } else {
+                    token = tokenValue.dump();
+                }
             }
-            int percentage = value.contains("percentage") && value["percentage"].is_number() ? value["percentage"].get<int>() : -1;
+            int percentage = -1;
+            if (value.contains("percentage") && value["percentage"].is_number()) {
+                percentage = value["percentage"].get<int>();
+            }
             handler(token, value.value("kind", ""), value.value("title", ""), value.value("message", ""), percentage);
         }
         return;

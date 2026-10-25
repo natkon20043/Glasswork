@@ -1,4 +1,5 @@
 #import "ChatPanel.h"
+#import "Strings.h"
 
 #import "ChatViews.h"
 #import "FileIcons.h"
@@ -486,7 +487,7 @@ NSString *friendlyModelName(const std::string &model) {
     if (model.empty()) {
         return @"";
     }
-    NSString *text = @(model.c_str());
+    NSString *text = StringFromUTF8(model);
     if ([text hasPrefix:@"claude-"]) {
         text = [text substringFromIndex:7];
     }
@@ -550,6 +551,14 @@ const std::vector<ModelChoice> &modelChoices() {
 
 @interface GWChatPanel () <NSTextViewDelegate, NSTableViewDelegate>
 @end
+
+/// The text of a user message or notice (its first block), or "" if it has none.
+static NSString *FirstBlockText(const gw::claude::Message &message) {
+    if (message.blocks.empty()) {
+        return @"";
+    }
+    return StringFromUTF8(message.blocks[0].text);
+}
 
 @implementation GWChatPanel {
     NSView *_view;
@@ -1051,6 +1060,9 @@ const std::vector<ModelChoice> &modelChoices() {
         GWChip *chip = [[GWChip alloc] initWithSymbol:GWSymbolForFile(name) title:name tint:GWColorForFile(name)];
         chip.onRemove = ^{
             GWChatPanel *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
             strongSelf->_includeFile = NO;
             [strongSelf contextDidChange];
         };
@@ -1063,6 +1075,9 @@ const std::vector<ModelChoice> &modelChoices() {
         GWChip *chip = [[GWChip alloc] initWithSymbol:@"text.cursor" title:title tint:NSColor.controlAccentColor];
         chip.onRemove = ^{
             GWChatPanel *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
             strongSelf->_includeSelection = NO;
             [strongSelf contextDidChange];
         };
@@ -1073,6 +1088,9 @@ const std::vector<ModelChoice> &modelChoices() {
                                                  tint:GWColorForFile(path.lastPathComponent)];
         chip.onRemove = ^{
             GWChatPanel *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
             [strongSelf->_attachedFiles removeObject:path];
             [strongSelf contextDidChange];
         };
@@ -1224,7 +1242,7 @@ const std::vector<ModelChoice> &modelChoices() {
         NSMutableArray<GWCompletionItem *> *items = [NSMutableArray array];
         NSMutableArray<NSString *> *commands = [NSMutableArray arrayWithObjects:@"new", @"clear", nil];
         for (const std::string &command : _slashCommands) {
-            [commands addObject:@(command.c_str())];
+            [commands addObject:StringFromUTF8(command)];
         }
         for (NSString *command in commands) {
             if (prefix.length > 0 && ![command.lowercaseString hasPrefix:prefix]) {
@@ -1282,11 +1300,19 @@ const std::vector<ModelChoice> &modelChoices() {
     NSString *beforeCaret = [text substringToIndex:MIN(caret, text.length)];
     NSRange replace;
     if ([item.replacement hasPrefix:@"@"]) {
+        // "@path " replaces what was typed since the "@" (or goes in at the caret, if there is none),
+        // and the path, without the "@" and the space after it, is remembered.
         NSRange at = [beforeCaret rangeOfString:@"@" options:NSBackwardsSearch];
-        replace = NSMakeRange(at.location, caret - at.location);
-        NSString *path = [item.replacement substringWithRange:NSMakeRange(1, item.replacement.length - 2)];
-        if (![_mentionedFiles containsObject:path]) {
-            [_mentionedFiles addObject:path];
+        if (at.location != NSNotFound) {
+            replace = NSMakeRange(at.location, caret - at.location);
+        } else {
+            replace = NSMakeRange(MIN(caret, text.length), 0);
+        }
+        if (item.replacement.length >= 2) {
+            NSString *path = [item.replacement substringWithRange:NSMakeRange(1, item.replacement.length - 2)];
+            if (![_mentionedFiles containsObject:path]) {
+                [_mentionedFiles addObject:path];
+            }
         }
     } else {
         replace = NSMakeRange(0, text.length);
@@ -1314,7 +1340,7 @@ const std::vector<ModelChoice> &modelChoices() {
     if (_includeSelection && context.selectedText.length > 0 && context.startLine > 0) {
         NSString *selection = context.selectedText;
         if (selection.length > 20000) {
-            selection = [[selection substringToIndex:20000] stringByAppendingString:@"\n… (cut off)"];
+            selection = [PrefixOfString(selection, 20000) stringByAppendingString:@"\n… (cut off)"];
         }
         [lines appendFormat:@"The user has this selected (lines %ld–%ld of that file):\n```\n%@\n```\n",
                             static_cast<long>(context.startLine), static_cast<long>(context.endLine), selection];
@@ -1351,7 +1377,7 @@ const std::vector<ModelChoice> &modelChoices() {
         [weakSelf enqueueEvent:event generation:generation];
     };
     _session->onExit = [weakSelf, generation](int code, const std::string &errorText) {
-        NSString *text = @(errorText.c_str()) ?: @"";
+        NSString *text = StringFromUTF8(errorText);
         dispatch_async(dispatch_get_main_queue(), ^{
             [weakSelf sessionEndedWithCode:code errorText:text generation:generation];
         });
@@ -1373,7 +1399,7 @@ const std::vector<ModelChoice> &modelChoices() {
     std::string error;
     if (!_session->start(options, &error)) {
         _session.reset();
-        [self appendNotice:[NSString stringWithFormat:@"Couldn't start Claude: %s", error.c_str()] isError:YES];
+        [self appendNotice:[NSString stringWithFormat:@"Couldn't start Claude: %@", StringFromUTF8(error)] isError:YES];
         return NO;
     }
     _endedByUser = NO;
@@ -1477,7 +1503,7 @@ const std::vector<ModelChoice> &modelChoices() {
                 _reportedModel = event.model;
                 _slashCommands = event.slashCommands;
                 if (!event.sessionId.empty()) {
-                    _resumeSessionId = @(event.sessionId.c_str());
+                    _resumeSessionId = StringFromUTF8(event.sessionId);
                 }
                 break;
             case gw::claude::EventKind::RateLimit:
@@ -1543,7 +1569,7 @@ const std::vector<ModelChoice> &modelChoices() {
     if (!_endedByUser && (code != 0 || wasBusy)) {
         NSString *detail = [errorText stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         if (detail.length > 400) {
-            detail = [detail substringToIndex:400];
+            detail = PrefixOfString(detail, 400);
         }
         NSString *message = detail.length > 0 ? [NSString stringWithFormat:@"Claude stopped: %@", detail] : @"Claude stopped. Send another message to continue.";
         [self appendNotice:message isError:code != 0];
@@ -1651,15 +1677,14 @@ const std::vector<ModelChoice> &modelChoices() {
     BOOL running = _transcript.isBusy();
     switch (message.role) {
         case gw::claude::Message::Role::User:
-            [(GWChatUserView *)view setText:message.blocks.empty() ? @"" : (@(message.blocks[0].text.c_str()) ?: @"")];
+            [(GWChatUserView *)view setText:FirstBlockText(message)];
             break;
         case gw::claude::Message::Role::Assistant:
             ((GWChatAssistantView *)view).projectRoot = _projectFolder;
             [(GWChatAssistantView *)view updateWithMessage:message turnIsRunning:running];
             break;
         case gw::claude::Message::Role::Notice:
-            [(GWChatNoticeView *)view setText:message.blocks.empty() ? @"" : (@(message.blocks[0].text.c_str()) ?: @"")
-                                      isError:message.isError];
+            [(GWChatNoticeView *)view setText:FirstBlockText(message) isError:message.isError];
             break;
     }
 }
@@ -1707,7 +1732,7 @@ const std::vector<ModelChoice> &modelChoices() {
                 if (block.tool.approval == gw::claude::Approval::Pending) {
                     text = @"Waiting for your answer…";
                 } else {
-                    text = [NSString stringWithFormat:@"%s…", block.tool.summary().c_str()];
+                    text = [NSString stringWithFormat:@"%@…", StringFromUTF8(block.tool.summary())];
                 }
                 break;
             }
@@ -1819,10 +1844,10 @@ const std::vector<ModelChoice> &modelChoices() {
             for (const gw::claude::SavedSession &session : sessions) {
                 NSTimeInterval age = NSDate.date.timeIntervalSince1970 - session.modifiedSeconds;
                 NSString *ago = age < 60 ? @"now" : [formatter stringFromTimeInterval:age];
-                NSString *title = [NSString stringWithFormat:@"%@   ·   %@", @(session.title.c_str()), ago];
+                NSString *title = [NSString stringWithFormat:@"%@   ·   %@", StringFromUTF8(session.title), ago];
                 NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:@selector(openSavedSession:) keyEquivalent:@""];
                 item.target = self;
-                item.representedObject = @[@(session.id.c_str()), @(session.path.c_str())];
+                item.representedObject = @[StringFromUTF8(session.id), StringFromUTF8(session.path)];
                 [menu addItem:item];
             }
             [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, NSHeight(sender.bounds) + 4) inView:sender];

@@ -1,4 +1,5 @@
 #import "RemoteSupport.h"
+#import "Strings.h"
 
 #include "RemoteHost.hpp"
 #include "Tasks.hpp"
@@ -47,15 +48,14 @@ NSArray<GWRemoteItem *> *GWListRemoteFolder(NSURL *folder, NSString **error) {
     std::vector<gw::RemoteEntry> entries;
     std::string message;
     if (!host.listDirectory(folder.path.UTF8String, &entries, &message)) {
-        if (error) *error = @(message.c_str());
+        if (error) {
+            *error = StringFromUTF8(message);
+        }
         return nil;
     }
     NSMutableArray<GWRemoteItem *> *items = [NSMutableArray array];
     for (const gw::RemoteEntry &entry : entries) {
-        NSString *name = @(entry.name.c_str());
-        if (name == nil) {
-            continue;  // a name that isn't valid text can't be shown
-        }
+        NSString *name = StringFromUTF8(entry.name);
         GWRemoteItem *item = [GWRemoteItem new];
         item.url = [folder URLByAppendingPathComponent:name isDirectory:entry.isDirectory];
         item.isDirectory = entry.isDirectory;
@@ -69,7 +69,9 @@ NSData *GWReadRemoteFile(NSURL *file, NSString **error) {
     std::string contents;
     std::string message;
     if (!host.readFile(file.path.UTF8String, &contents, &message)) {
-        if (error) *error = @(message.c_str());
+        if (error) {
+            *error = StringFromUTF8(message);
+        }
         return nil;
     }
     return [NSData dataWithBytes:contents.data() length:contents.size()];
@@ -83,7 +85,9 @@ BOOL GWWriteRemoteFile(NSURL *file, NSData *contents, NSString **error) {
     }
     std::string message;
     if (!host.writeFile(file.path.UTF8String, text, &message)) {
-        if (error) *error = @(message.c_str());
+        if (error) {
+            *error = StringFromUTF8(message);
+        }
         return NO;
     }
     return YES;
@@ -94,10 +98,12 @@ NSString *GWResolveRemotePath(NSString *destination, NSString *path, NSString **
     std::string message;
     std::optional<std::string> resolved = host.resolvePath(path.UTF8String, &message);
     if (!resolved) {
-        if (error) *error = @(message.c_str());
+        if (error) {
+            *error = StringFromUTF8(message);
+        }
         return nil;
     }
-    return @(resolved->c_str());
+    return StringFromUTF8(*resolved);
 }
 
 NSString *GWRemoteShellCommand(NSURL *folder) {
@@ -106,7 +112,7 @@ NSString *GWRemoteShellCommand(NSURL *folder) {
     // The terminal runs this line through a shell, so each word is quoted.
     NSMutableArray<NSString *> *words = [NSMutableArray array];
     for (const std::string &argument : arguments) {
-        [words addObject:@(gw::shellQuote(argument).c_str())];
+        [words addObject:StringFromUTF8(gw::shellQuote(argument))];
     }
     return [words componentsJoinedByString:@" "];
 }
