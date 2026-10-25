@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <unistd.h>
 
 namespace gw::lsp {
@@ -45,7 +46,8 @@ const std::vector<ServerSpec>& defaultServerSpecs() {
         {"typescript-language-server",
          {"typescript-language-server", "--stdio"},
          {"typescript", "typescriptreact", "javascript", "javascriptreact"},
-         "Install it with: npm install -g typescript typescript-language-server"},
+         "Install it with: npm install -g typescript-language-server, and give it TypeScript 6 (TypeScript 7 has "
+         "no tsserver): npm install --prefix \"$HOME/Library/Application Support/Glasswork/typescript\" typescript@6"},
         {"rust-analyzer", {"rust-analyzer"}, {"rust"}, "Install it with: rustup component add rust-analyzer"},
         {"gopls", {"gopls"}, {"go"}, "Install it with: go install golang.org/x/tools/gopls@latest"},
     };
@@ -72,6 +74,31 @@ std::string resolveProgram(const std::string& program) {
         return access(program.c_str(), X_OK) == 0 ? program : std::string();
     }
     return findExecutable(program);
+}
+
+std::string findTypeScriptServer(const std::string& serverProgram, const std::string& projectFolder, const std::string& home) {
+    namespace fs = std::filesystem;
+    std::error_code problem;
+    if (fs::exists(fs::path(projectFolder) / "node_modules" / "typescript" / "lib" / "tsserver.js", problem)) {
+        return std::string();  // the project's own TypeScript is found and used by the server
+    }
+    // The program is usually a link in a bin folder to <node_modules>/typescript-language-server/...
+    fs::path real = fs::weakly_canonical(serverProgram, problem);
+    if (problem) {
+        return std::string();
+    }
+    for (fs::path folder = real.parent_path(); folder.has_parent_path() && folder != folder.parent_path(); folder = folder.parent_path()) {
+        if (folder.filename() == "node_modules") {
+            fs::path candidate = folder / "typescript" / "lib" / "tsserver.js";
+            if (fs::exists(candidate, problem)) {
+                return candidate.string();
+            }
+            break;
+        }
+    }
+    fs::path kept = fs::path(home) / "Library" / "Application Support" / "Glasswork" / "typescript" / "node_modules" /
+                    "typescript" / "lib" / "tsserver.js";
+    return !home.empty() && fs::exists(kept, problem) ? kept.string() : std::string();
 }
 
 std::vector<Diagnostic> parseDiagnostics(const Json& array) {
@@ -268,6 +295,15 @@ bool LanguageServer::start(std::string* error) {
                 {"formats", Json::array({"relative"})},
                 {"multilineTokenSupport", false},
                 {"overlappingTokenSupport", false}}}}}}}}}};
+    if (spec_.name == "typescript-language-server" && !spec_.command.empty()) {
+        // It looks for TypeScript in the project, and a global install sits somewhere else; without
+        // this it refuses to start ("Could not find a valid TypeScript installation").
+        const char* home = std::getenv("HOME");
+        std::string tsserver = findTypeScriptServer(resolveProgram(spec_.command[0]), rootPath_, home ? home : "");
+        if (!tsserver.empty()) {
+            initialize["params"]["initializationOptions"] = {{"tsserver", {{"path", tsserver}}}};
+        }
+    }
     int handshakeId = initialize["id"];
     {
         std::lock_guard<std::mutex> lock(mutex_);

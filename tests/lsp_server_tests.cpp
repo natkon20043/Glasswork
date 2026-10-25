@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -87,6 +88,39 @@ TEST(aServerThatRefusesToStartDoesNotCrashUs) {
     CHECK(!becameReady);
     unsetenv("FAKE_LSP_REFUSE");
     server.stop();
+}
+
+TEST(findsTypeScriptBesideTheServer) {
+    namespace fs = std::filesystem;
+    fs::path root = fs::temp_directory_path() / ("gw-ts-" + std::to_string(getpid()));
+    fs::create_directories(root / "lib" / "node_modules" / "typescript-language-server" / "lib");
+    fs::create_directories(root / "lib" / "node_modules" / "typescript" / "lib");
+    fs::create_directories(root / "bin");
+    fs::create_directories(root / "project");
+    std::ofstream(root / "lib" / "node_modules" / "typescript" / "lib" / "tsserver.js") << "//";
+    std::ofstream(root / "lib" / "node_modules" / "typescript-language-server" / "lib" / "cli.mjs") << "//";
+    fs::create_symlink("../lib/node_modules/typescript-language-server/lib/cli.mjs", root / "bin" / "typescript-language-server");
+
+    std::string program = (root / "bin" / "typescript-language-server").string();
+    CHECK_EQ(gw::lsp::findTypeScriptServer(program, (root / "project").string(), ""),
+             (fs::weakly_canonical(root) / "lib" / "node_modules" / "typescript" / "lib" / "tsserver.js").string());
+
+    // A project with its own TypeScript is left to the server, which prefers it.
+    fs::create_directories(root / "project" / "node_modules" / "typescript" / "lib");
+    std::ofstream(root / "project" / "node_modules" / "typescript" / "lib" / "tsserver.js") << "//";
+    CHECK_EQ(gw::lsp::findTypeScriptServer(program, (root / "project").string(), ""), std::string());
+
+    CHECK_EQ(gw::lsp::findTypeScriptServer("/nonexistent/typescript-language-server", "/nonexistent", ""), std::string());
+
+    // No TypeScript beside the server (version 7 has no tsserver.js): the copy Glasswork keeps is used.
+    fs::remove(root / "lib" / "node_modules" / "typescript" / "lib" / "tsserver.js");
+    fs::remove_all(root / "project" / "node_modules");
+    fs::path kept = root / "home" / "Library" / "Application Support" / "Glasswork" / "typescript" / "node_modules" / "typescript" / "lib";
+    fs::create_directories(kept);
+    std::ofstream(kept / "tsserver.js") << "//";
+    CHECK_EQ(gw::lsp::findTypeScriptServer(program, (root / "project").string(), (root / "home").string()), (kept / "tsserver.js").string());
+    CHECK_EQ(gw::lsp::findTypeScriptServer(program, (root / "project").string(), ""), std::string());
+    fs::remove_all(root);
 }
 
 TEST(uriRoundTrip) {

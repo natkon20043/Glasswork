@@ -63,6 +63,12 @@ const ServerSpec* serverForLanguage(const std::vector<ServerSpec>& specs, const 
 /// Empty if not found.
 std::string resolveProgram(const std::string& program);
 
+/// Where typescript-language-server should find TypeScript's own server (tsserver.js), which it
+/// needs and TypeScript 7 no longer ships: the `typescript` package installed beside the server,
+/// else the copy Glasswork keeps in `home`'s support folder (see typeScriptHint). Empty when
+/// the project has its own TypeScript, which the server finds and prefers, or when none is found.
+std::string findTypeScriptServer(const std::string& serverProgram, const std::string& projectFolder, const std::string& home);
+
 std::vector<Diagnostic> parseDiagnostics(const Json& array);
 
 /// "textDocument/hover" -> "hoverProvider". Empty for methods without one (resolve requests, notifications).

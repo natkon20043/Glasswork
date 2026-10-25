@@ -95,7 +95,7 @@ Glasswork talks to language servers over LSP, in the background, so typing never
 | C, C++, Objective-C(++) | clangd | Xcode (nothing to install) |
 | Swift | sourcekit-lsp | Xcode (nothing to install) |
 | Python | pyright-langserver | `npm install -g pyright` |
-| TypeScript, JavaScript | typescript-language-server | `npm install -g typescript typescript-language-server` |
+| TypeScript, JavaScript | typescript-language-server | `npm install -g typescript-language-server`, plus TypeScript 6 for it to use (TypeScript 7 has no `tsserver.js`): `npm install --prefix "$HOME/Library/Application Support/Glasswork/typescript" typescript@6`. A project's own `node_modules/typescript` is used first. |
 | Rust | rust-analyzer | `rustup component add rust-analyzer` |
 | Go | gopls | `go install golang.org/x/tools/gopls@latest` |
 
