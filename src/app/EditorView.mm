@@ -1153,8 +1153,8 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         _lineNumberColor = [NSColor colorWithSRGBRed:0.10 green:0.11 blue:0.14 alpha:1];
         _activeLineNumberColor = NSColor.blackColor;
     }
-    // Block lines must be easy to see in every theme, so they use one clear color (light or dark
-    // only) instead of the theme's very faint indent guide color.
+    // Indent guides look the same in every theme: one color (light or dark only), drawn faint
+    // and brighter for the block the caret is in.
     _guideColor = theme.isDark() ? [NSColor colorWithSRGBRed:1 green:1 blue:1 alpha:0.42]
                                  : [NSColor colorWithSRGBRed:0 green:0 blue:0 alpha:0.42];
     _matchColor = [services color:@"editorBracketMatch.border" fallback:[NSColor.controlAccentColor colorWithAlphaComponent:0.8]];
@@ -1291,10 +1291,12 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     }
 }
 
-// MARK: Block braces
+// MARK: Indent guides
 
-/// How many indentation levels a line is inside. Blank lines take the smaller level of the code
-/// around them, so a block's line runs unbroken through blank lines.
+/// How many indentation levels a line is inside, for the guide lines. A line indented far past
+/// the code above it is lining arguments up under a bracket, not opening blocks, so it counts
+/// at most one level deeper than the nearest line above it that is indented less. Blank lines
+/// take the smaller level of the code around them, so a block's line runs through them unbroken.
 - (size_t)indentLevelsForLine:(size_t)line {
     const auto &buffer = _document->buffer();
     size_t count = buffer.lineCount();
@@ -1307,76 +1309,41 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         for (size_t look = line + 1; look < count && look - line < 100; ++look) {
             if ((below = indentColumns(buffer.line(look), _tabSize))) break;
         }
-        columns = std::min(above.value_or(0), below.value_or(0));
+        return std::min(above.value_or(0), below.value_or(0)) / _tabSize;
     }
-    return *columns / _tabSize;
+    size_t levels = *columns / _tabSize;
+    for (size_t look = line; look-- > 0 && line - look < 100;) {
+        std::optional<size_t> other = indentColumns(buffer.line(look), _tabSize);
+        if (other && *other / _tabSize < levels) {
+            return std::min(levels, *other / _tabSize + 1);
+        }
+    }
+    return levels;
 }
 
-/// One curly brace "{" from `top` to `bottom` at `x`: curled ends and a point in the middle
-/// aimed at the left. `openAtTop` / `openAtBottom` mean the block goes on past the edge of what
-/// is drawn, so that end is a plain straight line instead of a curl.
-- (void)strokeBraceAtX:(CGFloat)x top:(CGFloat)top bottom:(CGFloat)bottom openAtTop:(BOOL)openAtTop openAtBottom:(BOOL)openAtBottom {
-    CGFloat height = bottom - top;
-    CGFloat curl = std::min<CGFloat>(4.5, height / 4);
-    CGFloat middle = (top + bottom) / 2;
-    CGFloat point = 4;  // how far the middle point sticks out to the left
-
-    NSBezierPath *brace = [NSBezierPath bezierPath];
-    brace.lineWidth = 1.6;
-    brace.lineCapStyle = NSLineCapStyleRound;
-    brace.lineJoinStyle = NSLineJoinStyleRound;
-
-    if (openAtTop) {
-        [brace moveToPoint:NSMakePoint(x, top)];
-    } else {
-        [brace moveToPoint:NSMakePoint(x + curl, top + 0.8)];
-        [brace curveToPoint:NSMakePoint(x, top + curl)
-              controlPoint1:NSMakePoint(x + curl * 0.4, top + 0.8)
-              controlPoint2:NSMakePoint(x, top + curl * 0.6)];
-    }
-    BOOL hasPoint = height >= 28;
-    if (hasPoint) {
-        [brace lineToPoint:NSMakePoint(x, middle - curl)];
-        [brace curveToPoint:NSMakePoint(x - point, middle)
-              controlPoint1:NSMakePoint(x, middle - curl * 0.4)
-              controlPoint2:NSMakePoint(x - point * 0.4, middle)];
-        [brace curveToPoint:NSMakePoint(x, middle + curl)
-              controlPoint1:NSMakePoint(x - point * 0.4, middle)
-              controlPoint2:NSMakePoint(x, middle + curl * 0.4)];
-    }
-    if (openAtBottom) {
-        [brace lineToPoint:NSMakePoint(x, bottom)];
-    } else {
-        [brace lineToPoint:NSMakePoint(x, bottom - curl)];
-        [brace curveToPoint:NSMakePoint(x + curl, bottom - 0.8)
-              controlPoint1:NSMakePoint(x, bottom - curl * 0.6)
-              controlPoint2:NSMakePoint(x + curl * 0.4, bottom - 0.8)];
-    }
-    [brace stroke];
-}
-
-/// Draws the brace of every block that shows in lines [first, last].
-- (void)drawBlockBracesFromLine:(size_t)first toLine:(size_t)last {
-    size_t lineCount = _document->buffer().lineCount();
+/// Draws the guide lines of every block that shows in lines [first, last]: a thin vertical line
+/// at each indentation level, and a brighter one for the block the caret is in.
+- (void)drawIndentGuidesFromLine:(size_t)first toLine:(size_t)last {
     CGFloat step = _tabSize * _charWidth;
 
-    // The levels of every visible line, and of the lines just outside (to know if a block goes on).
     std::vector<size_t> levels;
     for (size_t line = first; line <= last; ++line) {
         levels.push_back([self isLineHidden:line] ? 0 : [self indentLevelsForLine:line]);
     }
-    size_t levelsAbove = first > 0 ? [self indentLevelsForLine:first - 1] : 0;
-    size_t levelsBelow = last + 1 < lineCount ? [self indentLevelsForLine:last + 1] : 0;
     size_t deepest = 0;
     for (size_t value : levels) deepest = std::max(deepest, value);
 
-    [_guideColor setStroke];
+    size_t caretLine = _document->selection.caret.line;
+    BOOL caretShows = caretLine >= first && caretLine <= last;
+    size_t activeLevel = caretShows && levels[caretLine - first] > 0 ? levels[caretLine - first] - 1 : SIZE_MAX;
+    NSColor *quiet = [_guideColor colorWithAlphaComponent:0.14];
+    NSColor *active = [_guideColor colorWithAlphaComponent:0.38];
+
     for (size_t level = 0; level < deepest; ++level) {
         CGFloat x = std::round(self.textLeft + level * step) + 0.5;
         size_t index = 0;
         while (index < levels.size()) {
-            BOOL inside = levels[index] > level && ![self isLineHidden:first + index];
-            if (!inside) {
+            if (levels[index] <= level || [self isLineHidden:first + index]) {
                 ++index;
                 continue;
             }
@@ -1390,9 +1357,13 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
             size_t lastLine = first + runEnd;
             CGFloat top = [self yForLine:firstLine];
             CGFloat bottom = [self yForLine:lastLine] + [self rowsForLine:lastLine] * _lineHeight;
-            BOOL openAtTop = runStart == 0 && levelsAbove > level;
-            BOOL openAtBottom = runEnd + 1 == levels.size() && levelsBelow > level;
-            [self strokeBraceAtX:x top:top + 2 bottom:bottom - 2 openAtTop:openAtTop openAtBottom:openAtBottom];
+            BOOL holdsCaret = level == activeLevel && caretLine >= firstLine && caretLine <= lastLine;
+            [holdsCaret ? active : quiet setStroke];
+            NSBezierPath *guide = [NSBezierPath bezierPath];
+            guide.lineWidth = 1;
+            [guide moveToPoint:NSMakePoint(x, top)];
+            [guide lineToPoint:NSMakePoint(x, bottom)];
+            [guide stroke];
         }
     }
 }
@@ -2118,9 +2089,8 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         [self drawOccurrencesFromLine:first toLine:last];
     }
 
-    // Block lines: a curly brace "{" beside every indented block, at each indentation level.
     if (settings.indentGuides) {
-        [self drawBlockBracesFromLine:first toLine:last];
+        [self drawIndentGuidesFromLine:first toLine:last];
     }
 
     static BOOL markedFirstDraw = NO;
