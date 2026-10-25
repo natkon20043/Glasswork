@@ -665,12 +665,17 @@ static constexpr CGFloat kMiniChar = 1.25;
     BOOL _vimEnabled;
     NSString *_vimShownStatus;
 
-    // The Vim cursor's smear: a quadrilateral whose four corners chase the cursor's new place at
-    // different speeds, the leading ones first, so it stretches and then catches up.
-    CAShapeLayer *_smearLayer;
+    // The Vim cursor's smear. Four corners chase the cursor's new place at different speeds, the
+    // leading ones first, so the shape stretches and then catches up; how far back it reaches
+    // decides what is drawn behind the cursor: a copy of the box, then a tail tapering to a point.
+    CAShapeLayer *_smearLayer;      // the box copy
+    CAShapeLayer *_smearTailLayer;  // the tapering tail behind it
     CADisplayLink *_smearLink;
     CGPoint _smearCorners[4];
     CGPoint _smearTargets[4];
+    CGPoint _smearHeading;     // unit vector of the way the cursor went
+    CGFloat _smearStreak;      // how many moves in a row came before the smear settled: the longer, the longer the tail
+
     NSRect _lastCaretRect;
     BOOL _hasLastCaretRect;
 
@@ -779,10 +784,14 @@ static constexpr CGFloat kMiniChar = 1.25;
         _smearLayer = [CAShapeLayer layer];
         _smearLayer.zPosition = 9;  // just under the caret
         _smearLayer.shadowRadius = 6;
-        _smearLayer.shadowOpacity = 0.9;
+        _smearLayer.shadowOpacity = 0.7;
         _smearLayer.shadowOffset = CGSizeZero;
         _smearLayer.hidden = YES;
         [self.layer addSublayer:_smearLayer];
+        _smearTailLayer = [CAShapeLayer layer];
+        _smearTailLayer.zPosition = 8;
+        _smearTailLayer.hidden = YES;
+        [self.layer addSublayer:_smearTailLayer];
 
         _vim.readClipboard = [] {
             NSString *text = [NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString];
@@ -3168,53 +3177,117 @@ static void CornersOfRect(NSRect rect, CGPoint corners[4]) {
     corners[3] = CGPointMake(NSMinX(rect), NSMaxY(rect));
 }
 
+static CGPoint CenterOfCorners(const CGPoint corners[4]) {
+    return CGPointMake((corners[0].x + corners[1].x + corners[2].x + corners[3].x) / 4,
+                       (corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4);
+}
+
 - (void)startSmearFrom:(NSRect)from to:(NSRect)to {
     if (self.window == nil) return;
+    CGPoint toCorners[4];
+    CornersOfRect(to, toCorners);
+    CGPoint start;
     if (_smearLink == nil) {
-        CornersOfRect(from, _smearCorners);  // (while a smear is still running it carries on from where it is)
+        CornersOfRect(from, _smearCorners);
+        _smearStreak = 0;
         _smearLink = [self displayLinkWithTarget:self selector:@selector(smearStep:)];
         [_smearLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    } else {
+        _smearStreak = std::min<CGFloat>(_smearStreak + 1, 14);  // still going from the last move: the tail grows
+    }
+    start = CenterOfCorners(_smearCorners);
+    CGPoint end = CenterOfCorners(toCorners);
+    CGFloat distance = std::hypot(end.x - start.x, end.y - start.y);
+    if (distance > 0.5) {
+        _smearHeading = CGPointMake((end.x - start.x) / distance, (end.y - start.y) / distance);
     }
     CornersOfRect(to, _smearTargets);
-    NSColor *color = [_caretColor colorWithAlphaComponent:self.vimBlockCursor ? 0.55 : 0.85];
-    _smearLayer.fillColor = color.CGColor;
-    _smearLayer.shadowColor = _caretColor.CGColor;
-    _smearLayer.hidden = NO;
+
+    NSColor *color = _caretColor;
+    _smearLayer.fillColor = [color colorWithAlphaComponent:0.5].CGColor;
+    _smearLayer.shadowColor = color.CGColor;
+    _smearTailLayer.fillColor = [color colorWithAlphaComponent:0.28].CGColor;
     [self drawSmearPath];
 }
 
 - (void)stopSmear {
     [_smearLink invalidate];
     _smearLink = nil;
+    _smearStreak = 0;
     _smearLayer.hidden = YES;
+    _smearTailLayer.hidden = YES;
 }
 
+/// Draws what the chasing corners add up to. Behind the cursor, along the way it came: one more
+/// box, half as strong, and behind that a tail that starts as wide as the box and narrows
+/// to a short edge, weaker still. How far back the corners lag decides how much of that shows.
 - (void)drawSmearPath {
-    CGMutablePathRef path = CGPathCreateMutable();
-    CGPathAddLines(path, nullptr, _smearCorners, 4);
-    CGPathCloseSubpath(path);
+    NSRect head = NSMakeRect(_smearTargets[0].x, _smearTargets[0].y,
+                             _smearTargets[1].x - _smearTargets[0].x, _smearTargets[3].y - _smearTargets[0].y);
+    CGPoint center = CGPointMake(NSMidX(head), NSMidY(head));
+    CGPoint heading = _smearHeading;
+    CGFloat width = NSWidth(head), height = NSHeight(head);
+    CGFloat boxLength = std::fabs(heading.x) * width + std::fabs(heading.y) * height;  // the box's size along the way it went
+
+    // How far behind the cursor's center the farthest corner still is.
+    CGFloat reach = 0;
+    for (int corner = 0; corner < 4; ++corner) {
+        reach = std::max(reach, (center.x - _smearCorners[corner].x) * heading.x + (center.y - _smearCorners[corner].y) * heading.y);
+    }
+    CGFloat beyond = reach - boxLength / 2;  // how much of the smear lies behind the cursor's back edge
+
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
-    _smearLayer.path = path;
+    if (beyond < 1) {
+        _smearLayer.hidden = YES;
+        _smearTailLayer.hidden = YES;
+        [CATransaction commit];
+        return;
+    }
+
+    // The box copy: one cursor behind, or less while the smear is still short.
+    CGFloat offset = std::min(beyond, boxLength);
+    CGPathRef boxPath = CGPathCreateWithRect(CGRectOffset(head, -heading.x * offset, -heading.y * offset), nullptr);
+    _smearLayer.path = boxPath;
+    _smearLayer.hidden = NO;
+    CGPathRelease(boxPath);
+
+    // The tail: from the copy's far edge to the tip, as wide as the box at first and a quarter of that at the end.
+    CGFloat base = boxLength + offset;
+    CGFloat tip = reach;
+    if (tip - base > 1.5) {
+        CGPoint across = CGPointMake(-heading.y, heading.x);
+        CGFloat half = (std::fabs(across.x) * width + std::fabs(across.y) * height) / 2;
+        CGPoint baseCenter = CGPointMake(center.x - heading.x * base, center.y - heading.y * base);
+        CGPoint tipCenter = CGPointMake(center.x - heading.x * tip, center.y - heading.y * tip);
+        CGFloat narrow = half * 0.25;
+        CGMutablePathRef tail = CGPathCreateMutable();
+        CGPathMoveToPoint(tail, nullptr, baseCenter.x + across.x * half, baseCenter.y + across.y * half);
+        CGPathAddLineToPoint(tail, nullptr, tipCenter.x + across.x * narrow, tipCenter.y + across.y * narrow);
+        CGPathAddLineToPoint(tail, nullptr, tipCenter.x - across.x * narrow, tipCenter.y - across.y * narrow);
+        CGPathAddLineToPoint(tail, nullptr, baseCenter.x - across.x * half, baseCenter.y - across.y * half);
+        CGPathCloseSubpath(tail);
+        _smearTailLayer.path = tail;
+        _smearTailLayer.hidden = NO;
+        CGPathRelease(tail);
+    } else {
+        _smearTailLayer.hidden = YES;
+    }
     [CATransaction commit];
-    CGPathRelease(path);
 }
 
 /// One frame: every corner moves part of the way to its target. A corner on the side the cursor
 /// is heading for moves fast and one on the far side slowly, which stretches the shape along the
-/// jump and then lets the tail catch up.
+/// jump and then lets the tail catch up. While moves keep coming the far side gets slower still,
+/// so the tail keeps lengthening the longer the cursor keeps going.
 - (void)smearStep:(CADisplayLink *)link {
     constexpr CGFloat kLeadingRate = 70;   // per second: about 50 ms to arrive
     constexpr CGFloat kTrailingRate = 15;  // about 200 ms
+    CGFloat trailingRate = kTrailingRate / (1 + 0.2 * _smearStreak);
 
     CFTimeInterval elapsed = std::max<CFTimeInterval>(link.targetTimestamp - link.timestamp, 1.0 / 240);
-    CGPoint currentCenter = CGPointZero, targetCenter = CGPointZero;
-    for (int corner = 0; corner < 4; ++corner) {
-        currentCenter.x += _smearCorners[corner].x / 4;
-        currentCenter.y += _smearCorners[corner].y / 4;
-        targetCenter.x += _smearTargets[corner].x / 4;
-        targetCenter.y += _smearTargets[corner].y / 4;
-    }
+    CGPoint currentCenter = CenterOfCorners(_smearCorners);
+    CGPoint targetCenter = CenterOfCorners(_smearTargets);
     CGFloat headingX = targetCenter.x - currentCenter.x;
     CGFloat headingY = targetCenter.y - currentCenter.y;
     CGFloat heading = std::hypot(headingX, headingY);
@@ -3226,7 +3299,7 @@ static void CornersOfRect(NSRect rect, CGPoint corners[4]) {
         CGFloat length = std::hypot(offsetX, offsetY);
         // -1 for a corner on the far side of the heading, +1 for one on the near side.
         CGFloat facing = heading > 0.5 && length > 0 ? (headingX * offsetX + headingY * offsetY) / (heading * length) : 1;
-        CGFloat rate = kTrailingRate + (kLeadingRate - kTrailingRate) * (facing + 1) / 2;
+        CGFloat rate = trailingRate + (kLeadingRate - trailingRate) * (facing + 1) / 2;
         CGFloat step = 1 - std::exp(-rate * elapsed);
         _smearCorners[corner].x += (_smearTargets[corner].x - _smearCorners[corner].x) * step;
         _smearCorners[corner].y += (_smearTargets[corner].y - _smearCorners[corner].y) * step;
