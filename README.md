@@ -134,8 +134,10 @@ View ▸ Vim Mode (or `"editor.vim": true` in settings.json) turns on Vim's moda
 - **Visual mode:** the same motions and text objects extend the selection; `d y c > < J ~ u U r p` act on it.
 - **Registers:** one register, shared with the system clipboard.
 - **Search:** `/`, `?`, `n` and `N` use the find bar.
+- **Command line:** `:w` saves; `:q` closes the file (refusing with unsaved changes, as Vim does; `:q!` closes anyway); `:wq` and `:x` save and close; `:wa`, `:qa` and `:wqa` do the same for every file. `:42` goes to line 42 (`:$` is the last line), and `:s/old/new/g` replaces on the current line, `:%s/old/new/g` everywhere, `:2,5s/…/…/` or `:'<,'>s/…/…/` on a range (the pattern is a regular expression in JavaScript's flavor; `g` is every match, `i` ignores case). In visual mode `:` starts on the selected lines.
+- **Cursor smear:** the cursor leaves a trail when it jumps, its leading corners arriving first and the tail catching up. `"editor.vimCursorSmear": false` turns it off.
 
-Command-line commands (`:w`, `:q`), marks, macros, named registers and split windows aren't there; the usual ⌘ shortcuts keep working in every mode. This is Glasswork's own implementation (`src/core/Vim.*`), not the VS Code Vim extension.
+Marks, macros, named registers and split windows aren't there; the usual ⌘ shortcuts keep working in every mode. This is Glasswork's own implementation (`src/core/Vim.*`), not the VS Code Vim extension.
 
 ## VS Code extensions
 

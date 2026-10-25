@@ -787,6 +787,9 @@ bool looksBinary(const char *path) {
     _editorView.onVimStatusChange = ^{
         [weakSelf vimStatusChanged];
     };
+    _editorView.onVimCommand = ^NSString *(NSString *command) {
+        return [weakSelf runVimCommand:command];
+    };
     _editorView.onVimAction = ^(gw::VimAction action) {
         [weakSelf vimAction:action];
     };
@@ -3754,6 +3757,68 @@ static NSString *CompactCount(long count) {
     if (!_editorView.insertsText) {
         [_suggestions hide];
         ++_suggestionToken;
+    }
+}
+
+/// Vim's ":" commands that need the window: saving and closing. Returns what to show when one
+/// can't be done (Vim's own wording), or nil.
+- (NSString *)runVimCommand:(NSString *)command {
+    NSScanner *scanner = [NSScanner scannerWithString:command];
+    NSString *name = @"";
+    [scanner scanCharactersFromSet:NSCharacterSet.letterCharacterSet intoString:&name];
+    BOOL force = [scanner scanString:@"!" intoString:nil];
+    BOOL save = [@[@"w", @"write", @"wq", @"x", @"xit", @"exit", @"wa", @"wall", @"wqa", @"wqall", @"xa", @"xall"] containsObject:name];
+    BOOL quit = [@[@"q", @"quit", @"close", @"clo", @"wq", @"x", @"xit", @"exit", @"qa", @"qall", @"quitall", @"wqa", @"wqall", @"xa", @"xall"] containsObject:name];
+    BOOL all = [@[@"wa", @"wall", @"qa", @"qall", @"quitall", @"wqa", @"wqall", @"xa", @"xall"] containsObject:name];
+    if (!save && !quit) {
+        return [NSString stringWithFormat:@"E492: Not an editor command: %@", command];
+    }
+
+    if (save) {
+        if (all) {
+            [self saveAllDocuments:nil];
+        } else if ([self currentTab] != nullptr) {
+            [self saveDocument:nil];
+        }
+    }
+    if (!quit) {
+        return nil;
+    }
+    // Closing takes the document away, and the editor is still in the middle of this key, so it
+    // is done once the key has been fully handled.
+    __weak GWMainWindowController *weakSelf = self;
+    if (all || [self currentTab] == nullptr) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf.window performClose:nil];  // asks about anything still unsaved
+        });
+        return nil;
+    }
+    Tab *tab = [self currentTab];
+    if (!save && tab->document->isDirty() && !force) {
+        return @"E37: No write since last change (add ! to override)";
+    }
+    // Saving may format the file first and finish a moment later: close once it is saved.
+    uint64_t identifier = tab->identifier;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf closeVimTab:identifier discarding:force attemptsLeft:15];
+    });
+    return nil;
+}
+
+- (void)closeVimTab:(uint64_t)identifier discarding:(BOOL)discarding attemptsLeft:(int)attempts {
+    for (size_t index = 0; index < _tabs.size(); ++index) {
+        if (_tabs[index]->identifier != identifier) {
+            continue;
+        }
+        if (!_tabs[index]->document->isDirty() || discarding) {
+            [self removeTabAtIndex:static_cast<NSInteger>(index)];
+        } else if (attempts > 0) {
+            __weak GWMainWindowController *weakSelf = self;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [weakSelf closeVimTab:identifier discarding:discarding attemptsLeft:attempts - 1];
+            });
+        }
+        return;
     }
 }
 

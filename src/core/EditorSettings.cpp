@@ -145,6 +145,7 @@ EditorSettings parseSettings(const std::string& jsonc, std::string* error) {
     readValue(document, "editor.highlightOccurrences", settings.highlightOccurrences);
     readValue(document, "editor.minimap", settings.showMinimap);
     readValue(document, "editor.vim", settings.vimMode);
+    readValue(document, "editor.vimCursorSmear", settings.vimCursorSmear);
     readValue(document, "editor.indentGuides", settings.indentGuides);
     readValue(document, "editor.bracketPairColorization", settings.bracketPairColors);
     readValue(document, "editor.sectionDividers", settings.sectionDividers);
@@ -244,6 +245,7 @@ std::string serializeSettings(const EditorSettings& settings) {
         << "  \"window.glassStyle\": " << json(settings.glassStyle).dump() << ",  // \"regular\" or \"clear\" for the sidebar and bars\n"
         << "  \"editor.minimap\": " << boolean(settings.showMinimap) << ",\n"
         << "  \"editor.vim\": " << boolean(settings.vimMode) << ",  // Vim keys: modes, motions, operators (View > Vim Mode)\n"
+        << "  \"editor.vimCursorSmear\": " << boolean(settings.vimCursorSmear) << ",  // the Vim cursor leaves a trail when it jumps\n"
         << "  \"editor.indentGuides\": " << boolean(settings.indentGuides) << ",\n"
         << "  \"editor.bracketPairColorization\": " << boolean(settings.bracketPairColors) << ",\n"
         << "  \"editor.sectionDividers\": " << boolean(settings.sectionDividers)

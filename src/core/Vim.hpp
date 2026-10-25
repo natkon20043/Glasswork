@@ -10,7 +10,7 @@
 
 namespace gw {
 
-enum class VimMode { Normal, Insert, Visual, VisualLine };
+enum class VimMode { Normal, Insert, Visual, VisualLine, Command };
 
 /// Things Vim asks the window to do because the editor can't: the find bar has the search.
 enum class VimAction { Search, SearchBackward, SearchNext, SearchPrevious };
@@ -52,9 +52,10 @@ public:
     VimMode mode() const { return mode_; }
     bool inVisualMode() const { return mode_ == VimMode::Visual || mode_ == VimMode::VisualLine; }
 
-    /// "NORMAL", "INSERT", "VISUAL" or "V-LINE", for the status bar.
+    /// "NORMAL", "INSERT", "VISUAL", "V-LINE" or "COMMAND", for the status bar.
     std::string modeName() const;
-    /// Keys typed so far in a command that isn't finished, such as "2d".
+    /// Keys typed so far in a command that isn't finished, such as "2d" (or ":wq" on the command
+    /// line), or the error from the last ":" command until the next key.
     std::string pending() const;
 
     /// Where the block cursor is drawn. Normally the caret; in visual modes the selection's
@@ -76,6 +77,9 @@ public:
     std::function<std::string()> readClipboard;
     std::function<void(const std::string&)> writeClipboard;
     std::function<void(VimAction)> onAction;
+    /// A ":" command the engine doesn't do itself (:w, :q, :wq and the like), without the colon.
+    /// Returns an error message to show, or an empty string when it worked.
+    std::function<std::string(const std::string&)> onCommand;
 
 private:
     struct Register {
@@ -100,6 +104,11 @@ private:
     void exitVisual(Document& document);
     void showVisual(Document& document);
 
+    // The ":" command line
+    void handleCommandLineKey(Document& document, std::string_view key);
+    std::string runCommandLine(Document& document, const std::string& line);
+    std::string substitute(Document& document, size_t first, size_t last, std::string_view text);
+
     // Motions and operators
     std::optional<Motion> motionFor(Document& document, const std::string& key, int count, bool hasCount,
                                     Position from, bool forOperator);
@@ -120,6 +129,10 @@ private:
     // State
     VimMode mode_ = VimMode::Normal;
     std::vector<std::string> keys_;
+    std::string commandLine_;
+    std::string message_;
+    size_t visualFirstLine_ = 0;  // the lines that were selected when ":" was typed in visual mode
+    size_t visualLastLine_ = 0;
     Position anchor_;
     Position cursor_;
     Selection shownSelection_;

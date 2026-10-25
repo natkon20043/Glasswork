@@ -5,6 +5,7 @@
 #include "Vim.hpp"
 
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -442,6 +443,96 @@ TEST(startsInsertAtPastedClipboardText) {
     CHECK_EQ(session.text(), std::string("afrom elsewherebc"));
     session.type("0yl$p");
     CHECK_EQ(clipboard, std::string("a"));
+}
+
+TEST(commandLineRunsWriteAndQuit) {
+    Session session("abc");
+    std::vector<std::string> received;
+    session.engine.onCommand = [&](const std::string& command) {
+        received.push_back(command);
+        return command == "q" ? std::string("E37: No write since last change") : std::string();
+    };
+    session.type(":w<CR>");
+    CHECK(session.engine.mode() == gw::VimMode::Normal);
+    session.type(":wq<CR>");
+    session.type(":q<CR>");
+    CHECK_EQ(received.size(), size_t(3));
+    CHECK_EQ(received[0], std::string("w"));
+    CHECK_EQ(received[1], std::string("wq"));
+    CHECK_EQ(session.engine.pending(), std::string("E37: No write since last change"));
+    session.type("x");  // the message goes away with the next key
+    CHECK_EQ(session.engine.pending(), std::string(""));
+    session.type(":q!<CR>");
+    CHECK_EQ(received[3], std::string("q!"));
+}
+
+TEST(commandLineShowsWhatIsTypedAndCanBeCancelled) {
+    Session session("abc");
+    session.type(":wq");
+    CHECK(session.engine.mode() == gw::VimMode::Command);
+    CHECK_EQ(session.engine.pending(), std::string(":wq"));
+    session.type("\x7f");
+    CHECK_EQ(session.engine.pending(), std::string(":w"));
+    session.type("<Esc>");
+    CHECK(session.engine.mode() == gw::VimMode::Normal);
+    session.type(":");
+    session.engine.handleKey(session.document, "\x7f");  // backspace past the colon
+    CHECK(session.engine.mode() == gw::VimMode::Normal);
+}
+
+TEST(unknownCommandsAreReported) {
+    Session session("abc");
+    session.type(":nosuch<CR>");
+    CHECK_EQ(session.engine.pending(), std::string("E492: Not an editor command: nosuch"));
+}
+
+TEST(commandLineGoesToALine) {
+    Session session("a\n  b\nc\nd");
+    session.type(":3<CR>");
+    CHECK_EQ(session.caret().line, size_t(2));
+    session.type(":$<CR>");
+    CHECK_EQ(session.caret().line, size_t(3));
+    session.type(":2<CR>");
+    CHECK_EQ(session.caret().line, size_t(1));
+    CHECK_EQ(session.caret().column, size_t(2));  // the first character that isn't a blank
+    session.type(":99<CR>");
+    CHECK_EQ(session.caret().line, size_t(3));
+}
+
+TEST(substitutesOnTheLineAndEverywhere) {
+    Session session("foo foo\nfoo foo\nbar");
+    session.type(":s/foo/x/<CR>");
+    CHECK_EQ(session.text(), std::string("x foo\nfoo foo\nbar"));
+    session.type(":%s/foo/y/g<CR>");
+    CHECK_EQ(session.text(), std::string("x y\ny y\nbar"));
+    session.type("u");
+    CHECK_EQ(session.text(), std::string("x foo\nfoo foo\nbar"));
+    session.type(":2,3s/o+/0/<CR>");
+    CHECK_EQ(session.text(), std::string("x foo\nf0 foo\nbar"));
+}
+
+TEST(substituteUsesGroupsFlagsAndOtherDelimiters) {
+    Session session("Hello World");
+    session.type(":s#(\\w+) (\\w+)#\\2 \\1#<CR>");
+    CHECK_EQ(session.text(), std::string("World Hello"));
+    session.type(":s/WORLD/[&]/i<CR>");
+    CHECK_EQ(session.text(), std::string("[World] Hello"));
+    session.type(":s/nothing/x/<CR>");
+    CHECK_EQ(session.engine.pending(), std::string("E486: Pattern not found: nothing"));
+    session.type(":s/(/x/<CR>");
+    CHECK(session.engine.pending().rfind("E486: Invalid pattern", 0) == 0);
+}
+
+TEST(substituteOnSelectedLines) {
+    Session session("a\na\na\na");
+    session.type("jVj:s/a/b/<CR>");
+    CHECK_EQ(session.text(), std::string("a\nb\nb\na"));
+}
+
+TEST(substituteCanAddLineBreaks) {
+    Session session("a,b,c\nlast");
+    session.type(":%s/,/\\r/g<CR>");
+    CHECK_EQ(session.text(), std::string("a\nb\nc\nlast"));
 }
 
 }  // namespace

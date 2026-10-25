@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <regex>
 
 namespace gw {
 
@@ -550,12 +551,19 @@ std::string VimEngine::modeName() const {
         case VimMode::Insert: return "INSERT";
         case VimMode::Visual: return "VISUAL";
         case VimMode::VisualLine: return "V-LINE";
+        case VimMode::Command: return "COMMAND";
         case VimMode::Normal: break;
     }
     return "NORMAL";
 }
 
 std::string VimEngine::pending() const {
+    if (mode_ == VimMode::Command) {
+        return ":" + commandLine_;
+    }
+    if (!message_.empty()) {
+        return message_;
+    }
     std::string text;
     for (const std::string& key : keys_) {
         text += key;
@@ -574,6 +582,8 @@ void VimEngine::reset(Document* document) {
     groupOpen_ = false;
     mode_ = VimMode::Normal;
     keys_.clear();
+    commandLine_.clear();
+    message_.clear();
     desiredColumn_.reset();
 }
 
@@ -588,7 +598,25 @@ bool VimEngine::handleKey(Document& document, std::string_view key) {
         return false;
     }
 
+    if (mode_ == VimMode::Command) {
+        handleCommandLineKey(document, key);
+        return true;
+    }
+    message_.clear();
     syncWithDocument(document);
+    if (key == ":") {
+        // From visual mode the command starts out acting on the selected lines.
+        commandLine_.clear();
+        if (inVisualMode()) {
+            visualFirstLine_ = std::min(anchor_, cursor_).line;
+            visualLastLine_ = std::max(anchor_, cursor_).line;
+            commandLine_ = "'<,'>";
+            exitVisual(document);
+        }
+        keys_.clear();
+        mode_ = VimMode::Command;
+        return true;
+    }
     if (key == kEscape) {
         keys_.clear();
         if (inVisualMode()) {
@@ -1147,6 +1175,243 @@ void VimEngine::shiftLines(Document& document, size_t first, size_t last, bool r
             document.replace({{line, 0}, {line, remove}}, "");
         }
     }
+}
+
+// ---- The ":" command line
+
+namespace {
+
+/// The text after a ":" command's range: "w", "q!", "s/a/b/g". `name` is the letters and `bang`
+/// whether "!" followed them; `rest` is what is left.
+struct ExCommand {
+    std::string name;
+    bool bang = false;
+    std::string rest;
+};
+
+ExCommand splitCommand(std::string_view text) {
+    ExCommand command;
+    size_t at = 0;
+    while (at < text.size() && std::isalpha(static_cast<unsigned char>(text[at]))) {
+        // "s" takes its pattern right after it ("s/a/b/"), so a command name is only letters.
+        ++at;
+    }
+    command.name = std::string(text.substr(0, at));
+    if (at < text.size() && text[at] == '!') {
+        command.bang = true;
+        ++at;
+    }
+    size_t restStart = text.find_first_not_of(' ', at);
+    command.rest = restStart == std::string_view::npos ? "" : std::string(text.substr(restStart));
+    return command;
+}
+
+/// One line address: a number, "$" (the last line), "." (this line) or '< and '> (the selection).
+std::optional<size_t> parseAddress(std::string_view& text, size_t caretLine, size_t lastLine, size_t visualFirst, size_t visualLast) {
+    if (text.empty()) {
+        return std::nullopt;
+    }
+    if (std::isdigit(static_cast<unsigned char>(text[0]))) {
+        size_t number = 0;
+        size_t at = 0;
+        while (at < text.size() && std::isdigit(static_cast<unsigned char>(text[at]))) {
+            number = std::min<size_t>(number * 10 + static_cast<size_t>(text[at] - '0'), 100000000);
+            ++at;
+        }
+        text.remove_prefix(at);
+        return std::min(number == 0 ? 0 : number - 1, lastLine);
+    }
+    if (text[0] == '$' || text[0] == '.') {
+        size_t line = text[0] == '$' ? lastLine : caretLine;
+        text.remove_prefix(1);
+        return line;
+    }
+    if (text.size() >= 2 && text[0] == '\'' && (text[1] == '<' || text[1] == '>')) {
+        size_t line = text[1] == '<' ? visualFirst : visualLast;
+        text.remove_prefix(2);
+        return std::min(line, lastLine);
+    }
+    return std::nullopt;
+}
+
+/// Splits "pattern/replacement/flags" at the delimiter, where a backslash makes it ordinary text.
+std::vector<std::string> splitDelimited(std::string_view text, char delimiter) {
+    std::vector<std::string> parts(1);
+    for (size_t at = 0; at < text.size(); ++at) {
+        if (text[at] == '\\' && at + 1 < text.size() && text[at + 1] == delimiter) {
+            parts.back() += delimiter;
+            ++at;
+        } else if (text[at] == delimiter) {
+            parts.emplace_back();
+        } else {
+            parts.back() += text[at];
+        }
+    }
+    return parts;
+}
+
+/// Vim's replacement ("&" is the match, "\1" a group, "\n" a line break) as a regex format string.
+std::string replacementFormat(const std::string& replacement) {
+    std::string format;
+    for (size_t at = 0; at < replacement.size(); ++at) {
+        char c = replacement[at];
+        if (c == '\\' && at + 1 < replacement.size()) {
+            char next = replacement[++at];
+            if (next >= '1' && next <= '9') {
+                format += '$';
+                format += next;
+            } else if (next == 'n' || next == 'r') {
+                format += '\n';
+            } else if (next == 't') {
+                format += '\t';
+            } else if (next == '$') {
+                format += "$$";
+            } else {
+                format += next;  // \&, \\ and the like are just the character
+            }
+        } else if (c == '&') {
+            format += "$&";
+        } else if (c == '$') {
+            format += "$$";
+        } else {
+            format += c;
+        }
+    }
+    return format;
+}
+
+}  // namespace
+
+void VimEngine::handleCommandLineKey(Document& document, std::string_view key) {
+    if (key == kEscape) {
+        mode_ = VimMode::Normal;
+        commandLine_.clear();
+        return;
+    }
+    if (key == "\x7f") {
+        if (commandLine_.empty()) {
+            mode_ = VimMode::Normal;  // backspacing past the colon leaves the command line
+            return;
+        }
+        commandLine_.erase(previousColumn(commandLine_, commandLine_.size()));
+        return;
+    }
+    if (key == "\r") {
+        std::string line = commandLine_;
+        commandLine_.clear();
+        mode_ = VimMode::Normal;
+        message_ = runCommandLine(document, line);
+        setCaret(document, restingPlace(document.buffer(), document.selection.caret));
+        return;
+    }
+    commandLine_ += key;
+}
+
+/// Does a ":" command. Returns an error message, or an empty string when it worked.
+std::string VimEngine::runCommandLine(Document& document, const std::string& line) {
+    const TextBuffer& buffer = document.buffer();
+    size_t lastLine = buffer.lineCount() - 1;
+    size_t caretLine = document.selection.caret.line;
+
+    std::string_view text = line;
+    while (!text.empty() && text.front() == ' ') {
+        text.remove_prefix(1);
+    }
+    // The range: nothing, "%" (every line), "N" or "N,M".
+    std::optional<size_t> first, last;
+    if (!text.empty() && text.front() == '%') {
+        first = 0;
+        last = lastLine;
+        text.remove_prefix(1);
+    } else {
+        first = parseAddress(text, caretLine, lastLine, visualFirstLine_, visualLastLine_);
+        if (first && !text.empty() && text.front() == ',') {
+            text.remove_prefix(1);
+            last = parseAddress(text, caretLine, lastLine, visualFirstLine_, visualLastLine_);
+            if (!last) {
+                return "E14: Invalid address";
+            }
+        }
+    }
+    if (first && !last) {
+        last = first;
+    }
+    while (!text.empty() && text.front() == ' ') {
+        text.remove_prefix(1);
+    }
+
+    if (text.empty()) {
+        if (!first) {
+            return "";
+        }
+        // ":42" goes to a line.
+        setCaret(document, {*last, firstNonBlank(buffer, *last)});
+        return "";
+    }
+    if (text.front() == 's' && text.size() > 1 && !std::isalnum(static_cast<unsigned char>(text[1])) && text[1] != ' ') {
+        size_t from = first ? std::min(*first, *last) : caretLine;
+        size_t to = first ? std::max(*first, *last) : caretLine;
+        return substitute(document, from, to, text.substr(1));
+    }
+
+    ExCommand command = splitCommand(text);
+    if (command.name == "noh" || command.name == "nohlsearch") {
+        return "";
+    }
+    if (onCommand) {
+        std::string error = onCommand(std::string(text));
+        if (!error.empty()) {
+            return error;
+        }
+        return "";
+    }
+    return "E492: Not an editor command: " + std::string(text);
+}
+
+/// ":s/pattern/replacement/flags" on lines [first, last]: g (every match), i (ignore case).
+/// The pattern is a regular expression in JavaScript's flavor.
+std::string VimEngine::substitute(Document& document, size_t first, size_t last, std::string_view text) {
+    char delimiter = text.front();
+    std::vector<std::string> parts = splitDelimited(text.substr(1), delimiter);
+    if (parts.empty() || parts[0].empty()) {
+        return "E35: No previous regular expression";
+    }
+    std::string replacement = parts.size() > 1 ? parts[1] : "";
+    std::string flags = parts.size() > 2 ? parts[2] : "";
+    bool everyMatch = flags.find('g') != std::string::npos;
+    auto options = std::regex::ECMAScript;
+    if (flags.find('i') != std::string::npos) {
+        options |= std::regex::icase;
+    }
+
+    std::regex pattern;
+    try {
+        pattern = std::regex(parts[0], options);
+    } catch (const std::regex_error&) {
+        return "E486: Invalid pattern: " + parts[0];
+    }
+    std::string format = replacementFormat(replacement);
+    auto matchFlags = everyMatch ? std::regex_constants::format_default : std::regex_constants::format_first_only;
+
+    document.beginUndoGroup();
+    size_t changedLines = 0;
+    size_t lastChanged = first;
+    // From the bottom up, so a replacement that adds line breaks doesn't move the lines still to do.
+    for (size_t line = std::min(last, document.buffer().lineCount() - 1) + 1; line-- > first;) {
+        std::string original(document.buffer().line(line));
+        std::string changed = std::regex_replace(original, pattern, format, matchFlags);
+        if (changed != original) {
+            document.replace({{line, 0}, {line, original.size()}}, changed);
+            ++changedLines;
+            lastChanged = std::max(lastChanged, line);
+        }
+    }
+    document.endUndoGroup();
+    if (changedLines == 0) {
+        return "E486: Pattern not found: " + parts[0];
+    }
+    setCaret(document, {lastChanged, firstNonBlank(document.buffer(), lastChanged)});
+    return "";
 }
 
 // ---- Normal mode commands

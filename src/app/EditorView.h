@@ -179,6 +179,9 @@ struct GWDecoration {
 @property (nonatomic, readonly) BOOL insertsText;
 /// The mode or the command in progress changed.
 @property (nonatomic, copy, nullable) void (^onVimStatusChange)(void);
+/// A ":" command the editor can't do itself (:w, :q, :wq...), without the colon. Return an error
+/// message to show, or nil when it worked.
+@property (nonatomic, copy, nullable) NSString *_Nullable (^onVimCommand)(NSString *command);
 /// Vim asked for something the window does: the find bar, or the next and previous match.
 @property (nonatomic, copy, nullable) void (^onVimAction)(gw::VimAction action);
 

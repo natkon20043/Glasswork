@@ -665,6 +665,15 @@ static constexpr CGFloat kMiniChar = 1.25;
     BOOL _vimEnabled;
     NSString *_vimShownStatus;
 
+    // The Vim cursor's smear: a quadrilateral whose four corners chase the cursor's new place at
+    // different speeds, the leading ones first, so it stretches and then catches up.
+    CAShapeLayer *_smearLayer;
+    CADisplayLink *_smearLink;
+    CGPoint _smearCorners[4];
+    CGPoint _smearTargets[4];
+    NSRect _lastCaretRect;
+    BOOL _hasLastCaretRect;
+
     // Soft wrap and folding. The row map exists only while either is in use; with it empty,
     // line N is simply at row N.
     gw::RowMap _rowMap;
@@ -767,6 +776,14 @@ static constexpr CGFloat kMiniChar = 1.25;
         _caretLayer.hidden = YES;
         [self.layer addSublayer:_caretLayer];
 
+        _smearLayer = [CAShapeLayer layer];
+        _smearLayer.zPosition = 9;  // just under the caret
+        _smearLayer.shadowRadius = 6;
+        _smearLayer.shadowOpacity = 0.9;
+        _smearLayer.shadowOffset = CGSizeZero;
+        _smearLayer.hidden = YES;
+        [self.layer addSublayer:_smearLayer];
+
         _vim.readClipboard = [] {
             NSString *text = [NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString];
             return std::string(text.UTF8String ?: "");
@@ -779,6 +796,12 @@ static constexpr CGFloat kMiniChar = 1.25;
             }
         };
         __weak GWEditorView *weakSelf = self;
+        _vim.onCommand = [weakSelf](const std::string &command) -> std::string {
+            GWEditorView *strongSelf = weakSelf;
+            if (strongSelf == nil || !strongSelf.onVimCommand) return "E492: Not an editor command: " + command;
+            NSString *error = strongSelf.onVimCommand(@(command.c_str()));
+            return error.length > 0 ? std::string(error.UTF8String) : std::string();
+        };
         _vim.onAction = [weakSelf](gw::VimAction action) {
             GWEditorView *strongSelf = weakSelf;
             if (strongSelf != nil && strongSelf.onVimAction) {
@@ -795,6 +818,7 @@ static constexpr CGFloat kMiniChar = 1.25;
 }
 
 - (void)dealloc {
+    [_smearLink invalidate];
     [_blinkTimer invalidate];
     [NSNotificationCenter.defaultCenter removeObserver:self];
 }
@@ -1047,6 +1071,8 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         highlighter:(gw::Highlighter *)highlighter
       configuration:(const gw::LanguageConfiguration &)configuration {
     _vim.reset(_document);  // the file being left: an insert in progress ends with it
+    [self stopSmear];
+    _hasLastCaretRect = NO;
     _document = document;
     _highlighter = highlighter;
     _configuration = configuration;
@@ -3095,8 +3121,21 @@ static bool isAccessLabel(std::string_view line) {
     BOOL show = _document && self.window.isKeyWindow && self.window.firstResponder == self && !_markedText.length;
     [_blinkTimer invalidate];
     _blinkTimer = nil;
+    NSRect target = show ? self.caretRect : NSZeroRect;
+    // The Vim cursor smears when it moves; the real caret then jumps at once and the trail
+    // does the moving.
+    BOOL smear = show && animated && _vimEnabled && GWServices.shared.settings.vimCursorSmear &&
+                 _hasLastCaretRect && !NSEqualRects(_lastCaretRect, target);
+    if (smear) {
+        [self startSmearFrom:_lastCaretRect to:target];
+    } else if (!show || !animated || !_vimEnabled) {
+        [self stopSmear];
+    }
+    _lastCaretRect = target;
+    _hasLastCaretRect = show;
+
     [CATransaction begin];
-    if (animated) {
+    if (animated && !smear) {
         [CATransaction setAnimationDuration:0.085];
         [CATransaction setAnimationTimingFunction:[CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut]];
     } else {
@@ -3106,7 +3145,7 @@ static bool isAccessLabel(std::string_view line) {
     _caretLayer.opacity = 1;
     // A block sits over a character, so it lets the character show through.
     _caretLayer.backgroundColor = (self.vimBlockCursor ? [_caretColor colorWithAlphaComponent:0.55] : _caretColor).CGColor;
-    if (show) _caretLayer.frame = self.caretRect;
+    if (show) _caretLayer.frame = target;
     [CATransaction commit];
     if (!show) return;
 
@@ -3118,6 +3157,87 @@ static bool isAccessLabel(std::string_view line) {
         caret.opacity = caret.opacity > 0.5 ? 0 : 1;
         [CATransaction commit];
     }];
+}
+
+// MARK: Cursor smear
+
+static void CornersOfRect(NSRect rect, CGPoint corners[4]) {
+    corners[0] = CGPointMake(NSMinX(rect), NSMinY(rect));
+    corners[1] = CGPointMake(NSMaxX(rect), NSMinY(rect));
+    corners[2] = CGPointMake(NSMaxX(rect), NSMaxY(rect));
+    corners[3] = CGPointMake(NSMinX(rect), NSMaxY(rect));
+}
+
+- (void)startSmearFrom:(NSRect)from to:(NSRect)to {
+    if (self.window == nil) return;
+    if (_smearLink == nil) {
+        CornersOfRect(from, _smearCorners);  // (while a smear is still running it carries on from where it is)
+        _smearLink = [self displayLinkWithTarget:self selector:@selector(smearStep:)];
+        [_smearLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    }
+    CornersOfRect(to, _smearTargets);
+    NSColor *color = [_caretColor colorWithAlphaComponent:self.vimBlockCursor ? 0.55 : 0.85];
+    _smearLayer.fillColor = color.CGColor;
+    _smearLayer.shadowColor = _caretColor.CGColor;
+    _smearLayer.hidden = NO;
+    [self drawSmearPath];
+}
+
+- (void)stopSmear {
+    [_smearLink invalidate];
+    _smearLink = nil;
+    _smearLayer.hidden = YES;
+}
+
+- (void)drawSmearPath {
+    CGMutablePathRef path = CGPathCreateMutable();
+    CGPathAddLines(path, nullptr, _smearCorners, 4);
+    CGPathCloseSubpath(path);
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    _smearLayer.path = path;
+    [CATransaction commit];
+    CGPathRelease(path);
+}
+
+/// One frame: every corner moves part of the way to its target. A corner on the side the cursor
+/// is heading for moves fast and one on the far side slowly, which stretches the shape along the
+/// jump and then lets the tail catch up.
+- (void)smearStep:(CADisplayLink *)link {
+    constexpr CGFloat kLeadingRate = 70;   // per second: about 50 ms to arrive
+    constexpr CGFloat kTrailingRate = 15;  // about 200 ms
+
+    CFTimeInterval elapsed = std::max<CFTimeInterval>(link.targetTimestamp - link.timestamp, 1.0 / 240);
+    CGPoint currentCenter = CGPointZero, targetCenter = CGPointZero;
+    for (int corner = 0; corner < 4; ++corner) {
+        currentCenter.x += _smearCorners[corner].x / 4;
+        currentCenter.y += _smearCorners[corner].y / 4;
+        targetCenter.x += _smearTargets[corner].x / 4;
+        targetCenter.y += _smearTargets[corner].y / 4;
+    }
+    CGFloat headingX = targetCenter.x - currentCenter.x;
+    CGFloat headingY = targetCenter.y - currentCenter.y;
+    CGFloat heading = std::hypot(headingX, headingY);
+
+    CGFloat farthest = 0;
+    for (int corner = 0; corner < 4; ++corner) {
+        CGFloat offsetX = _smearTargets[corner].x - targetCenter.x;
+        CGFloat offsetY = _smearTargets[corner].y - targetCenter.y;
+        CGFloat length = std::hypot(offsetX, offsetY);
+        // -1 for a corner on the far side of the heading, +1 for one on the near side.
+        CGFloat facing = heading > 0.5 && length > 0 ? (headingX * offsetX + headingY * offsetY) / (heading * length) : 1;
+        CGFloat rate = kTrailingRate + (kLeadingRate - kTrailingRate) * (facing + 1) / 2;
+        CGFloat step = 1 - std::exp(-rate * elapsed);
+        _smearCorners[corner].x += (_smearTargets[corner].x - _smearCorners[corner].x) * step;
+        _smearCorners[corner].y += (_smearTargets[corner].y - _smearCorners[corner].y) * step;
+        farthest = std::max(farthest, std::hypot(_smearTargets[corner].x - _smearCorners[corner].x,
+                                                 _smearTargets[corner].y - _smearCorners[corner].y));
+    }
+    if (farthest < 0.4) {
+        [self stopSmear];
+        return;
+    }
+    [self drawSmearPath];
 }
 
 - (void)scrollCaretToVisible {
@@ -3528,6 +3648,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
     if (!_vimEnabled) return nil;
     NSString *mode = @(_vim.modeName().c_str());
     std::string pending = _vim.pending();
+    if (_vim.mode() == gw::VimMode::Command) {
+        return @(pending.c_str());  // the command line: ":wq"
+    }
     return pending.empty() ? mode : [NSString stringWithFormat:@"%@  %s", mode, pending.c_str()];
 }
 

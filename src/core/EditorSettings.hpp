@@ -34,6 +34,8 @@ struct EditorSettings {
     bool showMinimap = true;
     /// Vim keys: normal, insert and visual modes (View > Vim Mode).
     bool vimMode = false;
+    /// The Vim cursor leaves a trail when it jumps, its corners catching up one after another.
+    bool vimCursorSmear = true;
     bool indentGuides = true;
     bool bracketPairColors = true;
     bool sectionDividers = true;
