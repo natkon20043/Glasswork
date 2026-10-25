@@ -3224,6 +3224,9 @@ static CGPoint CenterOfCorners(const CGPoint corners[4]) {
 - (void)drawSmearPath {
     NSRect head = NSMakeRect(_smearTargets[0].x, _smearTargets[0].y,
                              _smearTargets[1].x - _smearTargets[0].x, _smearTargets[3].y - _smearTargets[0].y);
+    if (NSWidth(head) < _charWidth) {
+        head.size.width = _charWidth;  // the thin insert-mode bar smears as the whole character it stands for
+    }
     CGPoint center = CGPointMake(NSMidX(head), NSMidY(head));
     CGPoint heading = _smearHeading;
     CGFloat width = NSWidth(head), height = NSHeight(head);
@@ -3234,7 +3237,12 @@ static CGPoint CenterOfCorners(const CGPoint corners[4]) {
     for (int corner = 0; corner < 4; ++corner) {
         reach = std::max(reach, (center.x - _smearCorners[corner].x) * heading.x + (center.y - _smearCorners[corner].y) * heading.y);
     }
-    CGFloat beyond = reach - boxLength / 2;  // how much of the smear lies behind the cursor's back edge
+    // A step sideways is a character wide and a step down is a whole line, so a sideways trail
+    // is stretched to the length the same number of steps would leave going down.
+    CGFloat aspect = std::min<CGFloat>(3, std::max<CGFloat>(1, height / width));
+    CGFloat stretch = 1 + (aspect - 1) * std::fabs(heading.x);
+    CGFloat beyond = (reach - boxLength / 2) * stretch;  // how much of the smear lies behind the cursor's back edge
+    reach = boxLength / 2 + beyond;
 
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
