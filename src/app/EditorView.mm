@@ -1085,6 +1085,11 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     _tabSize = _tabSizeOverride > 0 ? _tabSizeOverride : static_cast<size_t>(std::max(1, services.settings.tabSize));
     _wrapEnabled = services.settings.wordWrap;
     _semanticStyles.clear();
+    // A new font size changes every row height, so the line at the top of the view is noted now
+    // and put back at the top afterward; without that the text would jump.
+    NSClipView *clip = self.enclosingScrollView.contentView;
+    BOOL keepTopLine = clip != nil && _document != nullptr && _lineHeight > 0;
+    size_t topLine = keepTopLine ? [self lineAtY:NSMinY(clip.bounds) subrow:nullptr] : 0;
     _font = [services editorFontBold:NO italic:NO];
     _charWidth = [@"0" sizeWithAttributes:@{NSFontAttributeName: _font}].width;
     _lineHeight = std::ceil(_font.pointSize * 1.65);
@@ -1142,6 +1147,11 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     _paragraph = paragraph;
     _wrapColumns = 0;
     [self invalidateLayout];
+    if (keepTopLine) {
+        [clip scrollToPoint:NSMakePoint(NSMinX(clip.bounds), [self yForLine:topLine])];
+        [self.enclosingScrollView reflectScrolledClipView:clip];
+    }
+    [self updateCaretAnimated:NO];  // the caret is its own layer, so it must be moved to the new metrics
     _gutter.needsDisplay = YES;
 }
 
