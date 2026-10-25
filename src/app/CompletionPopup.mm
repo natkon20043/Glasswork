@@ -533,7 +533,23 @@ static NSPopover *gHoverPopover = nil;
     popover.behavior = NSPopoverBehaviorApplicationDefined;
     popover.animates = NO;
     gHoverPopover = popover;
+    NSWindow *parent = view.window;
+    NSResponder *typing = parent.firstResponder;
     [popover showRelativeToRect:rect ofView:view preferredEdge:NSRectEdgeMaxY];
+    // The bubble's own window may take the keys, and then nothing typed reaches the editor until it
+    // is clicked. A hint is only to be read, so the editor keeps the keyboard, now and a moment later
+    // (the window can claim it after this returns).
+    auto giveBackTheKeyboard = ^{
+        if (parent.isKeyWindow && parent.firstResponder == typing) {
+            return;
+        }
+        [parent makeKeyWindow];
+        if (typing != nil) {
+            [parent makeFirstResponder:typing];
+        }
+    };
+    giveBackTheKeyboard();
+    dispatch_async(dispatch_get_main_queue(), giveBackTheKeyboard);
 }
 
 @end

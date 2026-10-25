@@ -548,6 +548,8 @@ bool looksBinary(const char *path) {
     NSMutableDictionary<NSString *, NSString *> *_extensionContextKeys;  // set by extensions with setContext
     GWSuggestionPopup *_suggestions;
     NSUInteger _hoverToken;
+    NSInteger _signatureLine;     // where the parameter hint was asked for, or -1 when none is showing
+    NSInteger _signatureColumn;
     NSUInteger _highlightToken;
     NSUInteger _suggestionToken;
     BOOL _suggestionsIncomplete;      // the server's list is partial: ask again as more is typed
@@ -775,6 +777,7 @@ bool looksBinary(const char *path) {
 /// What the editor tells the window: edits, caret moves, section changes and clicks in the margins.
 - (void)connectEditorCallbacks {
     __weak GWMainWindowController *weakSelf = self;
+    _signatureLine = -1;
     _editorView.onEdit = ^{
         [weakSelf documentEdited];
     };
@@ -1681,7 +1684,28 @@ static bool isImageExtension(NSString *extension) {
     _breadcrumb.attributedStringValue = text;
 }
 
+/// Closes whatever hint bubble is up and forgets any answer still on its way.
+- (void)hideHint {
+    ++_hoverToken;
+    _signatureLine = -1;
+    [GWHoverPopover hide];
+}
+
+/// The parameter hint belongs to the call being written: it goes when the caret leaves that line or
+/// moves back before the "(".
+- (void)hideSignatureHintIfCaretLeftTheCall {
+    Tab *tab = [self currentTab];
+    if (_signatureLine < 0 || tab == nullptr) {
+        return;
+    }
+    gw::Position caret = tab->document->selection.caret;
+    if (static_cast<NSInteger>(caret.line) != _signatureLine || static_cast<NSInteger>(caret.column) < _signatureColumn) {
+        [self hideHint];
+    }
+}
+
 - (void)caretMoved {
+    [self hideSignatureHintIfCaretLeftTheCall];
     [self dropSuggestionsIfCaretLeftWord];
     [self scheduleEditorStateForExtensions];
     [self updateStatus];
@@ -5114,6 +5138,7 @@ static double timed(void (^work)(void)) {
         GWMainWindowController *strongSelf = weakSelf;
         if (strongSelf != nil) {
             ++strongSelf->_hoverToken;
+            strongSelf->_signatureLine = -1;
         }
         [GWHoverPopover hide];
     };
@@ -5202,6 +5227,7 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
             return;
         }
         NSRect rect = [strongSelf->_editorView viewRectForRange:word];
+        strongSelf->_signatureLine = -1;
         [GWHoverPopover showMarkdown:markdown problems:problems relativeToRect:rect ofView:strongSelf->_editorView];
     };
     if (![_language serverSupports:@"hoverProvider" forDocument:document]) {
@@ -5273,8 +5299,9 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
     if (last == '(' || last == ',') {
         [self requestSignatureHelp];
     } else if (last == ')' || last == ';') {
-        ++_hoverToken;
-        [GWHoverPopover hide];
+        [self hideHint];
+    } else if (_signatureLine < 0) {
+        [self hideHint];  // a hint from resting the pointer on a word is for reading, not for while typing
     }
     BOOL wordCharacter = (last >= 'a' && last <= 'z') || (last >= 'A' && last <= 'Z') || (last >= '0' && last <= '9') || last == '_';
     NSString *triggers = [_language completionTriggerCharactersForDocument:tab->document.get()];
@@ -6162,6 +6189,8 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
         }
         NSRect rect = [strongSelf->_editorView viewRectForRange:gw::Range{caret, caret}];
         [GWHoverPopover showMarkdown:@(markdown.c_str()) problems:@[] relativeToRect:rect ofView:strongSelf->_editorView];
+        strongSelf->_signatureLine = static_cast<NSInteger>(caret.line);
+        strongSelf->_signatureColumn = static_cast<NSInteger>(caret.column);
     }];
 }
 

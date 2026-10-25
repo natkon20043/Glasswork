@@ -3786,6 +3786,9 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
         key = characters.UTF8String ?: "";
     }
 
+    if (key == "\x1b" && self.onHoverEnd) {
+        self.onHoverEnd();  // Escape closes a hint bubble
+    }
     if (inserting && key == "\x1b" && self.onCompletionKey && self.onCompletionKey(@selector(cancelOperation:))) {
         return YES;  // Escape closed the suggestion list first
     }
@@ -3913,6 +3916,7 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 
 - (void)cancelOperation:(id)sender {
     if (!_document) return;
+    if (self.onHoverEnd) self.onHoverEnd();  // Escape closes a hint bubble
     _document->endSnippet();
     if (!_document->extraSelections.empty()) {
         // Escape first goes back to a single cursor.
