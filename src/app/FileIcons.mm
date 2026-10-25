@@ -113,7 +113,7 @@ NSImage *GWFileIconImage(NSString *filename, BOOL directory, BOOL expanded, CGFl
     NSString *symbol = directory ? @"folder.fill" : GWSymbolForFile(filename);
     NSColor *tint = directory ? NSColor.controlAccentColor : GWColorForFile(filename);
     NSImageSymbolConfiguration *configuration = [[NSImageSymbolConfiguration configurationWithPointSize:size - 1 weight:NSFontWeightMedium]
-        configurationByApplyingConfiguration:[NSImageSymbolConfiguration configurationWithPaletteColors:@[tint]]];
+        configurationByApplyingConfiguration:[NSImageSymbolConfiguration configurationWithHierarchicalColor:tint]];
     NSImage *image = [[NSImage imageWithSystemSymbolName:symbol accessibilityDescription:nil] imageWithSymbolConfiguration:configuration];
     return image ?: [NSImage imageWithSystemSymbolName:@"doc.fill" accessibilityDescription:nil];
 }

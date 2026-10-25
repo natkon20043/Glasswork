@@ -94,6 +94,8 @@ NSArray<NSString *> *DefaultExtensions() {
         @"vscode.powershell", @"vscode.dart", @"vscode.log",
         // Not built in to VS Code, but CMake files are everywhere in C++ projects.
         @"twxs.cmake",
+        // Colorful file and folder icons (MIT), used until another icon theme is chosen.
+        @"PKief.material-icon-theme",
     ];
 }
 
@@ -326,8 +328,25 @@ std::optional<std::string> readFile(NSURL *url) {
             self->_installingDefaults = NO;
             [self extensionsChanged];
             [self applySavedTheme];
+            [self useDefaultIconThemeOnce];
         });
     });
+}
+
+/// The first time the default icon theme is installed it is switched on, so files get real
+/// icons instead of plain symbols; after that the choice (including "none") is the user's.
+- (void)useDefaultIconThemeOnce {
+    static NSString *const kOffered = @"offeredDefaultIconTheme";
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if ([defaults boolForKey:kOffered] || ![self.iconThemeLabels containsObject:@"Material Icon Theme"]) {
+        return;  // already offered, or not downloaded yet (offline): the next launch tries again
+    }
+    [defaults setBool:YES forKey:kOffered];
+    if (_settings.iconTheme.empty()) {
+        [self updateSettings:^(gw::EditorSettings &settings) {
+            settings.iconTheme = "Material Icon Theme";
+        }];
+    }
 }
 
 - (void)extensionsChanged {
