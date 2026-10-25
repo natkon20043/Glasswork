@@ -3252,8 +3252,9 @@ static CGPoint CenterOfCorners(const CGPoint corners[4]) {
     _smearLayer.hidden = NO;
     CGPathRelease(boxPath);
 
-    // The tail: from the copy's far edge to the tip, as wide as the box at first and a quarter of that at the end.
-    CGFloat base = boxLength + offset;
+    // The tail: from the copy's far edge (its center is `offset` behind the cursor's, so its far edge is
+    // half a box farther) to the tip, as wide as the box at first and a quarter of that at the end.
+    CGFloat base = offset + boxLength / 2;
     CGFloat tip = reach;
     if (tip - base > 1.5) {
         CGPoint across = CGPointMake(-heading.y, heading.x);
