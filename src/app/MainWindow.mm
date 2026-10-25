@@ -1006,10 +1006,21 @@ bool looksBinary(const char *path) {
     stack.spacing = 8;
     [stack setCustomSpacing:18 afterView:subtitle];
     [stack setCustomSpacing:26 afterView:actions];
-    stack.edgeInsets = NSEdgeInsetsMake(34, 40, 30, 40);
     [recent.widthAnchor constraintGreaterThanOrEqualToConstant:360].active = YES;
 
-    _root.welcome = [self glassWithCornerRadius:30 content:stack];
+    // The glass sizes itself to its content but ignores a stack's own insets, so the padding is
+    // made of constraints around the stack; otherwise a long recent path touches the border.
+    NSView *content = [NSView new];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [content addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:44],
+        [stack.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-44],
+        [stack.topAnchor constraintEqualToAnchor:content.topAnchor constant:34],
+        [stack.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-32],
+    ]];
+
+    _root.welcome = [self glassWithCornerRadius:30 content:content];
     [_root addSubview:_root.welcome];
     [self reloadRecents];
 }
@@ -1031,14 +1042,19 @@ bool looksBinary(const char *path) {
             NSForegroundColorAttributeName: NSColor.labelColor,
         }]];
         NSString *parent = [url.URLByDeletingLastPathComponent.path stringByAbbreviatingWithTildeInPath];
+        NSMutableParagraphStyle *truncating = [NSMutableParagraphStyle new];
+        truncating.lineBreakMode = NSLineBreakByTruncatingMiddle;  // a long path shortens in the middle
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:[@"   " stringByAppendingString:parent] attributes:@{
             NSFontAttributeName: [NSFont systemFontOfSize:11.5],
             NSForegroundColorAttributeName: NSColor.tertiaryLabelColor,
         }]];
         NSButton *button = [NSButton buttonWithTitle:@"" target:self action:@selector(openRecent:)];
+        [text addAttribute:NSParagraphStyleAttributeName value:truncating range:NSMakeRange(0, text.length)];
         button.attributedTitle = text;
         button.bordered = NO;
         button.alignment = NSTextAlignmentLeft;
+        [button.widthAnchor constraintLessThanOrEqualToConstant:520].active = YES;
+        [button setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
         button.toolTip = url.path;
         button.identifier = url.path;
         [_recentList addArrangedSubview:button];
