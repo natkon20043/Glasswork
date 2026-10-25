@@ -5,6 +5,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <spawn.h>
@@ -61,6 +62,12 @@ std::vector<std::string> extraSearchFolders() {
         folders.push_back(homeFolder + "/.local/bin");
         folders.push_back(homeFolder + "/.cargo/bin");
         folders.push_back(homeFolder + "/bin");
+        folders.push_back(homeFolder + "/.volta/bin");
+        folders.push_back(homeFolder + "/.npm-global/bin");
+    }
+    std::string nvmFolder = newestNvmBinFolder();
+    if (!nvmFolder.empty()) {
+        folders.push_back(nvmFolder);
     }
     return folders;
 }
@@ -220,6 +227,54 @@ std::string searchPathForChildren() {
         }
     }
     return path;
+}
+
+/// "v22.1.0" → 22001000, so versions sort as numbers. 0 if it isn't a version.
+long versionNumber(const std::string& text) {
+    long parts[3] = {0, 0, 0};
+    int index = 0;
+    long current = 0;
+    bool any = false;
+    for (char character : text) {
+        if (character >= '0' && character <= '9') {
+            current = current * 10 + (character - '0');
+            any = true;
+        } else if (character == '.' && index < 2) {
+            parts[index++] = current;
+            current = 0;
+        } else if (character == 'v' && !any) {
+            continue;
+        } else {
+            break;
+        }
+    }
+    parts[index] = current;
+    return any ? parts[0] * 1000000 + parts[1] * 1000 + parts[2] : 0;
+}
+
+std::string newestNvmBinFolder() {
+    const char* home = std::getenv("HOME");
+    if (home == nullptr) {
+        return std::string();
+    }
+    std::string versionsFolder = std::string(home) + "/.nvm/versions/node";
+    DIR* directory = opendir(versionsFolder.c_str());
+    if (directory == nullptr) {
+        return std::string();
+    }
+    std::string best;
+    long bestVersion = 0;
+    while (dirent* entry = readdir(directory)) {
+        std::string name = entry->d_name;
+        long version = versionNumber(name);
+        std::string binFolder = versionsFolder + "/" + name + "/bin";
+        if (version > bestVersion && isExecutableFile(binFolder + "/node")) {
+            bestVersion = version;
+            best = binFolder;
+        }
+    }
+    closedir(directory);
+    return best;
 }
 
 std::string findExecutable(const std::string& name) {

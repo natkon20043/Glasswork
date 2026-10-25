@@ -44,6 +44,13 @@ struct ProcessResult {
 /// Empty if not found.
 std::string findExecutable(const std::string& name);
 
+/// "v22.1.0" → 22001000, so versions sort as numbers. 0 if it isn't a version.
+long versionNumber(const std::string& text);
+
+/// The bin folder of the newest Node installed under ~/.nvm/versions/node, where globally installed
+/// npm programs (typescript-language-server, pyright) live. Empty if there is none.
+std::string newestNvmBinFolder();
+
 /// Our PATH plus the usual extra install folders.
 std::string searchPathForChildren();
 

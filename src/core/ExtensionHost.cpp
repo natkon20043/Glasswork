@@ -9,55 +9,6 @@ namespace gw {
 
 namespace {
 
-/// "v22.1.0" → 22001000, so versions sort as numbers. 0 if it isn't a version.
-long versionNumber(const std::string& text) {
-    long parts[3] = {0, 0, 0};
-    int index = 0;
-    long current = 0;
-    bool any = false;
-    for (char character : text) {
-        if (character >= '0' && character <= '9') {
-            current = current * 10 + (character - '0');
-            any = true;
-        } else if (character == '.' && index < 2) {
-            parts[index++] = current;
-            current = 0;
-        } else if (character == 'v' && !any) {
-            continue;
-        } else {
-            break;
-        }
-    }
-    parts[index] = current;
-    return any ? parts[0] * 1000000 + parts[1] * 1000 + parts[2] : 0;
-}
-
-/// The newest Node installed under ~/.nvm/versions/node, if any.
-std::string newestNvmNode() {
-    const char* home = std::getenv("HOME");
-    if (home == nullptr) {
-        return std::string();
-    }
-    std::string versionsFolder = std::string(home) + "/.nvm/versions/node";
-    DIR* directory = opendir(versionsFolder.c_str());
-    if (directory == nullptr) {
-        return std::string();
-    }
-    std::string best;
-    long bestVersion = 0;
-    while (dirent* entry = readdir(directory)) {
-        std::string name = entry->d_name;
-        long version = versionNumber(name);
-        std::string candidate = versionsFolder + "/" + name + "/bin/node";
-        if (version > bestVersion && access(candidate.c_str(), X_OK) == 0) {
-            bestVersion = version;
-            best = candidate;
-        }
-    }
-    closedir(directory);
-    return best;
-}
-
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -173,9 +124,12 @@ std::string ExtensionHost::findNode() {
     if (!onPath.empty()) {
         return onPath;
     }
-    std::string nvm = newestNvmNode();
-    if (!nvm.empty()) {
-        return nvm;
+    std::string nvmFolder = newestNvmBinFolder();
+    if (!nvmFolder.empty()) {
+        std::string nvmNode = nvmFolder + "/node";
+        if (access(nvmNode.c_str(), X_OK) == 0) {
+            return nvmNode;
+        }
     }
     const char* home = std::getenv("HOME");
     std::vector<std::string> candidates = {"/opt/homebrew/bin/node", "/usr/local/bin/node"};

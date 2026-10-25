@@ -4,6 +4,7 @@
 #include "TestHarness.hpp"
 
 #include "LspServer.hpp"
+#include "Process.hpp"
 
 #include <atomic>
 #include <cstdlib>
@@ -88,6 +89,31 @@ TEST(aServerThatRefusesToStartDoesNotCrashUs) {
     CHECK(!becameReady);
     unsetenv("FAKE_LSP_REFUSE");
     server.stop();
+}
+
+TEST(findsProgramsInstalledWithNvm) {
+    namespace fs = std::filesystem;
+    fs::path home = fs::temp_directory_path() / ("gw-nvm-" + std::to_string(getpid()));
+    for (const char* version : {"v9.0.0", "v10.1.0"}) {
+        fs::path bin = home / ".nvm" / "versions" / "node" / version / "bin";
+        fs::create_directories(bin);
+        for (const char* program : {"node", "gw-nvm-test-tool"}) {
+            std::ofstream(bin / program) << "#!/bin/sh\n";
+            fs::permissions(bin / program, fs::perms::owner_all);
+        }
+    }
+    const char* oldHome = std::getenv("HOME");
+    std::string savedHome = oldHome ? oldHome : "";
+    setenv("HOME", home.string().c_str(), 1);
+
+    // The newest version wins, compared as numbers (10 is newer than 9).
+    std::string newest = (home / ".nvm" / "versions" / "node" / "v10.1.0" / "bin").string();
+    CHECK_EQ(gw::newestNvmBinFolder(), newest);
+    CHECK_EQ(gw::findExecutable("gw-nvm-test-tool"), newest + "/gw-nvm-test-tool");
+    CHECK(gw::searchPathForChildren().find(newest) != std::string::npos);
+
+    setenv("HOME", savedHome.c_str(), 1);
+    fs::remove_all(home);
 }
 
 TEST(findsTypeScriptBesideTheServer) {
