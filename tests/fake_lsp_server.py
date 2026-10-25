@@ -2,6 +2,7 @@
 """A tiny language server for tests: answers initialize, hover and echo, publishes a
 diagnostic for every opened document, and asks the client for its configuration."""
 import json
+import os
 import sys
 
 
@@ -38,7 +39,11 @@ while True:
     if message is None:
         break
     method = message.get("method")
-    if method == "initialize":
+    if method == "initialize" and os.environ.get("FAKE_LSP_REFUSE"):
+        # A server that cannot start (e.g. no TypeScript installation) answers with an error.
+        send({"jsonrpc": "2.0", "id": message["id"],
+              "error": {"code": -32603, "message": "Could not find a valid TypeScript installation"}})
+    elif method == "initialize":
         send({"jsonrpc": "2.0", "id": message["id"],
               "result": {"capabilities": {"hoverProvider": True, "renameProvider": True,
                                           "textDocumentSync": {"openClose": True, "change": 2}}}})

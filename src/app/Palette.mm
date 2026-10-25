@@ -168,7 +168,7 @@ static const NSUInteger kVisibleRows = 10;
     _panel.appearance = window.effectiveAppearance;
     [self reload];
 
-    // Centred horizontally, near the top of the window, like VS Code and Zed.
+    // Centered horizontally, near the top of the window, like VS Code and Zed.
     NSRect frame = window.frame;
     CGFloat pad = GWShadowedGlass.padding;
     NSPoint topLeft = NSMakePoint(NSMidX(frame) - kPaletteWidth / 2 - pad, NSMaxY(frame) - 70 + pad);

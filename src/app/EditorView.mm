@@ -298,12 +298,19 @@ std::optional<size_t> indentColumns(std::string_view text, size_t tabSize) {
         }
         CGFloat top = [editor yForLine:line] - NSMinY(visible);  // follow the editor's scroll
         NSRect label = NSMakeRect(0, top + (lineHeight - textHeight) / 2 - 1, NSWidth(self.bounds) - 26, textHeight + 2);
-        if (line == caretLine) {
-            // A small accent bar marks the current line.
-            [[NSColor.controlAccentColor colorWithAlphaComponent:0.9] setFill];
-            [[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(4, top + 5, 3, lineHeight - 10) xRadius:1.5 yRadius:1.5] fill];
-        }
-        [[NSString stringWithFormat:@"%zu", line + 1] drawInRect:label withAttributes:line == caretLine ? active : normal];
+        NSString *number = [NSString stringWithFormat:@"%zu", line + 1];
+        NSDictionary *numberAttributes = line == caretLine ? active : normal;
+        // Each number sits in a soft rounded bubble, so it stands out from the code beside it.
+        CGFloat numberWidth = [number sizeWithAttributes:numberAttributes].width;
+        CGFloat bubbleWidth = numberWidth + 14;
+        CGFloat bubbleRight = NSMaxX(label) + 7;
+        NSRect bubble = NSMakeRect(bubbleRight - bubbleWidth, top + 3, bubbleWidth, lineHeight - 6);
+        NSColor *bubbleColor = line == caretLine ? [NSColor.controlAccentColor colorWithAlphaComponent:0.38]
+                                                 : [editor.lineNumberColor colorWithAlphaComponent:0.13];
+        [bubbleColor setFill];
+        CGFloat bubbleRadius = NSHeight(bubble) / 2;
+        [[NSBezierPath bezierPathWithRoundedRect:bubble xRadius:bubbleRadius yRadius:bubbleRadius] fill];
+        [number drawInRect:label withAttributes:numberAttributes];
         BOOL hasBreakpoint = [editor hasBreakpointAtLine:line];
         BOOL isExecution = [editor isExecutionLine:line];
         if (hasBreakpoint) {
@@ -678,6 +685,10 @@ static constexpr CGFloat kMiniChar = 1.25;
     // Semantic highlighting from the language server, and the style each token kind gets.
     gw::SemanticTokenSet _semantic;
     std::unordered_map<uint32_t, std::optional<gw::TextStyle>> _semanticStyles;
+    /// Syntax colors after the contrast check, keyed by the theme's color; emptied when the theme changes.
+    std::unordered_map<gw::Color, NSColor *> _readableColors;
+    /// The solid color the code sits on, used to judge how readable a color is.
+    NSColor *_contrastBackground;
 
     // Language intelligence: problems to underline, hover, typing notifications.
     std::vector<GWDiagnostic> _diagnostics;
@@ -1085,15 +1096,30 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     NSColor *base = theme.isDark() ? NSColor.whiteColor : NSColor.blackColor;
     NSColor *editorBackground = [services color:@"editor.background" fallback:theme.isDark() ? NSColor.blackColor : NSColor.whiteColor];
     _backgroundColor = [editorBackground colorWithAlphaComponent:editorBackground.alphaComponent * opacity];
-    _foreground = GWColor(theme.color("editor.foreground", theme.isDark() ? 0xD4D4D4FF : 0x1E1E1EFF));
+    // The editor is often see-through, and themes pick their colors for a solid background, so
+    // anything dim (plain text, line numbers, comments) can vanish. Each color is checked against
+    // the solid background and brightened just enough to read.
+    _contrastBackground = [editorBackground colorWithAlphaComponent:1];
+    _readableColors.clear();
+    NSColor *themeForeground = GWColor(theme.color("editor.foreground", theme.isDark() ? 0xD4D4D4FF : 0x1E1E1EFF));
+    _foreground = GWReadableColor(themeForeground, _contrastBackground, 7.0);
     _selectionColor = [services color:@"editor.selectionBackground"
                              fallback:[NSColor.selectedTextBackgroundColor colorWithAlphaComponent:0.6]];
     _lineHighlight = [services color:@"editor.lineHighlightBackground" fallback:[base colorWithAlphaComponent:0.055]];
     _caretColor = [services color:@"editorCursor.foreground" fallback:NSColor.controlAccentColor];
-    _lineNumberColor = [services color:@"editorLineNumber.foreground" fallback:[_foreground colorWithAlphaComponent:0.4]];
-    _activeLineNumberColor = [services color:@"editorLineNumber.activeForeground" fallback:_foreground];
-    _guideColor = [services color:@"editorIndentGuide.background1"
-                         fallback:[services color:@"editorIndentGuide.background" fallback:[base colorWithAlphaComponent:0.08]]];
+    // Line numbers look the same in every theme: only light versus dark decides the color, so
+    // switching themes never changes how readable they are.
+    if (theme.isDark()) {
+        _lineNumberColor = [NSColor colorWithSRGBRed:0.92 green:0.93 blue:0.96 alpha:1];
+        _activeLineNumberColor = NSColor.whiteColor;
+    } else {
+        _lineNumberColor = [NSColor colorWithSRGBRed:0.10 green:0.11 blue:0.14 alpha:1];
+        _activeLineNumberColor = NSColor.blackColor;
+    }
+    // Block lines must be easy to see in every theme, so they use one clear color (light or dark
+    // only) instead of the theme's very faint indent guide color.
+    _guideColor = theme.isDark() ? [NSColor colorWithSRGBRed:1 green:1 blue:1 alpha:0.42]
+                                 : [NSColor colorWithSRGBRed:0 green:0 blue:0 alpha:0.42];
     _matchColor = [services color:@"editorBracketMatch.border" fallback:[NSColor.controlAccentColor colorWithAlphaComponent:0.8]];
     _occurrenceColor = [services color:@"editor.wordHighlightBackground"
                               fallback:[NSColor.controlAccentColor colorWithAlphaComponent:0.22]];
@@ -1219,6 +1245,112 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         // otherwise only the part that was drawn before shows.
         self.needsDisplay = YES;
         _gutter.needsDisplay = YES;
+    }
+}
+
+// MARK: Block braces
+
+/// How many indentation levels a line is inside. Blank lines take the smaller level of the code
+/// around them, so a block's line runs unbroken through blank lines.
+- (size_t)indentLevelsForLine:(size_t)line {
+    const auto &buffer = _document->buffer();
+    size_t count = buffer.lineCount();
+    std::optional<size_t> columns = indentColumns(buffer.line(line), _tabSize);
+    if (!columns) {
+        std::optional<size_t> above, below;
+        for (size_t look = line; look-- > 0 && line - look < 100;) {
+            if ((above = indentColumns(buffer.line(look), _tabSize))) break;
+        }
+        for (size_t look = line + 1; look < count && look - line < 100; ++look) {
+            if ((below = indentColumns(buffer.line(look), _tabSize))) break;
+        }
+        columns = std::min(above.value_or(0), below.value_or(0));
+    }
+    return *columns / _tabSize;
+}
+
+/// One curly brace "{" from `top` to `bottom` at `x`: curled ends and a point in the middle
+/// aimed at the left. `openAtTop` / `openAtBottom` mean the block goes on past the edge of what
+/// is drawn, so that end is a plain straight line instead of a curl.
+- (void)strokeBraceAtX:(CGFloat)x top:(CGFloat)top bottom:(CGFloat)bottom openAtTop:(BOOL)openAtTop openAtBottom:(BOOL)openAtBottom {
+    CGFloat height = bottom - top;
+    CGFloat curl = std::min<CGFloat>(4.5, height / 4);
+    CGFloat middle = (top + bottom) / 2;
+    CGFloat point = 4;  // how far the middle point sticks out to the left
+
+    NSBezierPath *brace = [NSBezierPath bezierPath];
+    brace.lineWidth = 1.6;
+    brace.lineCapStyle = NSLineCapStyleRound;
+    brace.lineJoinStyle = NSLineJoinStyleRound;
+
+    if (openAtTop) {
+        [brace moveToPoint:NSMakePoint(x, top)];
+    } else {
+        [brace moveToPoint:NSMakePoint(x + curl, top + 0.8)];
+        [brace curveToPoint:NSMakePoint(x, top + curl)
+              controlPoint1:NSMakePoint(x + curl * 0.4, top + 0.8)
+              controlPoint2:NSMakePoint(x, top + curl * 0.6)];
+    }
+    BOOL hasPoint = height >= 28;
+    if (hasPoint) {
+        [brace lineToPoint:NSMakePoint(x, middle - curl)];
+        [brace curveToPoint:NSMakePoint(x - point, middle)
+              controlPoint1:NSMakePoint(x, middle - curl * 0.4)
+              controlPoint2:NSMakePoint(x - point * 0.4, middle)];
+        [brace curveToPoint:NSMakePoint(x, middle + curl)
+              controlPoint1:NSMakePoint(x - point * 0.4, middle)
+              controlPoint2:NSMakePoint(x, middle + curl * 0.4)];
+    }
+    if (openAtBottom) {
+        [brace lineToPoint:NSMakePoint(x, bottom)];
+    } else {
+        [brace lineToPoint:NSMakePoint(x, bottom - curl)];
+        [brace curveToPoint:NSMakePoint(x + curl, bottom - 0.8)
+              controlPoint1:NSMakePoint(x, bottom - curl * 0.6)
+              controlPoint2:NSMakePoint(x + curl * 0.4, bottom - 0.8)];
+    }
+    [brace stroke];
+}
+
+/// Draws the brace of every block that shows in lines [first, last].
+- (void)drawBlockBracesFromLine:(size_t)first toLine:(size_t)last {
+    size_t lineCount = _document->buffer().lineCount();
+    CGFloat step = _tabSize * _charWidth;
+
+    // The levels of every visible line, and of the lines just outside (to know if a block goes on).
+    std::vector<size_t> levels;
+    for (size_t line = first; line <= last; ++line) {
+        levels.push_back([self isLineHidden:line] ? 0 : [self indentLevelsForLine:line]);
+    }
+    size_t levelsAbove = first > 0 ? [self indentLevelsForLine:first - 1] : 0;
+    size_t levelsBelow = last + 1 < lineCount ? [self indentLevelsForLine:last + 1] : 0;
+    size_t deepest = 0;
+    for (size_t value : levels) deepest = std::max(deepest, value);
+
+    [_guideColor setStroke];
+    for (size_t level = 0; level < deepest; ++level) {
+        CGFloat x = std::round(self.textLeft + level * step) + 0.5;
+        size_t index = 0;
+        while (index < levels.size()) {
+            BOOL inside = levels[index] > level && ![self isLineHidden:first + index];
+            if (!inside) {
+                ++index;
+                continue;
+            }
+            // A run of lines inside this block.
+            size_t runStart = index;
+            size_t runEnd = index;
+            while (runEnd + 1 < levels.size() && levels[runEnd + 1] > level) ++runEnd;
+            index = runEnd + 1;
+
+            size_t firstLine = first + runStart;
+            size_t lastLine = first + runEnd;
+            CGFloat top = [self yForLine:firstLine];
+            CGFloat bottom = [self yForLine:lastLine] + [self rowsForLine:lastLine] * _lineHeight;
+            BOOL openAtTop = runStart == 0 && levelsAbove > level;
+            BOOL openAtBottom = runEnd + 1 == levels.size() && levelsBelow > level;
+            [self strokeBraceAtX:x top:top + 2 bottom:bottom - 2 openAtTop:openAtTop openAtBottom:openAtBottom];
+        }
     }
 }
 
@@ -1449,7 +1581,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         }
         NSRange range = NSMakeRange(start, end - start);
         if (look.foreground) {
-            [attributed addAttribute:NSForegroundColorAttributeName value:GWColor(*look.foreground) range:range];
+            [attributed addAttribute:NSForegroundColorAttributeName value:[self readableColor:*look.foreground] range:range];
         }
         if (look.bold || look.italic) {
             [attributed addAttribute:NSFontAttributeName value:[GWServices.shared editorFontBold:look.bold italic:look.italic] range:range];
@@ -1582,8 +1714,20 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     layout.continuationIndent = wrapped.continuationIndent * _charWidth;
 }
 
+/// A syntax color made readable against the editor background. Remembered, because the same few
+/// colors are asked for again and again while lines are laid out.
+- (NSColor *)readableColor:(gw::Color)themeColor {
+    auto found = _readableColors.find(themeColor);
+    if (found != _readableColors.end()) {
+        return found->second;
+    }
+    NSColor *readable = GWReadableColor(GWColor(themeColor), _contrastBackground, 4.5);
+    _readableColors[themeColor] = readable;
+    return readable;
+}
+
 - (void)applyStyle:(const gw::TextStyle &)style toString:(NSMutableAttributedString *)string range:(NSRange)range {
-    [string addAttribute:NSForegroundColorAttributeName value:GWColor(style.foreground) range:range];
+    [string addAttribute:NSForegroundColorAttributeName value:[self readableColor:style.foreground] range:range];
     if (style.bold || style.italic) {
         NSFont *font = [GWServices.shared editorFontBold:style.bold italic:style.italic];
         [string addAttribute:NSFontAttributeName value:font range:range];
@@ -1927,29 +2071,9 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         [self drawOccurrencesFromLine:first toLine:last];
     }
 
-    // Indent guides: faint verticals at each indentation level.
-    [_guideColor setFill];
-    CGFloat step = _tabSize * _charWidth;
-    for (size_t line = first; line <= last && settings.indentGuides; ++line) {
-        if ([self isLineHidden:line]) continue;
-        std::optional<size_t> columns = indentColumns(buffer.line(line), _tabSize);
-        if (!columns) {
-            // Blank lines continue the guides of the code around them.
-            std::optional<size_t> above, below;
-            for (size_t look = line; look-- > 0 && line - look < 100;) {
-                if ((above = indentColumns(buffer.line(look), _tabSize))) break;
-            }
-            for (size_t look = line + 1; look < count && look - line < 100; ++look) {
-                if ((below = indentColumns(buffer.line(look), _tabSize))) break;
-            }
-            columns = std::min(above.value_or(0), below.value_or(0));
-        }
-        CGFloat guideTop = [self yForLine:line];
-        CGFloat guideHeight = [self rowsForLine:line] * _lineHeight;
-        for (size_t level = 0; level < *columns / _tabSize; ++level) {
-            NSRectFillUsingOperation(NSMakeRect(std::round(self.textLeft + level * step), guideTop, 1, guideHeight),
-                                     NSCompositingOperationSourceOver);
-        }
+    // Block lines: a curly brace "{" beside every indented block, at each indentation level.
+    if (settings.indentGuides) {
+        [self drawBlockBracesFromLine:first toLine:last];
     }
 
     static BOOL markedFirstDraw = NO;

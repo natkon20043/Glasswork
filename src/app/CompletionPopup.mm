@@ -160,6 +160,7 @@ void iconForKind(NSInteger kind, NSString **symbol, NSColor **color) {
 - (void)setItems:(NSArray<GWSuggestion *> *)items {
     _allItems = [items copy];
     _shownItems = _allItems;
+    [_table reloadData];
     _candidates.clear();
     _candidates.reserve(_allItems.count);
     for (GWSuggestion *item in _allItems) {
@@ -238,6 +239,9 @@ void iconForKind(NSInteger kind, NSString **symbol, NSColor **color) {
         [sorted addObject:_allItems[index]];
     }
     _shownItems = sorted;
+    // The table must always agree with the list: if nothing matches, the popup hides but the
+    // table still holds the old rows, and its next layout would ask for a row that no longer exists.
+    [_table reloadData];
 
     if (_shownItems.count == 0) {
         [self hide];
@@ -448,6 +452,10 @@ void iconForKind(NSInteger kind, NSString **symbol, NSColor **color) {
             [detail.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
         ]];
         objc_setAssociatedObject(cell, "detail", detail, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    // Never read past the end of the list, even if the table is briefly out of date.
+    if (row < 0 || row >= static_cast<NSInteger>(_shownItems.count)) {
+        return cell;
     }
     GWSuggestion *item = _shownItems[static_cast<NSUInteger>(row)];
     NSString *symbol = nil;

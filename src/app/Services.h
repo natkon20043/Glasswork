@@ -80,4 +80,12 @@ extern NSNotificationName const GWEditorSettingsDidChangeNotification;
 NSColor *GWColor(gw::Color color);
 gw::Color GWColorFromNSColor(NSColor *color);
 
+/// `color` (laid over `background` if it is see-through), pushed towards white or black just far
+/// enough to reach `minimumRatio` contrast against `background` (WCAG scale: 4.5 is comfortable
+/// body text, 3 is the least that stays legible). Colors that already read well come back unchanged.
+NSColor *GWReadableColor(NSColor *color, NSColor *background, CGFloat minimumRatio);
+
+/// The text color for the status bar: bright enough to read over glass in light and dark mode.
+NSColor *GWStatusTextColor();
+
 NS_ASSUME_NONNULL_END

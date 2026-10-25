@@ -81,6 +81,16 @@ static NSString *SpecialKey(unichar key) {
         }
     }
 
+    // GLASSWORK_REMOTE="host:/folder" opens that remote folder, and GLASSWORK_REMOTE_FILE="host:/folder/file"
+    // opens a remote file once it is up (debugging, e.g. with a stand-in ssh program).
+    NSString *remoteFolder = NSProcessInfo.processInfo.environment[@"GLASSWORK_REMOTE"];
+    NSString *remoteFile = NSProcessInfo.processInfo.environment[@"GLASSWORK_REMOTE_FILE"];
+    if (remoteFolder.length || remoteFile.length) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            [self->_window debugOpenRemoteFolder:remoteFolder file:remoteFile];
+        });
+    }
+
     // GLASSWORK_COMMANDS="ext.command,other.command" runs extension commands, a moment apart,
     // after the menu actions (debugging).
     NSString *commands = NSProcessInfo.processInfo.environment[@"GLASSWORK_COMMANDS"];
@@ -292,6 +302,7 @@ static NSString *SpecialKey(unichar key) {
         [self item:@"Open Folder in New Window…" action:@selector(openFolderInNewWindow:) key:@"o" modifiers:kCommand | kOption | kShift],
         [self item:@"Open…" action:@selector(openDocument:) key:@"o"],
         [self item:@"Open Folder…" action:@selector(openFolder:) key:@"o" modifiers:kCommand | kShift],
+        [self item:@"Open Remote Folder (SSH)…" action:@selector(openRemoteFolder:) key:@"" modifiers:0],
         [self openRecentItem],
         NSMenuItem.separatorItem,
         [self item:@"Save" action:@selector(saveDocument:) key:@"s"],

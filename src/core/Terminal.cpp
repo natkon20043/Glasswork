@@ -481,6 +481,11 @@ void Screen::printCharacter(uint32_t codePoint) {
     if (width == 0) {
         return;  // combining characters are not drawn on their own
     }
+    // A double-width character needs two columns; on a one-column screen it can never be shown.
+    // (Without this check its second half was written one cell past the end of the row.)
+    if (width == 2 && columns_ < 2) {
+        return;
+    }
     lastPrinted_ = codePoint;
 
     if (pendingWrap_ && autoWrap_) {
@@ -517,7 +522,7 @@ void Screen::printCharacter(uint32_t codePoint) {
         line.cells[cellIndex + 1] = blankCell();
     }
     line.cells[cellIndex] = cell;
-    if (width == 2) {
+    if (width == 2 && cellIndex + 1 < line.cells.size()) {
         Cell filler = pen_;
         filler.character = ' ';
         filler.attributes = kWideEnd;

@@ -271,13 +271,24 @@ bool LanguageServer::start(std::string* error) {
     int handshakeId = initialize["id"];
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        pending_[handshakeId] = [this](const Json& result, const std::string&) { finishHandshake(result); };
+        pending_[handshakeId] = [this](const Json& result, const std::string& error) { finishHandshake(result, error); };
     }
     transport_->write(frameMessage(initialize));
     return true;
 }
 
-void LanguageServer::finishHandshake(const Json& result) {
+void LanguageServer::finishHandshake(const Json& result, const std::string& error) {
+    // The server refused to start (for example it could not find TypeScript). There is no result to
+    // read, and nothing more can be asked of it: say why, then stop it.
+    if (!error.empty() || !result.is_object()) {
+        std::string reason = error.empty() ? "it sent no usable reply to the start-up request" : error;
+        auto showMessage = copyCallback(onShowMessage);
+        if (showMessage) {
+            showMessage(1, "The language server could not start: " + reason);
+        }
+        stop();
+        return;
+    }
     std::vector<Json> queued;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -795,7 +806,6 @@ void LanguageServer::handleNotification(const Json& message) {
     if (message["method"] == "textDocument/publishDiagnostics") {
         auto handler = copyCallback(onDiagnostics);
         if (handler) {
-            const Json& parameters = message["params"];
             long version = -1;
             if (parameters.contains("version") && parameters["version"].is_number()) {
                 version = parameters["version"].get<long>();

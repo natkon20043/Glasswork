@@ -1,5 +1,7 @@
 #import "Services.h"
 
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -21,6 +23,59 @@ gw::Color GWColorFromNSColor(NSColor *color) {
     };
     return (byte(srgb.redComponent) << 24) | (byte(srgb.greenComponent) << 16) | (byte(srgb.blueComponent) << 8) |
            byte(srgb.alphaComponent);
+}
+
+/// How bright a color looks to the eye, from 0 (black) to 1 (white). Follows the WCAG definition.
+static CGFloat RelativeLuminance(NSColor *color) {
+    NSColor *srgb = [color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    CGFloat channels[3] = {srgb.redComponent, srgb.greenComponent, srgb.blueComponent};
+    CGFloat linear[3];
+    for (int index = 0; index < 3; ++index) {
+        CGFloat value = channels[index];
+        if (value <= 0.03928) {
+            linear[index] = value / 12.92;
+        } else {
+            linear[index] = std::pow((value + 0.055) / 1.055, 2.4);
+        }
+    }
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+}
+
+static CGFloat ContrastRatio(NSColor *first, NSColor *second) {
+    CGFloat firstLuminance = RelativeLuminance(first);
+    CGFloat secondLuminance = RelativeLuminance(second);
+    CGFloat lighter = std::max(firstLuminance, secondLuminance);
+    CGFloat darker = std::min(firstLuminance, secondLuminance);
+    return (lighter + 0.05) / (darker + 0.05);
+}
+
+NSColor *GWReadableColor(NSColor *color, NSColor *background, CGFloat minimumRatio) {
+    NSColor *solidBackground = [background colorWithAlphaComponent:1];
+    // A half-transparent color is really the mix of itself and what is behind it.
+    NSColor *solidColor = color;
+    if (color.alphaComponent < 1) {
+        NSColor *opaque = [color colorWithAlphaComponent:1];
+        solidColor = [solidBackground blendedColorWithFraction:color.alphaComponent ofColor:opaque] ?: opaque;
+    }
+    if (ContrastRatio(solidColor, solidBackground) >= minimumRatio) {
+        return solidColor;
+    }
+    // Move away from the background: lighter on a dark one, darker on a light one.
+    BOOL backgroundIsDark = RelativeLuminance(solidBackground) < 0.4;
+    NSColor *target = backgroundIsDark ? NSColor.whiteColor : NSColor.blackColor;
+    NSColor *best = solidColor;
+    for (int step = 1; step <= 20; ++step) {
+        CGFloat fraction = step * 0.05;
+        best = [solidColor blendedColorWithFraction:fraction ofColor:target] ?: solidColor;
+        if (ContrastRatio(best, solidBackground) >= minimumRatio) {
+            break;
+        }
+    }
+    return best;
+}
+
+NSColor *GWStatusTextColor() {
+    return [NSColor.labelColor colorWithAlphaComponent:0.88];
 }
 
 namespace {

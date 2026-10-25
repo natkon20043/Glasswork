@@ -197,7 +197,7 @@ private:
     void handleResponse(const Json& message);
     void handleServerRequest(const Json& message);
     void handleNotification(const Json& message);
-    void finishHandshake(const Json& result);
+    void finishHandshake(const Json& result, const std::string& error);
 
     // ---- Outgoing messages
     void sendLocked(Json message);

@@ -10,6 +10,7 @@
 #import "FolderWatcher.h"
 #import "GitRepository.h"
 #import "Palette.h"
+#import "RemoteSupport.h"
 #import "SearchPanel.h"
 #import "Services.h"
 #import "LanguageService.h"
@@ -17,6 +18,7 @@
 #import "KeybindingService.h"
 
 #include "CssColor.hpp"
+#include "RemoteHost.hpp"
 #import "MarkdownView.h"
 #import "CompletionPopup.h"
 #import "DebugPanel.h"
@@ -65,6 +67,9 @@ struct Tab {
     /// Read-only tabs made by the app (a diff, a commit). `key` finds one again to refresh it.
     bool isVirtual = false;
     std::string realPath;  // the path with symbolic links resolved, to match file system events
+    /// For a file from another machine: its ssh:// URL. The document is a copy on this Mac that
+    /// is sent back to the machine every time it is saved. Empty for ordinary files.
+    std::string remoteURL;
     std::string key;
     std::string forcedLanguage;
     std::vector<gw::Color> lineTints;
@@ -159,7 +164,7 @@ bool looksBinary(const char *path) {
 @end
 
 @implementation GWAuroraView {
-    NSArray<CAGradientLayer *> *_blobs;
+    NSArray<CALayer *> *_blobs;
 }
 
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -167,10 +172,11 @@ bool looksBinary(const char *path) {
         self.wantsLayer = YES;
         NSMutableArray *blobs = [NSMutableArray array];
         for (int index = 0; index < 3; ++index) {
-            CAGradientLayer *blob = [CAGradientLayer layer];
-            blob.type = kCAGradientLayerRadial;
-            blob.startPoint = CGPointMake(0.5, 0.5);
-            blob.endPoint = CGPointMake(1, 1);
+            // Plain bitmap layers. (Gradient layers computed on the fly made the glass over them
+            // draw black, rainbow-edged splotches; a finished image is sampled cleanly.)
+            CALayer *blob = [CALayer layer];
+            blob.contentsGravity = kCAGravityResize;
+            blob.magnificationFilter = kCAFilterLinear;
             [self.layer addSublayer:blob];
             [blobs addObject:blob];
         }
@@ -181,12 +187,49 @@ bool looksBinary(const char *path) {
 
 - (BOOL)isFlipped { return YES; }
 
+/// A square image of one soft glow: `color` at `strength` in the middle, fading smoothly to nothing
+/// at the edge of the circle (and staying nothing beyond), so no edge of the image is ever visible.
+- (CGImageRef)newGlowImageWithColor:(NSColor *)color strength:(CGFloat)strength {
+    const size_t side = 256;
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef context = CGBitmapContextCreate(NULL, side, side, 8, 0, colorSpace,
+                                                 (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+    NSColor *srgb = [color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+
+    // Many stops that ease out (smoothstep) so there is no visible ring or hard edge.
+    const int stopCount = 24;
+    CGFloat components[stopCount * 4];
+    CGFloat locations[stopCount];
+    for (int stop = 0; stop < stopCount; ++stop) {
+        CGFloat position = static_cast<CGFloat>(stop) / (stopCount - 1);  // 0 in the middle, 1 at the rim
+        CGFloat remaining = 1 - position;
+        CGFloat eased = remaining * remaining * (3 - 2 * remaining);
+        CGFloat alpha = strength * eased;
+        components[stop * 4 + 0] = srgb.redComponent * alpha;    // premultiplied
+        components[stop * 4 + 1] = srgb.greenComponent * alpha;
+        components[stop * 4 + 2] = srgb.blueComponent * alpha;
+        components[stop * 4 + 3] = alpha;
+        locations[stop] = position;
+    }
+    CGGradientRef gradient = CGGradientCreateWithColorComponents(colorSpace, components, locations, stopCount);
+    CGPoint center = CGPointMake(side / 2.0, side / 2.0);
+    CGContextDrawRadialGradient(context, gradient, center, 0, center, side / 2.0, 0);
+    CGImageRef image = CGBitmapContextCreateImage(context);
+
+    CGGradientRelease(gradient);
+    CGContextRelease(context);
+    CGColorSpaceRelease(colorSpace);
+    return image;
+}
+
 - (void)setColors:(NSArray<NSColor *> *)colors strength:(CGFloat)strength {
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     for (NSUInteger index = 0; index < _blobs.count; ++index) {
         NSColor *color = colors[index % colors.count];
-        _blobs[index].colors = @[(id)[color colorWithAlphaComponent:strength].CGColor, (id)[color colorWithAlphaComponent:0].CGColor];
+        CGImageRef image = [self newGlowImageWithColor:color strength:strength];
+        _blobs[index].contents = (__bridge id)image;
+        CGImageRelease(image);
     }
     [CATransaction commit];
 }
@@ -525,6 +568,7 @@ bool looksBinary(const char *path) {
     GWChatPanel *_chat;
     NSButton *_claudeChip;
     NSButton *_themeChip;  // the theme name in the status bar; click it to pick another
+    NSButton *_fontChip;   // the editor font in the status bar; click it to change the font or its size
     GWSearchPanel *_search;
     GWFindBar *_findBar;
     GWTerminalPanel *_terminal;
@@ -546,6 +590,10 @@ bool looksBinary(const char *path) {
         window.titleVisibility = NSWindowTitleHidden;
         window.opaque = NO;
         window.backgroundColor = NSColor.clearColor;
+        // The window is see-through, so the system builds its shadow from the glass panes' edges and
+        // draws it as a hard dark line along the top plus a small glitch at the middle. Each glass
+        // pane already has its own soft shadow, so the window's shadow is switched off.
+        window.hasShadow = NO;
         window.movableByWindowBackground = YES;  // drag from any empty glass
         window.minSize = NSMakeSize(720, 460);
         window.tabbingMode = NSWindowTabbingModeDisallowed;
@@ -616,7 +664,6 @@ bool looksBinary(const char *path) {
 - (void)buildInterface {
     _root = [GWRootView new];
     _root.sidebarVisible = YES;
-    __weak GWMainWindowController *weakSelf = self;
 
     // See-through frosted backdrop, then the aurora glow on top of it.
     NSVisualEffectView *backdrop = [NSVisualEffectView new];
@@ -835,11 +882,12 @@ bool looksBinary(const char *path) {
 
 /// The status bar capsule: branch, problems and position on the left, language and Claude on the right.
 - (void)buildStatusBar {
-    __weak GWMainWindowController *weakSelf = self;
     // Status bar capsule.
     NSView *statusContent = [NSView new];
-    _statusLeft = [self label:@"" size:11.5 weight:NSFontWeightMedium secondary:YES];
-    _statusRight = [self label:@"" size:11.5 weight:NSFontWeightMedium secondary:YES];
+    _statusLeft = [self label:@"" size:11.5 weight:NSFontWeightMedium secondary:NO];
+    _statusRight = [self label:@"" size:11.5 weight:NSFontWeightMedium secondary:NO];
+    _statusLeft.textColor = GWStatusTextColor();
+    _statusRight.textColor = GWStatusTextColor();
     _branchChip = [NSButton buttonWithTitle:@"" target:self action:@selector(branchChipClicked:)];
     _branchChip.bordered = NO;
     _branchChip.hidden = YES;
@@ -853,7 +901,10 @@ bool looksBinary(const char *path) {
     _themeChip = [NSButton buttonWithTitle:@"" target:self action:@selector(themeChipClicked:)];
     _themeChip.bordered = NO;
     _themeChip.toolTip = @"Change the color theme";
-    NSStackView *statusRightStack = [NSStackView stackViewWithViews:@[_statusRight, _themeChip, _claudeChip]];
+    _fontChip = [NSButton buttonWithTitle:@"" target:self action:@selector(fontChipClicked:)];
+    _fontChip.bordered = NO;
+    _fontChip.toolTip = @"Change the editor font and size";
+    NSStackView *statusRightStack = [NSStackView stackViewWithViews:@[_statusRight, _fontChip, _themeChip, _claudeChip]];
     statusRightStack.spacing = 14;
 
     for (NSView *view in @[statusLeftStack, statusRightStack]) {
@@ -1036,7 +1087,7 @@ bool looksBinary(const char *path) {
 
     // The blurred layer behind the window hides the desktop; without it the glass has something
     // sharp to bend.
-    _root.backdrop.hidden = !services.settings.frostedBackdrop;
+    [self updateBackdrop];
 
     // Aurora colors from the theme's own accents, with vivid fallbacks.
     NSArray *aurora = @[
@@ -1198,6 +1249,12 @@ bool looksBinary(const char *path) {
     if (index < 0 || index >= static_cast<NSInteger>(_tabs.size())) return;
     Tab &tab = *_tabs[static_cast<size_t>(index)];
     if (tab.document->isDirty() && ![self confirmCloseDocument:*tab.document]) return;
+    [self removeTabAtIndex:index];
+}
+
+/// Closes a tab without asking about unsaved changes (the caller has already dealt with them).
+- (void)removeTabAtIndex:(NSInteger)index {
+    Tab &tab = *_tabs[static_cast<size_t>(index)];
     if (tab.document->path() && !tab.isVirtual) {
         _breakpointStore[tab.document->path()->string()] = tab.document->breakpointLines;
         _recentlyClosed.push_back({tab.document->path()->string(), tab.document->selection.caret});
@@ -1218,7 +1275,17 @@ bool looksBinary(const char *path) {
     [self showTab:next];
 }
 
+/// The window shows the desktop through it sharply while a file is open. With nothing open the
+/// welcome card sits on a blurred backdrop instead, so whatever is behind the window doesn't
+/// show through (and get bent by the glass) behind the text. "window.frostedBackdrop" blurs always.
+- (void)updateBackdrop {
+    BOOL noFileOpen = [self currentTab] == nullptr;
+    BOOL blur = GWServices.shared.settings.frostedBackdrop || noFileOpen;
+    _root.backdrop.hidden = !blur;
+}
+
 - (void)refresh {
+    [self updateBackdrop];
     NSMutableArray<GWTabItem *> *items = [NSMutableArray array];
     for (const auto &tab : _tabs) {
         GWTabItem *item = [GWTabItem new];
@@ -1363,7 +1430,7 @@ static bool isImageExtension(NSString *extension) {
     _previewMarkdown.projectRoot = _fileTree.rootURL.path;
     NSPoint offset = scroll.contentView.bounds.origin;
 
-    // A flipped page that keeps the text in a comfortable column, centred.
+    // A flipped page that keeps the text in a comfortable column, centered.
     NSView *page = scroll.documentView;
     if (![page isKindOfClass:GWPreviewPage.class]) {
         page = [GWPreviewPage new];
@@ -1529,7 +1596,12 @@ static bool isImageExtension(NSString *extension) {
     Tab *tab = [self currentTab];
     if (!tab) return;
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
-    if (tab->document->path()) {
+    NSURL *remote = tab->remoteURL.empty() ? nil : [NSURL URLWithString:@(tab->remoteURL.c_str())];
+    if (remote != nil) {
+        [parts addObject:GWRemoteDestination(remote)];
+        [parts addObjectsFromArray:[remote.path pathComponents]];
+        [parts removeObject:@"/"];
+    } else if (tab->document->path()) {
         NSString *path = @(tab->document->path()->c_str());
         NSString *root = _fileTree.rootURL.path;
         if (root && [path hasPrefix:[root stringByAppendingString:@"/"]]) {
@@ -2039,7 +2111,7 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
     Tab *tab = [self currentTab];
     GWServices *services = GWServices.shared;
     NSDictionary *attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium],
-                                 NSForegroundColorAttributeName: NSColor.secondaryLabelColor};
+                                 NSForegroundColorAttributeName: GWStatusTextColor()};
     auto segment = ^NSAttributedString *(NSString *symbol, NSColor *color, NSString *text) {
         NSMutableAttributedString *piece = [GWSymbolString(symbol, color, 10.5) mutableCopy];
         [piece appendAttributedString:[[NSAttributedString alloc] initWithString:[@" " stringByAppendingString:text] attributes:attributes]];
@@ -2053,8 +2125,11 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
         }
         return joined;
     };
-    NSColor *muted = NSColor.secondaryLabelColor;
+    NSColor *muted = GWStatusTextColor();
     _themeChip.attributedTitle = segment(@"paintpalette.fill", muted, services.themeLabel);
+    NSString *fontName = services.settings.fontFamily.empty() ? @"SF Mono" : @(services.settings.fontFamily.c_str());
+    NSString *fontLabel = [NSString stringWithFormat:@"%@ %g", fontName, services.settings.fontSize];
+    _fontChip.attributedTitle = segment(@"textformat", muted, fontLabel);
 
     if (!tab) {
         NSString *message = services.installingDefaults ? @"Installing language support from Open VSX…" : @"Ready";
@@ -2287,9 +2362,9 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
         return gw::parseCssColor(value.get<std::string>());
     }
     if (value.is_object() && value.contains("id") && value["id"].is_string()) {
-        NSColor *themed = [GWServices.shared color:@(value["id"].get<std::string>().c_str()) fallback:nil];
-        if (themed != nil) {
-            return GWColorFromNSColor(themed);
+        NSString *key = @(value["id"].get<std::string>().c_str());
+        if (key != nil && GWServices.shared.theme.hasColor(key.UTF8String)) {  // (nil: the name was not valid text)
+            return GWColorFromNSColor([GWServices.shared color:key]);
         }
     }
     return std::nullopt;
@@ -2771,6 +2846,75 @@ static NSString *CompactCount(long count) {
 
 - (void)themeMenuItemChosen:(NSMenuItem *)item {
     [GWServices.shared selectThemeNamed:item.title];
+}
+
+/// The names of the installed fixed-width font families (the ones that suit code), sorted.
+/// Found once; the list of fonts doesn't change while the app runs.
+- (NSArray<NSString *> *)monospacedFontFamilies {
+    static NSArray<NSString *> *families = nil;
+    if (families != nil) {
+        return families;
+    }
+    NSMutableArray<NSString *> *found = [NSMutableArray array];
+    NSFontManager *manager = NSFontManager.sharedFontManager;
+    for (NSString *family in manager.availableFontFamilies) {
+        if ([family hasPrefix:@"."]) {
+            continue;  // system-internal families
+        }
+        NSFont *font = [NSFont fontWithName:family size:12];
+        if (font == nil) {
+            NSArray *members = [manager availableMembersOfFontFamily:family];
+            NSString *firstMember = members.firstObject ? members.firstObject[0] : nil;
+            font = firstMember ? [NSFont fontWithName:firstMember size:12] : nil;
+        }
+        if (font != nil && font.isFixedPitch) {
+            [found addObject:family];
+        }
+    }
+    families = [found sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
+    return families;
+}
+
+/// The font button in the status bar: size controls, then every code font installed.
+- (void)fontChipClicked:(NSButton *)chip {
+    GWServices *services = GWServices.shared;
+    NSMenu *menu = [NSMenu new];
+
+    NSString *sizeTitle = [NSString stringWithFormat:@"Size: %g", services.settings.fontSize];
+    NSMenuItem *sizeItem = [menu addItemWithTitle:sizeTitle action:nil keyEquivalent:@""];
+    sizeItem.enabled = NO;
+    NSMenuItem *bigger = [menu addItemWithTitle:@"Bigger" action:@selector(increaseFontSize:) keyEquivalent:@"="];
+    bigger.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+    bigger.target = NSApp.delegate;  // (the app delegate handles Bigger Text and Smaller Text)
+    NSMenuItem *smaller = [menu addItemWithTitle:@"Smaller" action:@selector(decreaseFontSize:) keyEquivalent:@"-"];
+    smaller.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+    smaller.target = NSApp.delegate;
+    [menu addItem:NSMenuItem.separatorItem];
+
+    NSString *current = @(services.settings.fontFamily.c_str());
+    NSMenuItem *defaultItem = [menu addItemWithTitle:@"SF Mono (default)" action:@selector(fontFamilyChosen:) keyEquivalent:@""];
+    defaultItem.target = self;
+    defaultItem.representedObject = @"";
+    defaultItem.state = current.length == 0 ? NSControlStateValueOn : NSControlStateValueOff;
+    for (NSString *family in [self monospacedFontFamilies]) {
+        NSMenuItem *item = [menu addItemWithTitle:family action:@selector(fontFamilyChosen:) keyEquivalent:@""];
+        item.target = self;
+        item.representedObject = family;
+        item.state = [family isEqualToString:current] ? NSControlStateValueOn : NSControlStateValueOff;
+        // Each name is shown in its own font, so you can see what you are picking.
+        NSFont *preview = [NSFont fontWithName:family size:13];
+        if (preview != nil) {
+            item.attributedTitle = [[NSAttributedString alloc] initWithString:family attributes:@{NSFontAttributeName: preview}];
+        }
+    }
+    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, 0) inView:chip];
+}
+
+- (void)fontFamilyChosen:(NSMenuItem *)item {
+    NSString *family = item.representedObject;
+    [GWServices.shared updateSettings:^(gw::EditorSettings &settings) {
+        settings.fontFamily = family.UTF8String;
+    }];
 }
 
 /// Extensions ▸ Select Color Theme…: every installed color theme in one list; Return applies it.
@@ -3309,7 +3453,7 @@ static NSString *CompactCount(long count) {
 
 - (void)updateClaudeChip {
     // Lit up in the accent color while the chat is open.
-    NSColor *color = _root.chatVisible ? NSColor.controlAccentColor : NSColor.secondaryLabelColor;
+    NSColor *color = _root.chatVisible ? NSColor.controlAccentColor : GWStatusTextColor();
     NSDictionary *attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold],
                                  NSForegroundColorAttributeName: color};
     NSMutableAttributedString *title = [GWSymbolString(@"sparkles", color, 11) mutableCopy];
@@ -3876,6 +4020,10 @@ static NSString *CompactCount(long count) {
 }
 
 - (void)openTerminalInFolder:(NSURL *)folder {
+    if (GWIsRemoteURL(folder)) {
+        [self runInTerminal:GWRemoteShellCommand(folder)];  // a shell on the other machine
+        return;
+    }
     NSString *command = [NSString stringWithFormat:@"cd %@ && clear", [self shellQuoted:folder.path]];
     [self runInTerminal:command];
 }
@@ -3942,7 +4090,7 @@ static NSString *CompactCount(long count) {
     NSMutableAttributedString *title = [GWSymbolString(@"arrow.triangle.branch", NSColor.controlAccentColor, 11) mutableCopy];
     [title appendAttributedString:[[NSAttributedString alloc] initWithString:[@" " stringByAppendingString:name] attributes:attributes]];
     NSDictionary *quiet = @{NSFontAttributeName: [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium],
-                            NSForegroundColorAttributeName: NSColor.secondaryLabelColor};
+                            NSForegroundColorAttributeName: GWStatusTextColor()};
     if (status.ahead > 0 || status.behind > 0) {
         NSString *counts = [NSString stringWithFormat:@"  ↑%d ↓%d", status.ahead, status.behind];
         [title appendAttributedString:[[NSAttributedString alloc] initWithString:counts attributes:quiet]];
@@ -6438,9 +6586,16 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
 // MARK: Opening and saving
 
 - (void)openURL:(NSURL *)url {
+    if (GWIsRemoteURL(url)) {
+        [self openRemoteFile:url];  // (remote folders are opened by Open Remote Folder…)
+        return;
+    }
     NSNumber *directory = nil;
     [url getResourceValue:&directory forKey:NSURLIsDirectoryKey error:nil];
     if (directory.boolValue) {
+        if (![self closeTabsBeforeSwitchingToFolder:url]) {
+            return;  // the user cancelled when asked about unsaved changes
+        }
         _fileTree.rootURL = url;
         [self rebuildFileIndex:url];
         [_git openFolder:url.path];
@@ -6496,6 +6651,196 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
     GWStartupMark([NSString stringWithFormat:@"opened %@", url.lastPathComponent]);
 }
 
+// MARK: Remote folders (over SSH)
+
+/// Asks for "user@host:/path" and opens that folder on another machine in the sidebar.
+- (IBAction)openRemoteFolder:(id)sender {
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"Open Remote Folder";
+    alert.informativeText = @"Type the machine and folder, like  nate@my-server:~/code  or  my-server:/srv/app. "
+                            @"This uses your SSH setup, so Tailscale SSH names work.";
+    [alert addButtonWithTitle:@"Open"];
+    [alert addButtonWithTitle:@"Cancel"];
+    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 380, 24)];
+    field.stringValue = [NSUserDefaults.standardUserDefaults stringForKey:@"lastRemoteFolder"] ?: @"";
+    field.placeholderString = @"user@host:/path/to/folder";
+    alert.accessoryView = field;
+    alert.window.initialFirstResponder = field;
+    if ([alert runModal] != NSAlertFirstButtonReturn) {
+        return;
+    }
+    NSString *typed = [field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    std::optional<gw::RemoteLocation> location = gw::parseRemoteLocation(typed.UTF8String);
+    if (!location) {
+        [self showErrorTitle:@"That isn't a remote folder"
+                     message:@"Use the form user@host:/path (for example nate@my-server:~/code)."];
+        return;
+    }
+    [self openRemoteLocation:@(location->destination.c_str()) path:@(location->path.c_str()) typedText:typed];
+}
+
+/// Connects (which also expands "~"), then shows the folder. The connection can take a moment,
+/// so it happens off the main thread.
+- (void)openRemoteLocation:(NSString *)destination path:(NSString *)path typedText:(NSString *)typed {
+    __weak GWMainWindowController *weakSelf = self;
+    [self hostShowStatusMessage:[NSString stringWithFormat:@"Connecting to %@…", destination] seconds:30];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *error = nil;
+        NSString *absolutePath = GWResolveRemotePath(destination, path, &error);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            GWMainWindowController *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            [strongSelf updateStatus];
+            if (absolutePath == nil) {
+                [strongSelf showErrorTitle:[NSString stringWithFormat:@"Couldn't open %@", typed] message:error ?: @"Unknown error."];
+                return;
+            }
+            [NSUserDefaults.standardUserDefaults setObject:typed forKey:@"lastRemoteFolder"];
+            [strongSelf showRemoteFolder:GWRemoteURL(destination, absolutePath)];
+        });
+    });
+}
+
+- (void)debugOpenRemoteFolder:(NSString *)folder file:(NSString *)file {
+    std::optional<gw::RemoteLocation> folderLocation = folder.length ? gw::parseRemoteLocation(folder.UTF8String) : std::nullopt;
+    if (folderLocation) {
+        [self showRemoteFolder:GWRemoteURL(@(folderLocation->destination.c_str()), @(folderLocation->path.c_str()))];
+    }
+    std::optional<gw::RemoteLocation> fileLocation = file.length ? gw::parseRemoteLocation(file.UTF8String) : std::nullopt;
+    if (fileLocation) {
+        [self openRemoteFile:GWRemoteURL(@(fileLocation->destination.c_str()), @(fileLocation->path.c_str()))];
+    }
+}
+
+/// Puts the remote folder in the sidebar. Search, source control and language servers still look at
+/// this Mac, so they are switched off for it.
+- (void)showRemoteFolder:(NSURL *)folder {
+    if (![self closeTabsBeforeSwitchingToFolder:folder]) {
+        return;
+    }
+    _fileTree.rootURL = folder;
+    _chat.projectFolder = nil;
+    _search.rootFolder = nil;
+    _language.rootFolder = nil;
+    _extensionHost.rootFolder = nil;
+    _terminal.projectFolder = nil;
+    NSString *title = [NSString stringWithFormat:@"%@: %@", GWRemoteDestination(folder), folder.lastPathComponent];
+    _sidebarTitle.stringValue = title;
+    _openFolderButton.hidden = YES;
+    self.window.title = title;
+    [self refresh];
+}
+
+/// Downloads a remote file to a copy on this Mac and opens it. Saving sends it back.
+- (void)openRemoteFile:(NSURL *)url {
+    NSString *copyPath = GWLocalCopyPathForRemoteURL(url);
+    for (size_t index = 0; index < _tabs.size(); ++index) {
+        if (_tabs[index]->remoteURL == url.absoluteString.UTF8String) {
+            [self selectTab:static_cast<NSInteger>(index)];
+            return;
+        }
+    }
+    __weak GWMainWindowController *weakSelf = self;
+    [self hostShowStatusMessage:[NSString stringWithFormat:@"Downloading %@…", url.lastPathComponent] seconds:30];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *error = nil;
+        NSData *data = GWReadRemoteFile(url, &error);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            GWMainWindowController *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            [strongSelf updateStatus];
+            if (data == nil) {
+                [strongSelf showErrorTitle:@"Couldn't open the file" message:error ?: @"Unknown error."];
+                return;
+            }
+            [strongSelf finishOpeningRemoteFile:url data:data copyPath:copyPath];
+        });
+    });
+}
+
+- (void)finishOpeningRemoteFile:(NSURL *)url data:(NSData *)data copyPath:(NSString *)copyPath {
+    NSError *writeError = nil;
+    NSString *copyFolder = copyPath.stringByDeletingLastPathComponent;
+    BOOL madeFolder = [NSFileManager.defaultManager createDirectoryAtPath:copyFolder withIntermediateDirectories:YES attributes:nil error:&writeError];
+    if (!madeFolder || ![data writeToFile:copyPath options:NSDataWritingAtomic error:&writeError]) {
+        [self showErrorTitle:@"Couldn't open the file" message:writeError.localizedDescription ?: @"Couldn't make a local copy."];
+        return;
+    }
+    if (looksBinary(copyPath.fileSystemRepresentation)) {
+        [self showErrorTitle:[NSString stringWithFormat:@"“%@” is a binary file", url.lastPathComponent]
+                     message:@"Glasswork edits text files."];
+        return;
+    }
+    std::string error;
+    auto document = gw::Document::open(copyPath.fileSystemRepresentation, &error);
+    if (!document) {
+        [self showErrorTitle:@"Couldn't open the file" message:@(error.c_str())];
+        return;
+    }
+    std::string remote = url.absoluteString.UTF8String;
+    [self addTab:std::make_unique<gw::Document>(std::move(*document)) atIndex:-1 configure:^(Tab &tab) {
+        tab.remoteURL = remote;
+    }];
+}
+
+/// Sends the saved copy of a remote file back to its machine, in the background. The text is read
+/// now, so edits made while it uploads are not mixed in.
+- (void)uploadTabToRemote:(Tab &)tab {
+    NSURL *url = [NSURL URLWithString:@(tab.remoteURL.c_str())];
+    NSData *data = [NSData dataWithContentsOfFile:@(tab.document->path()->c_str())];
+    if (url == nil || data == nil) {
+        [self showErrorTitle:@"Couldn't upload" message:@"The saved copy could not be read."];
+        return;
+    }
+    __weak GWMainWindowController *weakSelf = self;
+    NSString *machine = GWRemoteDestination(url);
+    [self hostShowStatusMessage:[NSString stringWithFormat:@"Uploading to %@…", machine] seconds:30];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *error = nil;
+        BOOL uploaded = GWWriteRemoteFile(url, data, &error);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            GWMainWindowController *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            if (uploaded) {
+                [strongSelf hostShowStatusMessage:[NSString stringWithFormat:@"Saved to %@", machine] seconds:3];
+            } else {
+                NSString *message = [NSString stringWithFormat:@"“%@” was saved on this Mac but not on %@:\n%@\n\nSave again once the connection works.",
+                                     url.lastPathComponent, machine, error ?: @"Unknown error."];
+                [strongSelf showErrorTitle:@"Couldn't upload" message:message];
+            }
+        });
+    });
+}
+
+/// Opening a different folder starts a new workspace, so the tabs of the old one must go (the
+/// tab bar would otherwise keep showing files from the previous folder). Remembers the old
+/// folder's tabs first so they come back if it is opened again. Returns NO if the user cancels.
+- (BOOL)closeTabsBeforeSwitchingToFolder:(NSURL *)newFolder {
+    NSString *oldFolder = _fileTree.rootURL.path;
+    BOOL isSameFolder = oldFolder != nil && [oldFolder isEqualToString:newFolder.path];
+    if (isSameFolder || _tabs.empty()) {
+        return YES;
+    }
+    for (auto &tab : _tabs) {
+        if (tab->document->isDirty() && ![self confirmCloseDocument:*tab->document]) {
+            return NO;
+        }
+    }
+    if (oldFolder.length > 0) {
+        [self saveSession];
+    }
+    while (!_tabs.empty()) {
+        [self removeTabAtIndex:static_cast<NSInteger>(_tabs.size()) - 1];
+    }
+    return YES;
+}
+
 - (IBAction)newDocument:(id)sender {
     [self addTab:std::make_unique<gw::Document>()];
 }
@@ -6534,6 +6879,9 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
         return NO;
     }
     [_language documentDidSave:tab.document.get()];
+    if (!tab.remoteURL.empty()) {
+        [self uploadTabToRemote:tab];
+    }
     if (tab.document->path() && tab.document->path()->string() == _keybindings.userFileURL.path.UTF8String) {
         [_keybindings reload];
         [self hostShowStatusMessage:@"Keyboard shortcuts reloaded." seconds:3];
@@ -6556,6 +6904,7 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
         [alert runModal];
         return NO;
     }
+    tab.remoteURL.clear();  // saved somewhere new: no longer tied to the other machine
     [self configureLanguageForTab:tab];  // the new name may mean a new language
     if (&tab == [self currentTab]) {
         [_editorView setDocument:tab.document.get() highlighter:tab.highlighter.get() configuration:tab.configuration];
@@ -6722,8 +7071,8 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
 /// was in front, so opening the folder again puts everything back.
 - (void)saveSession {
     NSString *folder = _fileTree.rootURL.path;
-    if (folder.length == 0) {
-        return;
+    if (folder.length == 0 || GWIsRemoteURL(_fileTree.rootURL)) {
+        return;  // (remote folders keep no session)
     }
     if (Tab *current = [self currentTab]) {
         current->scroll = _card.scrollView.contentView.bounds.origin;
@@ -6753,7 +7102,7 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
 
 /// Opens the files that were open the last time this folder was closed.
 - (void)restoreSessionForFolder:(NSString *)folder {
-    if (!_tabs.empty()) {
+    if (!_tabs.empty() || GWIsRemoteURL(_fileTree.rootURL)) {
         return;
     }
     NSDictionary *session = [NSUserDefaults.standardUserDefaults dictionaryForKey:[self sessionKeyForFolder:folder]];

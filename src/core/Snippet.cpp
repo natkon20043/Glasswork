@@ -359,11 +359,12 @@ SnippetVariables standardSnippetVariables(const std::string& filePath, const std
     }
 
     std::time_t now = std::time(nullptr);
-    std::tm local = *std::localtime(&now);
+    std::tm local = {};
+    localtime_r(&now, &local);  // (the thread-safe form: plain localtime can return null and shares one buffer)
     auto formatted = [&](const char* format) {
         char buffer[64];
-        std::strftime(buffer, sizeof(buffer), format, &local);
-        return std::string(buffer);
+        size_t length = std::strftime(buffer, sizeof(buffer), format, &local);
+        return std::string(buffer, length);  // length 0 on failure: never read an unfilled buffer
     };
     variables["CURRENT_YEAR"] = formatted("%Y");
     variables["CURRENT_YEAR_SHORT"] = formatted("%y");

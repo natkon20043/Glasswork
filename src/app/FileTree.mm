@@ -1,6 +1,7 @@
 #import "FileTree.h"
 
 #import "FileIcons.h"
+#import "RemoteSupport.h"
 
 // ===========================================================================
 // One file or folder
@@ -21,12 +22,28 @@
     for (GWFileNode *node in existing) {
         known[node.url.path] = node;
     }
-    NSArray<NSURL *> *urls = [NSFileManager.defaultManager contentsOfDirectoryAtURL:self.url
-                                                        includingPropertiesForKeys:@[NSURLIsDirectoryKey]
-                                                                           options:0
-                                                                             error:nil];
+    // Each entry with whether it is a folder, from this Mac's disk or from another machine.
+    NSMutableArray<GWRemoteItem *> *entries = [NSMutableArray array];
+    if (GWIsRemoteURL(self.url)) {
+        NSArray<GWRemoteItem *> *listed = GWListRemoteFolder(self.url, nil);
+        [entries addObjectsFromArray:listed ?: @[]];
+    } else {
+        NSArray<NSURL *> *urls = [NSFileManager.defaultManager contentsOfDirectoryAtURL:self.url
+                                                            includingPropertiesForKeys:@[NSURLIsDirectoryKey]
+                                                                               options:0
+                                                                                 error:nil];
+        for (NSURL *url in urls) {
+            NSNumber *directory = nil;
+            [url getResourceValue:&directory forKey:NSURLIsDirectoryKey error:nil];
+            GWRemoteItem *entry = [GWRemoteItem new];
+            entry.url = url;
+            entry.isDirectory = directory.boolValue;
+            [entries addObject:entry];
+        }
+    }
     NSMutableArray<GWFileNode *> *nodes = [NSMutableArray array];
-    for (NSURL *url in urls) {
+    for (GWRemoteItem *entry in entries) {
+        NSURL *url = entry.url;
         NSString *name = url.lastPathComponent;
         // Git's own folder and macOS's clutter are never wanted in the tree.
         if ([name isEqualToString:@".git"] || [name isEqualToString:@".DS_Store"] || [name hasSuffix:@".glasswork-save"] ||
@@ -38,9 +55,7 @@
             node = [GWFileNode new];
             node.url = url;
         }
-        NSNumber *directory = nil;
-        [url getResourceValue:&directory forKey:NSURLIsDirectoryKey error:nil];
-        node.isDirectory = directory.boolValue;
+        node.isDirectory = entry.isDirectory;
         [nodes addObject:node];
     }
     // Folders first, then files, each alphabetically the way Finder sorts.
@@ -436,6 +451,15 @@
         item.target = self;
         return item;
     };
+    if (GWIsRemoteURL(folder)) {
+        // Changing files on another machine from the tree isn't supported yet.
+        add(@"Refresh", @selector(menuRefresh:));
+        if (node != nil) {
+            add(@"Copy Path", @selector(menuCopyPath:));
+        }
+        add(@"Open in Terminal", @selector(menuOpenInTerminal:)).representedObject = folder;
+        return menu;
+    }
     add(@"New File…", @selector(menuNewFile:)).representedObject = folder;
     add(@"New Folder…", @selector(menuNewFolder:)).representedObject = folder;
     if (node != nil) {
@@ -457,6 +481,7 @@
     return menu;
 }
 
+- (void)menuRefresh:(NSMenuItem *)item { [self reload]; }
 - (void)menuNewFile:(NSMenuItem *)item { [self createFileInFolder:item.representedObject]; }
 - (void)menuNewFolder:(NSMenuItem *)item { [self createFolderInFolder:item.representedObject]; }
 
@@ -552,6 +577,7 @@
 // MARK: Drag and drop
 
 - (id<NSPasteboardWriting>)outlineView:(NSOutlineView *)outlineView pasteboardWriterForItem:(GWFileNode *)item {
+    if (GWIsRemoteURL(item.url)) return nil;  // a file on another machine can't be dragged out
     return item.url;
 }
 
@@ -559,7 +585,7 @@
                   validateDrop:(id<NSDraggingInfo>)info
                   proposedItem:(GWFileNode *)item
             proposedChildIndex:(NSInteger)index {
-    if (_root == nil) return NSDragOperationNone;
+    if (_root == nil || GWIsRemoteURL(_root.url)) return NSDragOperationNone;
     // Dropping on a file means dropping in its folder; between rows means the folder they are in.
     GWFileNode *target = item;
     if (target != nil && !target.isDirectory) {

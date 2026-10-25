@@ -75,6 +75,7 @@ add_library(glasswork_core STATIC
     src/core/Pty.cpp
     src/core/ClaudeProtocol.cpp
     src/core/ClaudeSession.cpp
+    src/core/RemoteHost.cpp
     src/core/Extensions.cpp)
 target_include_directories(glasswork_core PUBLIC src/core)
 target_link_libraries(glasswork_core PUBLIC nlohmann_json::nlohmann_json onig CURL::libcurl)
@@ -119,6 +120,9 @@ endif()
 add_executable(glasswork_search_tests tests/search_tests.cpp)
 target_link_libraries(glasswork_search_tests PRIVATE glasswork_core)
 add_test(NAME search COMMAND glasswork_search_tests)
+add_executable(glasswork_remote_tests tests/remote_tests.cpp)
+target_link_libraries(glasswork_remote_tests PRIVATE glasswork_core)
+add_test(NAME remote COMMAND glasswork_remote_tests)
 add_executable(glasswork_terminal_tests tests/terminal_tests.cpp)
 target_link_libraries(glasswork_terminal_tests PRIVATE glasswork_core)
 add_test(NAME terminal COMMAND glasswork_terminal_tests)
@@ -157,6 +161,7 @@ add_executable(Glasswork MACOSX_BUNDLE
     src/app/MainWindow.mm
     src/app/EditorView.mm
     src/app/FileTree.mm
+    src/app/RemoteSupport.mm
     src/app/LanguageService.mm
     src/app/CompletionPopup.mm
     src/app/Debugger.mm

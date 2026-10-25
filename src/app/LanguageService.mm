@@ -817,15 +817,15 @@ static void mergeDiagnostics(Tracked &tracked) {
             if (strongSelf == nil) {
                 return;
             }
-            auto tracked = strongSelf->_tracked.find(document);
-            if (tracked == strongSelf->_tracked.end() || document->version() != version) {
+            auto trackedEntry = strongSelf->_tracked.find(document);
+            if (trackedEntry == strongSelf->_tracked.end() || document->version() != version) {
                 return;  // closed, or edited since: newer tokens are on their way
             }
             auto set = std::make_shared<gw::SemanticTokenSet>();
             set->tokens = gw::decodeSemanticTokens(*numbers);
             set->typeNames = *typeNames;
             set->modifierNames = *modifierNames;
-            tracked->second.semantic = set;
+            trackedEntry->second.semantic = set;
             if (strongSelf.onSemanticTokensChanged) strongSelf.onSemanticTokensChanged(document);
         });
     });

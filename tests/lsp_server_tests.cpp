@@ -64,6 +64,31 @@ TEST(missingProgramsAreReportedNotCrashed) {
     CHECK(error.find("isn't installed") != std::string::npos);
 }
 
+TEST(aServerThatRefusesToStartDoesNotCrashUs) {
+    setenv("FAKE_LSP_REFUSE", "1", 1);
+    gw::lsp::LanguageServer server(fakeSpec(), "/tmp");
+    std::mutex mutex;
+    std::string message;
+    bool becameReady = false;
+    server.onShowMessage = [&](int, const std::string& text) {
+        std::lock_guard<std::mutex> lock(mutex);
+        message = text;
+    };
+    server.onReady = [&] { becameReady = true; };
+    std::string error;
+    CHECK(server.start(&error));
+    // The error reply used to make us read a missing result and abort the whole app.
+    CHECK(waitUntil([&] {
+        std::lock_guard<std::mutex> lock(mutex);
+        return !message.empty();
+    }));
+    CHECK(message.find("could not start") != std::string::npos);
+    CHECK(message.find("TypeScript") != std::string::npos);
+    CHECK(!becameReady);
+    unsetenv("FAKE_LSP_REFUSE");
+    server.stop();
+}
+
 TEST(uriRoundTrip) {
     std::string path = "/tmp/a b/#x%y.cpp";
     CHECK_EQ(gw::lsp::pathFromURI(gw::lsp::fileURI(path)), path);
