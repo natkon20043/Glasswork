@@ -6,6 +6,7 @@
 #import "Services.h"
 #import "StartupTiming.h"
 
+#import <Carbon/Carbon.h>  // key codes (kVK_Escape and the like)
 #import <CoreText/CoreText.h>
 #import <QuartzCore/QuartzCore.h>
 
@@ -658,6 +659,12 @@ static constexpr CGFloat kMiniChar = 1.25;
     size_t _tabSizeOverride;      // from .editorconfig: 0 none
     size_t _longestLine;
 
+    // Vim mode: the engine reads and edits the document; the view only feeds it keys and draws
+    // the block cursor.
+    gw::VimEngine _vim;
+    BOOL _vimEnabled;
+    NSString *_vimShownStatus;
+
     // Soft wrap and folding. The row map exists only while either is in use; with it empty,
     // line N is simply at row N.
     gw::RowMap _rowMap;
@@ -759,6 +766,25 @@ static constexpr CGFloat kMiniChar = 1.25;
         _caretLayer.zPosition = 10;
         _caretLayer.hidden = YES;
         [self.layer addSublayer:_caretLayer];
+
+        _vim.readClipboard = [] {
+            NSString *text = [NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString];
+            return std::string(text.UTF8String ?: "");
+        };
+        _vim.writeClipboard = [](const std::string &text) {
+            NSString *copied = [NSString stringWithUTF8String:text.c_str()];
+            if (copied != nil) {
+                [NSPasteboard.generalPasteboard clearContents];
+                [NSPasteboard.generalPasteboard setString:copied forType:NSPasteboardTypeString];
+            }
+        };
+        __weak GWEditorView *weakSelf = self;
+        _vim.onAction = [weakSelf](gw::VimAction action) {
+            GWEditorView *strongSelf = weakSelf;
+            if (strongSelf != nil && strongSelf.onVimAction) {
+                strongSelf.onVimAction(action);
+            }
+        };
 
         [self reloadAppearance];
         for (NSNotificationName name in @[GWThemeDidChangeNotification, GWEditorSettingsDidChangeNotification]) {
@@ -1020,6 +1046,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 - (void)setDocument:(gw::Document *)document
         highlighter:(gw::Highlighter *)highlighter
       configuration:(const gw::LanguageConfiguration &)configuration {
+    _vim.reset(_document);  // the file being left: an insert in progress ends with it
     _document = document;
     _highlighter = highlighter;
     _configuration = configuration;
@@ -1047,6 +1074,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     }
     [self refreshSections];
     [self invalidateLayout];
+    [self vimStatusDidChange];
     [self updateCaretAnimated:NO];
 }
 
@@ -1085,6 +1113,10 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     _tabSize = _tabSizeOverride > 0 ? _tabSizeOverride : static_cast<size_t>(std::max(1, services.settings.tabSize));
     _wrapEnabled = services.settings.wordWrap;
     _semanticStyles.clear();
+    if (services.settings.vimMode != _vimEnabled) {
+        _vim.reset(_document);  // (a command in progress, or an insert, ends when Vim is switched)
+        _vimEnabled = services.settings.vimMode;
+    }
     // A new font size changes every row height, so the line at the top of the view is noted now
     // and put back at the top afterward; without that the text would jump.
     NSClipView *clip = self.enclosingScrollView.contentView;
@@ -1152,6 +1184,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         [self.enclosingScrollView reflectScrolledClipView:clip];
     }
     [self updateCaretAnimated:NO];  // the caret is its own layer, so it must be moved to the new metrics
+    [self vimStatusDidChange];
     _gutter.needsDisplay = YES;
 }
 
@@ -1788,6 +1821,10 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 }
 
 - (NSRect)caretRect {
+    if (self.vimBlockCursor) {
+        gw::Position cursor = _vim.cursor(*_document);
+        return NSMakeRect(std::round([self xForPosition:cursor]), [self yForPosition:cursor] + 2, _charWidth, _lineHeight - 4);
+    }
     gw::Position caret = _document->selection.caret;
     return NSMakeRect(std::round([self xForPosition:caret]) - 1, [self yForPosition:caret] + 3, 2, _lineHeight - 6);
 }
@@ -3051,6 +3088,8 @@ static bool isAccessLabel(std::string_view line) {
     }
     _caretLayer.hidden = !show;
     _caretLayer.opacity = 1;
+    // A block sits over a character, so it lets the character show through.
+    _caretLayer.backgroundColor = (self.vimBlockCursor ? [_caretColor colorWithAlphaComponent:0.55] : _caretColor).CGColor;
     if (show) _caretLayer.frame = self.caretRect;
     [CATransaction commit];
     if (!show) return;
@@ -3463,7 +3502,82 @@ static bool selectionsOverlap(const gw::Selection &a, const gw::Selection &b) {
 
 - (void)keyDown:(NSEvent *)event {
     if (!_document) return;
+    if (_vimEnabled && [self handleVimKeyEvent:event]) return;
     [self interpretKeyEvents:@[event]];
+}
+
+// MARK: Vim
+
+- (NSString *)vimStatus {
+    if (!_vimEnabled) return nil;
+    NSString *mode = @(_vim.modeName().c_str());
+    std::string pending = _vim.pending();
+    return pending.empty() ? mode : [NSString stringWithFormat:@"%@  %s", mode, pending.c_str()];
+}
+
+- (BOOL)insertsText {
+    return !_vimEnabled || _vim.mode() == gw::VimMode::Insert;
+}
+
+- (void)vimStatusDidChange {
+    NSString *status = self.vimStatus;
+    if (status == _vimShownStatus || [status isEqualToString:_vimShownStatus]) return;
+    _vimShownStatus = status;
+    if (self.onVimStatusChange) self.onVimStatusChange();
+}
+
+/// Normal and visual mode draw a block over the character; insert mode draws the thin bar.
+- (BOOL)vimBlockCursor {
+    return _vimEnabled && _vim.mode() != gw::VimMode::Insert;
+}
+
+/// Turns a key into what the engine understands and lets it act. NO means the key isn't Vim's
+/// (a shortcut, an arrow, or typing in insert mode) and goes the usual way.
+- (BOOL)handleVimKeyEvent:(NSEvent *)event {
+    NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+    BOOL inserting = _vim.mode() == gw::VimMode::Insert;
+    if ((flags & NSEventModifierFlagCommand) || _markedText.length > 0) return NO;
+
+    std::string key;
+    NSString *plain = event.charactersIgnoringModifiers;
+    if (event.keyCode == kVK_Escape) {
+        key = "\x1b";
+    } else if (flags & NSEventModifierFlagControl) {
+        if ([plain isEqualToString:@"["] || [plain isEqualToString:@"c"]) {
+            key = "\x1b";
+        } else if ([plain isEqualToString:@"r"]) {
+            key = "\x12";
+        } else {
+            return NO;
+        }
+    } else if (flags & NSEventModifierFlagOption) {
+        return !inserting;  // in normal mode an option key would only type a symbol
+    } else if (event.keyCode == kVK_Return || event.keyCode == kVK_ANSI_KeypadEnter) {
+        key = "\r";
+    } else if (event.keyCode == kVK_Delete) {
+        key = "\x7f";
+    } else {
+        NSString *characters = event.characters;
+        if (characters.length == 0) return NO;
+        unichar first = [characters characterAtIndex:0];
+        if (first >= 0xF700 && first <= 0xF8FF) return NO;  // arrows and function keys
+        if (first < 0x20) return !inserting;                // Tab and the like
+        key = characters.UTF8String ?: "";
+    }
+
+    if (inserting && key == "\x1b" && self.onCompletionKey && self.onCompletionKey(@selector(cancelOperation:))) {
+        return YES;  // Escape closed the suggestion list first
+    }
+    _vim.indentUnit = _useTabs ? "\t" : std::string(_tabSize, ' ');
+    uint64_t version = _document->version();
+    if (!_vim.handleKey(*_document, key)) return NO;
+    if (_document->version() != version) {
+        [self didEdit];
+    } else {
+        [self selectionDidChange];
+    }
+    [self vimStatusDidChange];
+    return YES;
 }
 
 - (void)doCommandBySelector:(SEL)selector {

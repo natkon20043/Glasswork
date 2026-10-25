@@ -10,6 +10,7 @@
 #include "LanguageService.h"
 
 #include "Theme.hpp"
+#include "Vim.hpp"
 
 #include <map>
 #include <optional>
@@ -169,6 +170,17 @@ struct GWDecoration {
 @property (nonatomic, copy, nullable) void (^onBreakpointsChange)(void);
 /// The pinned lines appeared, disappeared or changed in number.
 @property (nonatomic, copy, nullable) void (^onStickyChange)(void);
+
+// ---- Vim
+/// "NORMAL", "INSERT", "VISUAL" or "V-LINE", with a command in progress after it ("NORMAL  2d");
+/// nil when Vim mode is off.
+@property (nonatomic, readonly, nullable) NSString *vimStatus;
+/// NO in Vim's normal and visual modes, where keys are commands and nothing is being typed.
+@property (nonatomic, readonly) BOOL insertsText;
+/// The mode or the command in progress changed.
+@property (nonatomic, copy, nullable) void (^onVimStatusChange)(void);
+/// Vim asked for something the window does: the find bar, or the next and previous match.
+@property (nonatomic, copy, nullable) void (^onVimAction)(gw::VimAction action);
 
 @end
 

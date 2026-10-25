@@ -784,6 +784,12 @@ bool looksBinary(const char *path) {
     _editorView.onSectionsChange = ^{
         [weakSelf updateBreadcrumb];
     };
+    _editorView.onVimStatusChange = ^{
+        [weakSelf vimStatusChanged];
+    };
+    _editorView.onVimAction = ^(gw::VimAction action) {
+        [weakSelf vimAction:action];
+    };
     _editorView.onInspectColors = ^{
         [weakSelf inspectColors:nil];
     };
@@ -2148,6 +2154,10 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
     NSMutableArray<NSAttributedString *> *left = [NSMutableArray array];
     [left addObject:segment(@"text.cursor", NSColor.controlAccentColor,
                             [NSString stringWithFormat:@"Ln %zu, Col %lu", caret.line + 1, (unsigned long)prefix.length + 1])];
+    NSString *vimStatus = _editorView.vimStatus;
+    if (vimStatus != nil) {
+        [left insertObject:segment(@"keyboard", NSColor.controlAccentColor, vimStatus) atIndex:0];
+    }
     if (_editorView.cursorCount > 1) {
         [left addObject:segment(@"cursorarrow.rays", muted, [NSString stringWithFormat:@"%lu cursors", (unsigned long)_editorView.cursorCount])];
     } else if (!document.selection.empty()) {
@@ -3719,6 +3729,32 @@ static NSString *CompactCount(long count) {
         return;
     }
     [_findBar showWithText:@(_editorView.selectedText.c_str()) replace:YES];
+}
+
+/// The Vim mode or command in progress changed. Suggestions belong to typing, so leaving
+/// insert mode closes them.
+- (void)vimStatusChanged {
+    [self updateStatus];
+    if (!_editorView.insertsText) {
+        [_suggestions hide];
+        ++_suggestionToken;
+    }
+}
+
+/// What Vim's / ? n and N ask for: the find bar does the searching.
+- (void)vimAction:(gw::VimAction)action {
+    switch (action) {
+        case gw::VimAction::Search:
+        case gw::VimAction::SearchBackward:
+            [self showFind:nil];
+            break;
+        case gw::VimAction::SearchNext:
+            [_findBar findNext];
+            break;
+        case gw::VimAction::SearchPrevious:
+            [_findBar findPrevious];
+            break;
+    }
 }
 
 - (IBAction)findNext:(id)sender { [_findBar findNext]; }
@@ -5365,6 +5401,9 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
 
 - (void)showSuggestionsFromResult:(const gw::lsp::Json &)result wordStart:(gw::Position)wordStart {
     using Json = gw::lsp::Json;
+    if (!_editorView.insertsText) {
+        return;  // an answer that arrived after Vim left insert mode
+    }
     Json rows = result;
     _suggestionsIncomplete = result.is_object() && result.value("isIncomplete", false);
     if (result.is_object()) {
@@ -5432,7 +5471,7 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
 /// Completion from the words already in the file, for when there is nothing better.
 - (void)showWordSuggestionsAtWordStart:(gw::Position)wordStart explicitly:(BOOL)explicitly {
     Tab *tab = [self currentTab];
-    if (tab == nullptr) {
+    if (tab == nullptr || !_editorView.insertsText) {
         return;
     }
     gw::Document *document = tab->document.get();

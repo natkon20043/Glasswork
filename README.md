@@ -124,6 +124,19 @@ Current boundaries:
 - Edits are sent to the server as small ranges after each pause in typing (whole-file sync is the fallback for servers that ask for it and after very large bursts of edits).
 - The client does not run downloaded extension JavaScript.
 
+## Vim mode
+
+View ▸ Vim Mode (or `"editor.vim": true` in settings.json) turns on Vim's modal editing. The status bar shows the mode and any command in progress; normal and visual modes draw a block cursor.
+
+- **Modes:** normal, insert (`i a I A o O`, `Esc` or `⌃[` to leave), visual (`v`) and visual line (`V`).
+- **Motions:** `h j k l`, `w b e` and `W B E`, `0 ^ $`, `gg G`, `f F t T` with `;` and `,`, `%`, `{ }`, and counts such as `3j` or `10w`.
+- **Operators:** `d c y > <` with a motion (`dw`, `c$`, `y}`), doubled for lines (`dd`, `cc`, `yy`, `>>`), and with text objects (`iw aw`, quotes, `i( a( i{ a{ i[ a[ i< a<`). Also `x X D C s S Y`, `p P`, `r`, `~`, `J`, `u`, `⌃R` and `.`.
+- **Visual mode:** the same motions and text objects extend the selection; `d y c > < J ~ u U r p` act on it.
+- **Registers:** one register, shared with the system clipboard.
+- **Search:** `/`, `?`, `n` and `N` use the find bar.
+
+Command-line commands (`:w`, `:q`), marks, macros, named registers and split windows aren't there; the usual ⌘ shortcuts keep working in every mode. This is Glasswork's own implementation (`src/core/Vim.*`), not the VS Code Vim extension.
+
 ## VS Code extensions
 
 Glasswork runs real VS Code extensions. Install one from the Extensions menu (Open VSX), and it works the way it does in VS Code: its commands appear in the command palette, its language features (completion, hover, formatting, diagnostics, code actions, rename…) appear in the editor, and its status bar items and messages appear in the window.
@@ -148,6 +161,8 @@ Extensions can decorate text (`createTextEditorDecorationType` and `setDecoratio
 Extensions can read and change the file in front (`window.activeTextEditor`: its document, selections and options, `edit`, `insertSnippet`, moving the cursors, and the active-editor and selection events), react to documents opening, changing and saving, and watch files on disk (`createFileSystemWatcher` gets real create, change and delete events). The same file events go to language servers that asked for them (`workspace/didChangeWatchedFiles`), so a new source file or an edited build file is noticed without reopening anything.
 
 Extension output channels are plain log files (`~/Library/Application Support/Glasswork/extension-logs/`), opened from Extensions ▸ Show Extension Output…. Extensions ▸ Restart Extensions restarts the host. Settings an extension saves go to `extension-settings.json` next to `settings.json`, which is never rewritten.
+
+Vim keys come from Glasswork itself (see **Vim mode**), not from the Vim extension, which can't take over key handling here.
 
 Tried against the real extensions: Red Hat YAML (its language server runs and reports schema errors), Prettier (an ES module), Even Better TOML (WASM server), ESLint, Go and Vim activate; extensions that depend on features not listed above (Vim's key handling) load but those parts do nothing yet.
 

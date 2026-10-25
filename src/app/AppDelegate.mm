@@ -11,6 +11,7 @@ typedef NS_ENUM(NSInteger, GWSettingToggle) {
     GWSettingGuides,
     GWSettingDividers,
     GWSettingMinimap,
+    GWSettingVim,
 };
 
 // Modifier keys used by the menus below.
@@ -396,6 +397,7 @@ static NSString *SpecialKey(unichar key) {
         [self settingToggle:@"Indent Guides" tag:GWSettingGuides],
         [self settingToggle:@"Section Dividers" tag:GWSettingDividers],
         [self settingToggle:@"Minimap" tag:GWSettingMinimap],
+        [self settingToggle:@"Vim Mode" tag:GWSettingVim],
         NSMenuItem.separatorItem,
     ] parent:main];
     return view;
@@ -621,6 +623,8 @@ static NSString *SpecialKey(unichar key) {
             return &settings.sectionDividers;
         case GWSettingMinimap:
             return &settings.showMinimap;
+        case GWSettingVim:
+            return &settings.vimMode;
     }
     return nullptr;
 }

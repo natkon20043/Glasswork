@@ -32,6 +32,8 @@ struct EditorSettings {
     // Editor features
     bool highlightOccurrences = true;
     bool showMinimap = true;
+    /// Vim keys: normal, insert and visual modes (View > Vim Mode).
+    bool vimMode = false;
     bool indentGuides = true;
     bool bracketPairColors = true;
     bool sectionDividers = true;
