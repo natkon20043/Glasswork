@@ -1322,23 +1322,58 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     return levels;
 }
 
+/// The color of the guide at `level` for the block that starts at `firstLine`: the color of the
+/// bracket the block's opening line starts, which is the same color its { and } are drawn in.
+/// It depends only on the text, never on which part of the view is being redrawn.
+- (NSColor *)guideColorForLevel:(size_t)level blockStartingAtLine:(size_t)firstLine {
+    if (!(GWServices.shared.settings.bracketPairColors && _bracketColors.count > 0)) {
+        return _guideColor;
+    }
+    const auto &buffer = _document->buffer();
+    size_t colorIndex = level;
+    // Every line inside the block is indented deeper than `level`, so the first line above that
+    // isn't is the one that opens it.
+    for (size_t look = firstLine; look-- > 0 && firstLine - look < 3000;) {
+        std::optional<size_t> columns = indentColumns(buffer.line(look), _tabSize);
+        if (columns && *columns / _tabSize <= level) {
+            if (std::optional<int> depth = [self depthAtLine:look]) {
+                colorIndex = static_cast<size_t>(std::max(0, *depth));
+            }
+            break;
+        }
+    }
+    return _bracketColors[colorIndex % _bracketColors.count];
+}
+
 /// Draws a guide for every block that shows in lines [first, last]: a thick square bracket "["
 /// at each indentation level, in the color of the brackets that open that block (the same
 /// colors as the bracket pair colorization), and brighter for the block the caret is in.
+///
+/// Only part of the view may be redrawn at a time, so a block that goes on past the lines being
+/// drawn is drawn open at that end, without the bracket's arm.
 - (void)drawIndentGuidesFromLine:(size_t)first toLine:(size_t)last {
+    size_t lineCount = _document->buffer().lineCount();
     CGFloat step = _tabSize * _charWidth;
-    BOOL colorized = GWServices.shared.settings.bracketPairColors && _bracketColors.count > 0;
 
     std::vector<size_t> levels;
     for (size_t line = first; line <= last; ++line) {
         levels.push_back([self isLineHidden:line] ? 0 : [self indentLevelsForLine:line]);
     }
+    size_t levelsAbove = first > 0 ? [self indentLevelsForLine:first - 1] : 0;
+    size_t levelsBelow = last + 1 < lineCount ? [self indentLevelsForLine:last + 1] : 0;
     size_t deepest = 0;
     for (size_t value : levels) deepest = std::max(deepest, value);
 
+    // The block the caret is in, found from the caret outward so it doesn't depend on which
+    // lines are being drawn: the guide level and the lines it covers.
     size_t caretLine = _document->selection.caret.line;
-    BOOL caretShows = caretLine >= first && caretLine <= last;
-    size_t activeLevel = caretShows && levels[caretLine - first] > 0 ? levels[caretLine - first] - 1 : SIZE_MAX;
+    size_t caretLevels = [self indentLevelsForLine:caretLine];
+    size_t activeLevel = caretLevels > 0 ? caretLevels - 1 : SIZE_MAX;
+    size_t activeStart = caretLine, activeEnd = caretLine;
+    if (activeLevel != SIZE_MAX) {
+        while (activeStart > 0 && caretLine - activeStart < 1500 && [self indentLevelsForLine:activeStart - 1] > activeLevel) --activeStart;
+        while (activeEnd + 1 < lineCount && activeEnd - caretLine < 1500 && [self indentLevelsForLine:activeEnd + 1] > activeLevel) ++activeEnd;
+    }
     CGFloat tick = std::min<CGFloat>(5, step * 0.4);  // the short arms of the bracket
 
     for (size_t level = 0; level < deepest; ++level) {
@@ -1357,32 +1392,23 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 
             size_t firstLine = first + runStart;
             size_t lastLine = first + runEnd;
-            CGFloat top = [self yForLine:firstLine] + 3;
-            CGFloat bottom = [self yForLine:lastLine] + [self rowsForLine:lastLine] * _lineHeight - 3;
+            BOOL openAtTop = runStart == 0 && levelsAbove > level;
+            BOOL openAtBottom = runEnd + 1 == levels.size() && levelsBelow > level;
+            CGFloat top = [self yForLine:firstLine] + (openAtTop ? 0 : 3);
+            CGFloat bottom = [self yForLine:lastLine] + [self rowsForLine:lastLine] * _lineHeight - (openAtBottom ? 0 : 3);
 
-            // The brackets enclosing the block's first line, innermost last; this level's guide
-            // belongs to the one that many steps out from the innermost.
-            NSColor *base = _guideColor;
-            if (colorized) {
-                size_t bracketIndex = level;
-                if (std::optional<int> depth = [self depthAtLine:firstLine]) {
-                    size_t enclosing = static_cast<size_t>(std::max(0, *depth));
-                    size_t indent = levels[runStart];
-                    if (enclosing >= indent) bracketIndex = enclosing - indent + level;
-                }
-                base = _bracketColors[bracketIndex % _bracketColors.count];
-            }
-            BOOL holdsCaret = level == activeLevel && caretLine >= firstLine && caretLine <= lastLine;
+            NSColor *base = [self guideColorForLevel:level blockStartingAtLine:firstLine];
+            BOOL holdsCaret = level == activeLevel && firstLine <= activeEnd && lastLine >= activeStart;
             [[base colorWithAlphaComponent:holdsCaret ? 0.9 : 0.32] setStroke];
 
             NSBezierPath *guide = [NSBezierPath bezierPath];
             guide.lineWidth = 2.5;
             guide.lineCapStyle = NSLineCapStyleButt;
             guide.lineJoinStyle = NSLineJoinStyleMiter;
-            [guide moveToPoint:NSMakePoint(x + tick, top)];
-            [guide lineToPoint:NSMakePoint(x, top)];
+            [guide moveToPoint:NSMakePoint(openAtTop ? x : x + tick, top)];
+            if (!openAtTop) [guide lineToPoint:NSMakePoint(x, top)];
             [guide lineToPoint:NSMakePoint(x, bottom)];
-            [guide lineToPoint:NSMakePoint(x + tick, bottom)];
+            if (!openAtBottom) [guide lineToPoint:NSMakePoint(x + tick, bottom)];
             [guide stroke];
         }
     }
