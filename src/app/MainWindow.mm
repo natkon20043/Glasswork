@@ -5005,6 +5005,10 @@ static double timed(void (^work)(void)) {
         if (strongSelf == nil) {
             return NO;
         }
+        if (strongSelf->_suggestions.visible && ![strongSelf caretIsInWordStartingAt:strongSelf->_suggestionWordStart]) {
+            [strongSelf->_suggestions hide];  // stale: Return must start a new line, not accept it
+            return NO;
+        }
         return [strongSelf->_suggestions handleSelector:selector];
     };
     _editorView.onTypedText = ^(NSString *typed) {
@@ -5136,9 +5140,15 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
         return;
     }
     if (typed == nil) {
-        // A deletion or other change: keep the list in step, or drop it.
+        // A deletion or other change (typing over a closing bracket, say): keep the list in
+        // step while the caret is still in its word, or drop it.
         if (_suggestions.visible) {
-            [_suggestions filterWithPrefix:[self typedPrefix]];
+            if ([self caretIsInWordStartingAt:_suggestionWordStart]) {
+                [_suggestions filterWithPrefix:[self typedPrefix]];
+            } else {
+                [_suggestions hide];
+                ++_suggestionToken;
+            }
         }
         return;
     }
@@ -5191,21 +5201,33 @@ static NSString *markdownFromHover(const gw::lsp::Json &contents) {
     }
 }
 
-/// The caret moved: a list for a word we've left is stale.
-- (void)dropSuggestionsIfCaretLeftWord {
-    if (!_suggestions.visible) {
-        return;
-    }
+/// Whether the caret is still in the word that starts at `start`: on its line, not before it,
+/// with nothing but word letters between. A list for a word the caret has left is stale.
+- (BOOL)caretIsInWordStartingAt:(gw::Position)start {
     Tab *tab = [self currentTab];
     if (tab == nullptr) {
-        [_suggestions hide];
-        return;
+        return NO;
     }
-    gw::Position caret = tab->document->selection.caret;
-    gw::Position start = [self wordStartBeforeCaret];
-    bool movedOffLine = caret.line != _suggestionWordStart.line;
-    bool movedBeforeWord = start.line == _suggestionWordStart.line && caret.column < _suggestionWordStart.column;
-    if (movedOffLine || movedBeforeWord || !tab->document->selection.empty()) {
+    gw::Document *document = tab->document.get();
+    gw::Position caret = document->selection.caret;
+    if (!document->selection.empty() || caret.line != start.line || caret.column < start.column) {
+        return NO;
+    }
+    std::string_view line = document->buffer().line(caret.line);
+    if (caret.column > line.size()) {
+        return NO;
+    }
+    for (size_t column = start.column; column < caret.column; ++column) {
+        if (!gw::isWordByte(static_cast<unsigned char>(line[column]))) {
+            return NO;
+        }
+    }
+    return YES;
+}
+
+/// The caret moved: a list for a word we've left is stale.
+- (void)dropSuggestionsIfCaretLeftWord {
+    if (_suggestions.visible && ![self caretIsInWordStartingAt:_suggestionWordStart]) {
         [_suggestions hide];
         ++_suggestionToken;
     }
@@ -5397,6 +5419,9 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
     if (tab == nullptr) {
         return;
     }
+    if (![self caretIsInWordStartingAt:wordStart]) {
+        return;  // the answer came after the caret moved on
+    }
     _suggestionWordStart = wordStart;
     [_suggestions setItems:items];
     NSRect caretRect = [_editorView screenRectForPosition:tab->document->selection.caret];
@@ -5443,6 +5468,9 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
         item.kind = 1;  // Text
         item.raw = std::make_shared<Json>(Json{{"label", words[index]}, {"insertText", words[index]}});
         [items addObject:item];
+    }
+    if (![self caretIsInWordStartingAt:wordStart]) {
+        return;
     }
     _suggestionWordStart = wordStart;
     [_suggestions setItems:items];
