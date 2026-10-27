@@ -29,6 +29,7 @@ FetchContent_MakeAvailable(oniguruma)
 find_package(CURL REQUIRED)
 
 add_library(glasswork_core STATIC
+    src/core/FileBytes.cpp
     src/core/LineStore.cpp
     src/core/TextBuffer.cpp
     src/core/Document.cpp

@@ -67,7 +67,8 @@ public:
     ReloadResult reloadFromDisk(std::string* error = nullptr);
 
     // ---- Editing
-    /// Every edit goes through here. Returns the position after the inserted text.
+    /// Every edit goes through here. Line breaks in `text` are changed to the file's own.
+    /// Returns the position after the inserted text.
     Position replace(Range range, std::string_view text, bool coalesceTyping = false);
     void typeText(std::string_view text);
     void deleteSelectionOr(Range fallback);
@@ -131,6 +132,8 @@ private:
     };
 
     // ---- Private functions
+    /// `replace` without changing the breaks in `text` (reloading keeps the disk's bytes).
+    Position replaceExactly(Range range, std::string&& text, bool coalesceTyping = false);
     Position apply(Position at, const std::string& removed, const std::string& inserted);
     void recordSyncEdit(Position at, Position removedEnd, const std::string& inserted);
     void notify(size_t firstLine, long lineDelta, size_t lastLine);

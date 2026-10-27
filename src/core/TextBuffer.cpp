@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <iterator>
 
 namespace gw {
 
@@ -72,6 +73,29 @@ size_t validCharacterLength(std::string_view text, size_t index) {
 
 }  // namespace
 
+std::string withLineBreaks(std::string_view text, bool crlf) {
+    if (text.find('\n') == std::string_view::npos) {
+        return std::string(text);
+    }
+    std::string result;
+    result.reserve(text.size() + 16);
+    for (size_t index = 0; index < text.size(); ++index) {
+        bool crlfBreak = text[index] == '\r' && index + 1 < text.size() && text[index + 1] == '\n';
+        if (crlfBreak) {
+            continue;  // the '\n' that follows writes the break
+        }
+        if (text[index] == '\n') {
+            if (crlf) {
+                result += '\r';
+            }
+            result += '\n';
+            continue;
+        }
+        result += text[index];
+    }
+    return result;
+}
+
 std::string withValidUtf8(std::string_view text) {
     std::string result;
     result.reserve(text.size());
@@ -93,42 +117,47 @@ TextBuffer::TextBuffer() = default;
 
 TextBuffer::TextBuffer(std::string_view text) : TextBuffer(std::string(text)) {}
 
-TextBuffer::TextBuffer(std::string&& text) {
+TextBuffer::TextBuffer(std::string&& text) : TextBuffer(FileBytes(std::move(text))) {}
+
+TextBuffer::TextBuffer(FileBytes&& bytes) {
     size_t crlfCount = 0;
     size_t lfCount = 0;
-    lines_ = LineStore::fromText(std::move(text), &crlfCount, &lfCount);
+    lines_ = LineStore::fromBytes(std::move(bytes), &crlfCount, &lfCount);
     crlf_ = crlfCount > lfCount;
 }
 
 std::string TextBuffer::text() const {
-    const char* eol = crlf_ ? "\r\n" : "\n";
     std::string result;
-    size_t total = 0;
-    for (size_t index = 0; index < lines_.size(); ++index) {
-        total += lines_.view(index).size() + 2;
-    }
-    result.reserve(total);
-    for (size_t index = 0; index < lines_.size(); ++index) {
-        if (index > 0) {
-            result += eol;
-        }
-        result += lines_.view(index);
-    }
+    result.reserve(lines_.totalBytes() + 2 * lines_.size());
+    forEachPiece([&result](std::string_view piece) { result += piece; });
     return result;
 }
 
 std::string TextBuffer::text(Range range) const {
+    return textBetween(range, false);
+}
+
+std::string TextBuffer::rawText(Range range) const {
+    return textBetween(range, true);
+}
+
+std::string TextBuffer::textBetween(Range range, bool ownBreaks) const {
     range = range.normalized();
     Position start = clamp(range.start), end = clamp(range.end);
     if (start.line == end.line) {
         return std::string(lines_.view(start.line).substr(start.column, end.column - start.column));
     }
     std::string result(lines_.view(start.line).substr(start.column));
-    for (size_t line = start.line + 1; line < end.line; ++line) {
-        result += '\n';
-        result += lines_.view(line);
+    for (size_t line = start.line; line < end.line; ++line) {
+        if (line > start.line) {
+            result += lines_.view(line);
+        }
+        if (ownBreaks) {
+            result += lineBreak(line);
+        } else {
+            result += '\n';
+        }
     }
-    result += '\n';
     result += lines_.view(end.line).substr(0, end.column);
     return result;
 }
@@ -138,30 +167,36 @@ Position TextBuffer::insert(Position at, std::string_view text) {
     std::string& first = lines_.edit(at.line);
     std::string tail = first.substr(at.column);
     first.erase(at.column);
+    bool tailBreakIsCRLF = lines_.breakIsCRLF(at.line);
 
-    // Split the inserted text into lines, dropping any '\r' that precedes a newline.
-    std::vector<std::string> pieces;
+    // Split the inserted text into lines. A '\r' just before a newline belongs to the break.
+    std::vector<LineStore::OwnedLine> pieces;
     size_t start = 0;
     for (size_t index = 0; index <= text.size(); ++index) {
         if (index == text.size() || text[index] == '\n') {
             size_t end = index;
+            bool breakIsCRLF = false;
             if (index < text.size() && end > start && text[end - 1] == '\r') {
                 --end;
+                breakIsCRLF = true;
             }
-            pieces.emplace_back(text.substr(start, end - start));
+            pieces.push_back({std::string(text.substr(start, end - start)), breakIsCRLF});
             start = index + 1;
         }
     }
 
-    first += pieces[0];
+    first += pieces[0].text;
     if (pieces.size() == 1) {
         size_t column = first.size();
         first += tail;
         return {at.line, column};
     }
-    std::vector<std::string> added(pieces.begin() + 1, pieces.end());
-    size_t column = added.back().size();
-    added.back() += tail;
+    lines_.setBreakIsCRLF(at.line, pieces[0].breakIsCRLF);
+    std::vector<LineStore::OwnedLine> added(std::make_move_iterator(pieces.begin() + 1), std::make_move_iterator(pieces.end()));
+    // The last inserted line takes over the rest of the line, and the break that followed it.
+    size_t column = added.back().text.size();
+    added.back().text += tail;
+    added.back().breakIsCRLF = tailBreakIsCRLF;
     size_t addedCount = added.size();
     lines_.insertOwned(at.line + 1, std::move(added));
     return {at.line + addedCount, column};
@@ -177,12 +212,14 @@ void TextBuffer::erase(Range range) {
         lines_.edit(start.line).erase(start.column, end.column - start.column);
         return;
     }
-    // Keep what follows the erased range on its last line; it moves onto the first line.
-    // (A copy: editing the first line may move the strings a view would point into.)
+    // Keep what follows the erased range on its last line, and the break after it; they move
+    // onto the first line. (A copy: editing the first line may move the strings a view would point into.)
     std::string keptTail(lines_.view(end.line).substr(end.column));
+    bool keptBreakIsCRLF = lines_.breakIsCRLF(end.line);
     std::string& firstLine = lines_.edit(start.line);
     firstLine.erase(start.column);
     firstLine += keptTail;
+    lines_.setBreakIsCRLF(start.line, keptBreakIsCRLF);
     lines_.erase(start.line + 1, end.line + 1);
 }
 

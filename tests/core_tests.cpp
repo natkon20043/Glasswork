@@ -3,6 +3,7 @@
 #include "CompletionRank.hpp"
 #include "CssColor.hpp"
 #include "Document.hpp"
+#include "FileBytes.hpp"
 #include "EditorSettings.hpp"
 #include "Extensions.hpp"
 #include "Fuzzy.hpp"
@@ -25,6 +26,7 @@
 #include "textmate/Tokenizer.hpp"
 
 #include <cstdio>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <random>
@@ -32,6 +34,7 @@
 #include <unistd.h>
 #include <unistd.h>
 #include <functional>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -1125,10 +1128,16 @@ TEST(reloadFromDiskAlwaysEndsWithTheDiskText) {
         size_t lines = random() % 7;
         for (size_t line = 0; line < lines; ++line) {
             text += std::string(1, static_cast<char>('a' + random() % 3));
+            if (random() % 3 == 0) {
+                text += '\r';  // some breaks are CRLF
+            }
             text += '\n';
         }
         if (random() % 2 == 0 && !text.empty()) {
             text.pop_back();  // sometimes no final newline
+            if (!text.empty() && text.back() == '\r') {
+                text.pop_back();
+            }
         }
         return text;
     };
@@ -1146,9 +1155,111 @@ TEST(reloadFromDiskAlwaysEndsWithTheDiskText) {
             file << after;
         }
         opened->reloadFromDisk();
-        gw::TextBuffer expected(after);
-        CHECK_EQ(opened->buffer().text(), expected.text());
+        CHECK_EQ(opened->buffer().text(), after);
+        CHECK(!opened->isDirty());
     }
+    std::filesystem::remove(path);
+}
+
+namespace {
+
+std::string readFileBytes(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+}
+
+void writeFileBytes(const std::filesystem::path& path, const std::string& bytes) {
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    file << bytes;
+}
+
+}  // namespace
+
+TEST(savingKeepsEveryByteIncludingMixedBreaksAndBinary) {
+    std::filesystem::path path = std::filesystem::temp_directory_path() / ("glasswork-bytes-" + std::to_string(getpid()));
+    std::string original = "one\r\ntwo\nthree\r\n";
+    original += '\0';
+    original += "nul\xFF\xFE bad utf-8\nlone \r inside\nlast";
+    writeFileBytes(path, original);
+
+    std::optional<gw::Document> document = gw::Document::open(path);
+    CHECK(document.has_value());
+    CHECK_EQ(document->buffer().text(), original);
+    CHECK(document->save());
+    CHECK_EQ(readFileBytes(path), original);
+
+    // Editing one line leaves the other lines' breaks alone.
+    document->replace({{1, 0}, {1, 3}}, "TWO");
+    CHECK(document->save());
+    std::string expected = original;
+    expected.replace(5, 3, "TWO");
+    CHECK_EQ(readFileBytes(path), expected);
+    std::filesystem::remove(path);
+}
+
+TEST(newBreaksFollowTheFileAndOldOnesStay) {
+    gw::Document empty;
+    empty.replace({{0, 0}, {0, 0}}, "a\r\nb\r\nc\nd");
+    // A new document's breaks are LF, so pasted CRLF text becomes LF.
+    CHECK_EQ(empty.buffer().text(), std::string("a\nb\nc\nd"));
+
+    gw::TextBuffer mixed("a\r\nb\r\nc\nd");
+    CHECK(mixed.usesCRLF());
+    mixed.insert({3, 1}, "\r\ne");
+    CHECK_EQ(mixed.text(), std::string("a\r\nb\r\nc\nd\r\ne"));
+    // Joining two lines keeps the break that came after the second one.
+    mixed.erase({{1, 1}, {2, 0}});
+    CHECK_EQ(mixed.text(), std::string("a\r\nbc\nd\r\ne"));
+    // The clipboard always gets plain "\n".
+    CHECK_EQ(mixed.text({{0, 0}, {2, 1}}), std::string("a\nbc\nd"));
+    CHECK_EQ(mixed.rawText({{0, 0}, {2, 1}}), std::string("a\r\nbc\nd"));
+}
+
+TEST(typedBreaksMatchTheFileAndUndoRestoresExactBytes) {
+    std::filesystem::path path = std::filesystem::temp_directory_path() / ("glasswork-undo-bytes-" + std::to_string(getpid()));
+    std::string original = "a\r\nb\nc\r\nd\r\ne";
+    writeFileBytes(path, original);
+    std::optional<gw::Document> document = gw::Document::open(path);
+    CHECK(document.has_value());
+
+    document->replace({{4, 1}, {4, 1}}, "\nf");
+    CHECK_EQ(document->buffer().text(), original + "\r\nf");  // the file is mostly CRLF
+    document->undo();
+    CHECK_EQ(document->buffer().text(), original);
+
+    // Deleting across an LF and a CRLF break and undoing puts both back as they were.
+    document->replace({{0, 1}, {3, 0}}, "");
+    CHECK_EQ(document->buffer().text(), std::string("ad\r\ne"));
+    document->undo();
+    CHECK_EQ(document->buffer().text(), original);
+    document->redo();
+    document->undo();
+    CHECK_EQ(document->buffer().text(), original);
+    std::filesystem::remove(path);
+}
+
+TEST(aMappedFileIsASnapshotOtherProgramsCannotChange) {
+    std::filesystem::path path = std::filesystem::temp_directory_path() / ("glasswork-snapshot-" + std::to_string(getpid()));
+    std::string original;
+    for (int line = 0; line < 40000; ++line) {
+        original += "line " + std::to_string(line) + " of a file that gets mapped\n";
+    }
+    writeFileBytes(path, original);
+    std::optional<gw::FileBytes> bytes = gw::FileBytes::load(path, 0);  // map even this small file
+    CHECK(bytes.has_value());
+    CHECK(bytes->isMapped());  // the temporary folder is on APFS
+    gw::TextBuffer buffer(std::move(*bytes));
+
+    // Another program shortens and rewrites the same file in place. Reading a plain mapping of
+    // it now would crash; the clone still holds what was opened.
+    {
+        int descriptor = ::open(path.c_str(), O_WRONLY | O_TRUNC);
+        CHECK(descriptor >= 0);
+        CHECK(::write(descriptor, "short", 5) == 5);
+        ::close(descriptor);
+    }
+    CHECK_EQ(buffer.text(), original);
+    CHECK_EQ(std::string(buffer.line(39999)), std::string("line 39999 of a file that gets mapped"));
     std::filesystem::remove(path);
 }
 

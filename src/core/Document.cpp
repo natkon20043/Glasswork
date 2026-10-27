@@ -1,9 +1,8 @@
 #include "Document.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <fcntl.h>
-#include <fstream>
-#include <sstream>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -45,6 +44,77 @@ bool readWholeFile(const std::filesystem::path& path, std::string& contents) {
     return true;
 }
 
+/// Gathers small pieces (one per line and break) into big writes, so saving costs few system calls.
+class BufferedWriter {
+public:
+    explicit BufferedWriter(int descriptor) : descriptor_(descriptor) {
+        buffer_.reserve(kBufferBytes);
+    }
+
+    void write(std::string_view piece) {
+        if (buffer_.size() + piece.size() > kBufferBytes) {
+            flush();
+        }
+        if (piece.size() >= kBufferBytes) {
+            writeAll(piece);
+            return;
+        }
+        buffer_ += piece;
+    }
+
+    bool finish() {
+        flush();
+        return !failed_;
+    }
+
+private:
+    void flush() {
+        if (!buffer_.empty()) {
+            writeAll(buffer_);
+            buffer_.clear();
+        }
+    }
+
+    void writeAll(std::string_view bytes) {
+        while (!bytes.empty() && !failed_) {
+            ssize_t count = ::write(descriptor_, bytes.data(), bytes.size());
+            if (count < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                failed_ = true;
+                return;
+            }
+            bytes.remove_prefix(static_cast<size_t>(count));
+        }
+    }
+
+    static constexpr size_t kBufferBytes = 1024 * 1024;
+
+    int descriptor_;
+    std::string buffer_;
+    bool failed_ = false;
+};
+
+/// Writes the buffer's exact bytes to a new file and makes sure they reached the disk before
+/// it is renamed over the original, so a crash or power cut can't leave an empty file behind.
+bool writeFileSafely(const std::filesystem::path& path, const TextBuffer& buffer) {
+    int descriptor = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (descriptor < 0) {
+        return false;
+    }
+    BufferedWriter writer(descriptor);
+    buffer.forEachPiece([&writer](std::string_view piece) { writer.write(piece); });
+    bool written = writer.finish();
+    if (written && ::fsync(descriptor) != 0) {
+        written = false;
+    }
+    if (::close(descriptor) != 0) {
+        written = false;
+    }
+    return written;
+}
+
 long long modifiedNanoseconds(const struct stat& info) {
     long long seconds = static_cast<long long>(info.st_mtimespec.tv_sec);
     return seconds * 1000000000LL + info.st_mtimespec.tv_nsec;
@@ -53,15 +123,15 @@ long long modifiedNanoseconds(const struct stat& info) {
 }  // namespace
 
 std::optional<Document> Document::open(const std::filesystem::path& path, std::string* error) {
-    std::string contents;
-    if (!readWholeFile(path, contents)) {
+    std::optional<FileBytes> bytes = FileBytes::load(path);
+    if (!bytes) {
         if (error) {
             *error = "Couldn't open " + path.string();
         }
         return std::nullopt;
     }
     Document document;
-    document.buffer_ = TextBuffer(std::move(contents));
+    document.buffer_ = TextBuffer(std::move(*bytes));
     document.path_ = path;
     document.rememberDiskState();
     return document;
@@ -116,29 +186,33 @@ Document::ReloadResult Document::reloadFromDisk(std::string* error) {
         return ReloadResult::Failed;
     }
 
-    TextBuffer fresh(contents);
+    TextBuffer fresh(std::move(contents));
     const size_t oldCount = buffer_.lineCount();
     const size_t newCount = fresh.lineCount();
+    auto sameLine = [&](size_t oldLine, size_t newLine) {
+        return buffer_.line(oldLine) == fresh.line(newLine) && buffer_.lineBreak(oldLine) == fresh.lineBreak(newLine);
+    };
 
     // Find the lines at the start and end that are the same, and replace only what's between.
     size_t prefix = 0;
-    while (prefix < oldCount && prefix < newCount && buffer_.line(prefix) == fresh.line(prefix)) {
+    while (prefix < oldCount && prefix < newCount && sameLine(prefix, prefix)) {
         ++prefix;
     }
     bool sameLines = prefix == oldCount && prefix == newCount;
     if (sameLines) {
+        buffer_.setUsesCRLF(fresh.usesCRLF());
         rememberDiskState();
         savedVersion_ = version_;
         return ReloadResult::Unchanged;
     }
     size_t suffix = 0;
-    while (suffix < oldCount - prefix && suffix < newCount - prefix &&
-           buffer_.line(oldCount - 1 - suffix) == fresh.line(newCount - 1 - suffix)) {
+    while (suffix < oldCount - prefix && suffix < newCount - prefix && sameLine(oldCount - 1 - suffix, newCount - 1 - suffix)) {
         ++suffix;
     }
 
     // Work out which part of the old text to replace, and with what. Three cases, depending
-    // on whether the two versions share lines at the start and at the end.
+    // on whether the two versions share lines at the start and at the end. Breaks are copied
+    // exactly, so the buffer ends up byte for byte what is on disk.
     Position oldStart;
     Position oldEnd;
     std::string replacement;
@@ -148,32 +222,28 @@ Document::ReloadResult Document::reloadFromDisk(std::string* error) {
         oldEnd = Position{oldCount - suffix, 0};
         for (size_t line = prefix; line < newCount - suffix; ++line) {
             replacement += fresh.line(line);
-            replacement += '\n';
+            replacement += fresh.lineBreak(line);
         }
     } else if (prefix > 0) {
         // Only the start survives: start from the end of the last shared line.
         oldStart = Position{prefix - 1, buffer_.line(prefix - 1).size()};
         oldEnd = buffer_.end();
         for (size_t line = prefix; line < newCount; ++line) {
-            replacement += '\n';
+            replacement += fresh.lineBreak(line - 1);
             replacement += fresh.line(line);
         }
     } else {
         // Nothing is shared: replace everything.
         oldStart = Position{0, 0};
         oldEnd = buffer_.end();
-        for (size_t line = 0; line < newCount; ++line) {
-            if (line > 0) {
-                replacement += '\n';
-            }
-            replacement += fresh.line(line);
-        }
+        replacement = fresh.text();
     }
 
     reloadedFirstLine = prefix;
     reloadedLineCount = newCount - suffix - prefix;
     Selection keep = selection;
-    replace({oldStart, oldEnd}, replacement);
+    replaceExactly({oldStart, oldEnd}, std::move(replacement));
+    buffer_.setUsesCRLF(fresh.usesCRLF());
     selection = {buffer_.clamp(keep.anchor), buffer_.clamp(keep.caret)};
 
     rememberDiskState();
@@ -205,16 +275,7 @@ bool Document::saveAs(const std::filesystem::path& path, std::string* error) {
     // Write to a temporary file and rename, so a failed save never truncates the original.
     std::filesystem::path temporary = target;
     temporary += ".glasswork-save";
-    bool written = false;
-    {
-        std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
-        if (file) {
-            std::string text = buffer_.text();
-            file.write(text.data(), static_cast<std::streamsize>(text.size()));
-            file.flush();
-            written = static_cast<bool>(file);
-        }
-    }
+    bool written = writeFileSafely(temporary, buffer_);
     std::error_code removeError;
     if (!written) {
         std::filesystem::remove(temporary, removeError);
@@ -474,6 +535,11 @@ void Document::notify(size_t firstLine, long lineDelta, size_t lastLine) {
 }
 
 Position Document::replace(Range range, std::string_view text, bool coalesceTyping) {
+    // New line breaks match the file's; the ones already there are left as they are.
+    return replaceExactly(range, withLineBreaks(text, buffer_.usesCRLF()), coalesceTyping);
+}
+
+Position Document::replaceExactly(Range range, std::string&& text, bool coalesceTyping) {
     if (readOnly) {
         return selection.caret;
     }
@@ -483,8 +549,8 @@ Position Document::replace(Range range, std::string_view text, bool coalesceTypi
 
     Edit edit;
     edit.at = range.start;
-    edit.removed = buffer_.text(range);
-    edit.inserted = std::string(text);
+    edit.removed = buffer_.rawText(range);
+    edit.inserted = std::move(text);
     edit.selectionBefore = selection;
     edit.time = std::chrono::steady_clock::now();
     edit.typing = coalesceTyping && groupDepth_ == 0;

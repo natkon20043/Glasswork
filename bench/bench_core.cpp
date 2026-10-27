@@ -196,7 +196,12 @@ int main(int argc, char** argv) {
         report("undo (avg)", millisecondsSince(start) / 50, "ms");
         start = Clock::now();
         std::string text = big.buffer().text();
-        report("get the whole text back (save)", millisecondsSince(start), "ms");
+        report("get the whole text back", millisecondsSince(start), "ms");
+        fs::path saved = fs::temp_directory_path() / "glasswork-bench-save.cpp";
+        start = Clock::now();
+        big.saveAs(saved);
+        report("save to disk", millisecondsSince(start), "ms");
+        fs::remove(saved);
     }
 
     // ---- Search

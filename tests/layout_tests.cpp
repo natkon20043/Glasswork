@@ -326,12 +326,59 @@ TEST(lineStoreSplitsTextIntoLines) {
     CHECK_EQ(std::string(store.view(4)), std::string("last"));
     CHECK_EQ(crlf, size_t(2));
     CHECK_EQ(lf, size_t(2));
+    CHECK(store.breakIsCRLF(0));
+    CHECK(!store.breakIsCRLF(1));
+    CHECK(store.breakIsCRLF(2));
+    CHECK(!store.breakIsCRLF(3));
     CHECK_EQ(store.editedLineCount(), size_t(0));  // nothing has been copied out yet
 
     gw::LineStore empty = gw::LineStore::fromText("", nullptr, nullptr);
     CHECK_EQ(empty.size(), size_t(1));
     gw::LineStore trailing = gw::LineStore::fromText("a\n", nullptr, nullptr);
     CHECK_EQ(trailing.size(), size_t(2));
+}
+
+TEST(lineStoreSplitsBigFilesInParallelLikeOneThreadWould) {
+    // Big enough for several threads, with lines that straddle where one thread's stretch ends,
+    // empty lines, a line several megabytes long, and both kinds of break.
+    std::mt19937 random(99);
+    std::vector<std::string> expectedLines;
+    std::vector<bool> expectedCRLF;
+    std::string text;
+    while (text.size() < 20 * 1024 * 1024) {
+        size_t length = random() % 120;
+        if (random() % 5000 == 0) {
+            length = 3 * 1024 * 1024;
+        }
+        std::string line(length, static_cast<char>('a' + random() % 26));
+        bool crlf = random() % 3 == 0;
+        expectedLines.push_back(line);
+        expectedCRLF.push_back(crlf);
+        text += line;
+        text += crlf ? "\r\n" : "\n";
+    }
+    expectedLines.push_back("tail");
+    text += "tail";
+
+    size_t crlfCount = 0;
+    size_t lfCount = 0;
+    gw::LineStore store = gw::LineStore::fromText(std::move(text), &crlfCount, &lfCount);
+    CHECK_EQ(store.size(), expectedLines.size());
+    size_t expectedCRLFCount = 0;
+    for (size_t index = 0; index < expectedLines.size(); ++index) {
+        if (store.view(index) != expectedLines[index]) {
+            CHECK(false);
+            return;
+        }
+        if (index + 1 < expectedLines.size()) {
+            CHECK_EQ(store.breakIsCRLF(index), static_cast<bool>(expectedCRLF[index]));
+            if (expectedCRLF[index]) {
+                ++expectedCRLFCount;
+            }
+        }
+    }
+    CHECK_EQ(crlfCount, expectedCRLFCount);
+    CHECK_EQ(lfCount, expectedLines.size() - 1 - expectedCRLFCount);
 }
 
 TEST(lineStoreCopiesOnlyEditedLines) {
@@ -366,12 +413,13 @@ TEST(lineStoreMatchesAPlainVectorOfStrings) {
             model[index] += extra;
         } else if (action == 1) {
             size_t index = random() % (model.size() + 1);
-            std::vector<std::string> added;
+            std::vector<gw::LineStore::OwnedLine> added;
             size_t count = 1 + random() % 3;
             for (size_t n = 0; n < count; ++n) {
-                added.push_back("new" + std::to_string(step) + "_" + std::to_string(n));
+                std::string content = "new" + std::to_string(step) + "_" + std::to_string(n);
+                model.insert(model.begin() + static_cast<long>(index + n), content);
+                added.push_back({content, false});
             }
-            model.insert(model.begin() + static_cast<long>(index), added.begin(), added.end());
             store.insertOwned(index, std::move(added));
         } else if (action == 2 && model.size() > 2) {
             size_t first = random() % model.size();
