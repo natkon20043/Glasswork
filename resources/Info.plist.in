@@ -36,6 +36,12 @@
     <string>Glasswork opens and saves projects on external drives.</string>
     <key>NSNetworkVolumesUsageDescription</key>
     <string>Glasswork opens and saves projects on network drives.</string>
+    <!-- Programs run from the terminal ask for these on Glasswork's behalf. Without a reason
+         here, macOS kills a program the moment it opens the camera or microphone. -->
+    <key>NSCameraUsageDescription</key>
+    <string>A program you run in Glasswork's terminal wants to use the camera.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>A program you run in Glasswork's terminal wants to use the microphone.</string>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>
