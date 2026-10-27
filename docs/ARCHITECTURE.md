@@ -34,8 +34,9 @@ file block 25 MB + line references 5 MB + a few small per-line arrays ≈ 43 MB 
 Since files are mapped, the 25 MB of file bytes are the system's file cache rather than the app's
 own memory (macOS can drop them under pressure); a 185 MB file costs 38 MB instead of 224 MB.
 
-Saving writes the exact bytes to a temporary file, `fsync`s it and renames it over the original,
-so a crash or power cut never leaves a half-written or empty file.
+Saving writes the exact bytes to a temporary file, waits until they are stored on the disk itself
+(`F_FULLFSYNC`; plain `fsync` on macOS stops at the drive's cache) and renames it over the original,
+so after a crash or power cut the file holds the old or the new contents, never a half-written or empty file.
 
 ## Layout helpers (used by the editor view)
 

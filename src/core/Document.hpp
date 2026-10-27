@@ -70,6 +70,10 @@ public:
     /// Every edit goes through here. Line breaks in `text` are changed to the file's own.
     /// Returns the position after the inserted text.
     Position replace(Range range, std::string_view text, bool coalesceTyping = false);
+    /// For edits that rewrite lines already in the range (indent, change case, move or sort
+    /// lines): the first "\n" in `text` gets the range's first break, the second its second, and
+    /// so on, so lines whose text doesn't change keep their "\n" or "\r\n". Extra breaks follow the file.
+    Position replaceKeepingBreaks(Range range, std::string_view text);
     void typeText(std::string_view text);
     void deleteSelectionOr(Range fallback);
 

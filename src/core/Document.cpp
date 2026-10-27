@@ -19,31 +19,6 @@ Position endOfInsertion(Position start, std::string_view text) {
 
 namespace {
 
-/// Reads a whole file with a single allocation. Returns false if it can't be read.
-bool readWholeFile(const std::filesystem::path& path, std::string& contents) {
-    int descriptor = ::open(path.c_str(), O_RDONLY);
-    if (descriptor < 0) {
-        return false;
-    }
-    struct stat info;
-    if (fstat(descriptor, &info) != 0) {
-        ::close(descriptor);
-        return false;
-    }
-    contents.resize(static_cast<size_t>(info.st_size));
-    size_t total = 0;
-    while (total < contents.size()) {
-        ssize_t count = ::read(descriptor, contents.data() + total, contents.size() - total);
-        if (count <= 0) {
-            break;
-        }
-        total += static_cast<size_t>(count);
-    }
-    ::close(descriptor);
-    contents.resize(total);
-    return true;
-}
-
 /// Gathers small pieces (one per line and break) into big writes, so saving costs few system calls.
 class BufferedWriter {
 public:
@@ -96,8 +71,20 @@ private:
     bool failed_ = false;
 };
 
-/// Writes the buffer's exact bytes to a new file and makes sure they reached the disk before
-/// it is renamed over the original, so a crash or power cut can't leave an empty file behind.
+/// Waits until the file's bytes are stored on the disk itself. On macOS plain fsync only hands
+/// them to the drive, which can still lose them from its cache in a power cut; F_FULLFSYNC
+/// doesn't return until they're stored. Costs about 3 ms per save.
+bool flushToDisk(int descriptor) {
+    if (::fcntl(descriptor, F_FULLFSYNC) == 0) {
+        return true;
+    }
+    // Some volumes (network shares, FAT drives) don't support it; fsync is the best they offer.
+    return ::fsync(descriptor) == 0;
+}
+
+/// Writes the buffer's exact bytes to a new file and makes sure they are stored on the disk
+/// before it is renamed over the original. After a crash or power cut the file then holds either
+/// the old contents or the new ones, never an empty or half-written file.
 bool writeFileSafely(const std::filesystem::path& path, const TextBuffer& buffer) {
     int descriptor = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (descriptor < 0) {
@@ -106,7 +93,7 @@ bool writeFileSafely(const std::filesystem::path& path, const TextBuffer& buffer
     BufferedWriter writer(descriptor);
     buffer.forEachPiece([&writer](std::string_view piece) { writer.write(piece); });
     bool written = writer.finish();
-    if (written && ::fsync(descriptor) != 0) {
+    if (written && !flushToDisk(descriptor)) {
         written = false;
     }
     if (::close(descriptor) != 0) {
@@ -178,15 +165,17 @@ Document::ReloadResult Document::reloadFromDisk(std::string* error) {
         }
         return ReloadResult::Failed;
     }
-    std::string contents;
-    if (!readWholeFile(*path_, contents)) {
+    // The same loader as opening: a read error fails the reload instead of keeping a cut-short
+    // file, and big files are mapped rather than copied onto the heap.
+    std::optional<FileBytes> bytes = FileBytes::load(*path_);
+    if (!bytes) {
         if (error) {
             *error = "Couldn't read " + path_->string();
         }
         return ReloadResult::Failed;
     }
 
-    TextBuffer fresh(std::move(contents));
+    TextBuffer fresh(std::move(*bytes));
     const size_t oldCount = buffer_.lineCount();
     const size_t newCount = fresh.lineCount();
     auto sameLine = [&](size_t oldLine, size_t newLine) {
@@ -537,6 +526,31 @@ void Document::notify(size_t firstLine, long lineDelta, size_t lastLine) {
 Position Document::replace(Range range, std::string_view text, bool coalesceTyping) {
     // New line breaks match the file's; the ones already there are left as they are.
     return replaceExactly(range, withLineBreaks(text, buffer_.usesCRLF()), coalesceTyping);
+}
+
+Position Document::replaceKeepingBreaks(Range range, std::string_view text) {
+    range = range.normalized();
+    Position start = buffer_.clamp(range.start);
+    Position end = buffer_.clamp(range.end);
+
+    std::string exact;
+    exact.reserve(text.size() + 16);
+    size_t nextOldBreak = start.line;  // the break after this line is the next one to reuse
+    for (char byte : text) {
+        if (byte != '\n') {
+            exact += byte;
+            continue;
+        }
+        if (nextOldBreak < end.line) {
+            exact += buffer_.lineBreak(nextOldBreak);
+            ++nextOldBreak;
+        } else if (buffer_.usesCRLF()) {
+            exact += "\r\n";
+        } else {
+            exact += '\n';
+        }
+    }
+    return replaceExactly({start, end}, std::move(exact));
 }
 
 Position Document::replaceExactly(Range range, std::string&& text, bool coalesceTyping) {

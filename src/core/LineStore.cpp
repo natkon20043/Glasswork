@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <optional>
+#include <system_error>
 #include <thread>
 
 namespace gw {
@@ -56,8 +57,20 @@ void forEachChunkInParallel(std::vector<Chunk>& chunks, Work work) {
         return;
     }
     std::vector<std::thread> threads;
-    for (Chunk& chunk : chunks) {
-        threads.emplace_back([&work, &chunk]() { work(chunk); });
+    threads.reserve(chunks.size());  // so adding a thread below can't fail to grow the list
+    size_t started = 0;
+    try {
+        while (started < chunks.size()) {
+            Chunk& chunk = chunks[started];
+            threads.emplace_back([&work, &chunk]() { work(chunk); });
+            ++started;
+        }
+    } catch (const std::system_error&) {
+        // The system is out of threads. Leaving the started ones unjoined would end the app,
+        // so the chunks that didn't get a thread are done on this one instead.
+    }
+    for (size_t index = started; index < chunks.size(); ++index) {
+        work(chunks[index]);
     }
     for (std::thread& thread : threads) {
         thread.join();

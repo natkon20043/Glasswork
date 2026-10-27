@@ -4445,7 +4445,7 @@ static bool sameSelection(const gw::Selection &a, const gw::Selection &b) {
     }
 
     _document->extraSelections.clear();
-    _document->replace(range, replacement);
+    _document->replaceKeepingBreaks(range, replacement);
     gw::Position end = gw::endOfInsertion(range.start, replacement);
     _document->selection = {range.start, end};
     [self didEdit];
@@ -4494,7 +4494,7 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
         replacement += transform(std::string(buffer.line(line)), line);
     }
     size_t oldLength = buffer.line(first).size();
-    _document->replace({{first, 0}, {last, buffer.line(last).size()}}, replacement);
+    _document->replaceKeepingBreaks({{first, 0}, {last, buffer.line(last).size()}}, replacement);
     const auto &after = _document->buffer();
     if (first == last && before.empty()) {
         long delta = static_cast<long>(after.line(first).size()) - static_cast<long>(oldLength);
@@ -4604,7 +4604,7 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
     std::string lineAbove(buffer.line(first - 1));
     std::string movedBlock = [self joinedTextOfLinesFrom:first to:last];
     gw::Range whole = {{first - 1, 0}, {last, buffer.line(last).size()}};
-    _document->replace(whole, movedBlock + "\n" + lineAbove);
+    _document->replaceKeepingBreaks(whole, movedBlock + "\n" + lineAbove);
 
     _document->selection = {{before.anchor.line - 1, before.anchor.column}, {before.caret.line - 1, before.caret.column}};
     [self didEdit];
@@ -4626,7 +4626,7 @@ static std::string sortDescending(std::string_view text) { return gw::sortLinesT
     std::string lineBelow(buffer.line(last + 1));
     std::string movedBlock = [self joinedTextOfLinesFrom:first to:last];
     gw::Range whole = {{first, 0}, {last + 1, buffer.line(last + 1).size()}};
-    _document->replace(whole, lineBelow + "\n" + movedBlock);
+    _document->replaceKeepingBreaks(whole, lineBelow + "\n" + movedBlock);
 
     _document->selection = {{before.anchor.line + 1, before.anchor.column}, {before.caret.line + 1, before.caret.column}};
     [self didEdit];

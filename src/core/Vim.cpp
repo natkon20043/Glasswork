@@ -1144,7 +1144,8 @@ void VimEngine::changeCase(Document& document, const Region& region, int mode) {
         start = {region.range.start.line, 0};
         end = {region.range.end.line, buffer.line(region.range.end.line).size()};
     }
-    std::string text = buffer.text({start, end});
+    std::string original = buffer.text({start, end});
+    std::string text = original;
     for (char& c : text) {
         unsigned char byte = static_cast<unsigned char>(c);
         bool lower = std::islower(byte);
@@ -1155,7 +1156,9 @@ void VimEngine::changeCase(Document& document, const Region& region, int mode) {
             c = static_cast<char>(std::tolower(byte));
         }
     }
-    document.replace({start, end}, text);
+    if (text != original) {
+        document.replaceKeepingBreaks({start, end}, text);
+    }
     setCaret(document, start);
 }
 
@@ -1653,9 +1656,9 @@ void VimEngine::executeVisual(Document& document, const Command& command) {
         }
         if (region.linewise) {
             filled.pop_back();
-            document.replace({{region.range.start.line, 0}, {region.range.end.line, buffer.line(region.range.end.line).size()}}, filled);
+            document.replaceKeepingBreaks({{region.range.start.line, 0}, {region.range.end.line, buffer.line(region.range.end.line).size()}}, filled);
         } else {
-            document.replace(region.range, filled);
+            document.replaceKeepingBreaks(region.range, filled);
         }
         commandChanges_ = true;
         setCaret(document, low);

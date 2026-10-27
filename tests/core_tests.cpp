@@ -1215,6 +1215,34 @@ TEST(newBreaksFollowTheFileAndOldOnesStay) {
     CHECK_EQ(mixed.rawText({{0, 0}, {2, 1}}), std::string("a\r\nbc\nd"));
 }
 
+TEST(rewritingLinesKeepsTheirOwnBreaks) {
+    // Mostly CRLF, with one LF line in the middle (line 1 is empty).
+    std::string original = "a\r\n\n// x\r\nb\r\n";
+    gw::TextBuffer mixed(original);
+    CHECK(mixed.usesCRLF());
+
+    std::filesystem::path path = std::filesystem::temp_directory_path() / ("glasswork-keep-breaks-" + std::to_string(getpid()));
+    writeFileBytes(path, original);
+    std::optional<gw::Document> opened = gw::Document::open(path);
+    CHECK(opened.has_value());
+
+    // Indent lines 0-2 the way the editor does: lines joined with "\n", the empty one left alone.
+    opened->replaceKeepingBreaks({{0, 0}, {2, 4}}, "    a\n\n    // x");
+    CHECK_EQ(opened->buffer().text(), std::string("    a\r\n\n    // x\r\nb\r\n"));
+    opened->undo();
+    CHECK_EQ(opened->buffer().text(), original);
+
+    // Moving line 2 above line 1: breaks stay where they were, the text moves.
+    opened->replaceKeepingBreaks({{1, 0}, {2, 4}}, "// x\n");
+    CHECK_EQ(opened->buffer().text(), std::string("a\r\n// x\n\r\nb\r\n"));
+    opened->undo();
+
+    // More breaks than the range had: the extra ones follow the file (CRLF here).
+    opened->replaceKeepingBreaks({{0, 0}, {0, 1}}, "a\nz");
+    CHECK_EQ(opened->buffer().text(), std::string("a\r\nz\r\n\n// x\r\nb\r\n"));
+    std::filesystem::remove(path);
+}
+
 TEST(typedBreaksMatchTheFileAndUndoRestoresExactBytes) {
     std::filesystem::path path = std::filesystem::temp_directory_path() / ("glasswork-undo-bytes-" + std::to_string(getpid()));
     std::string original = "a\r\nb\nc\r\nd\r\ne";
