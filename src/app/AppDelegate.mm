@@ -561,6 +561,14 @@ static NSString *SpecialKey(unichar key) {
     [self addThemeAndOpacityMenusTo:view];
     [self addExtensionsMenuTo:main];
     [self addWindowMenuTo:main];
+    if ([[NSBundle.mainBundle objectForInfoDictionaryKey:@"GWBitmapMode"] boolValue]) {
+        // Glasswork Bitmap has its own menu bar in the window. The screen's keeps only the app and
+        // Window menus; the rest are hidden, not removed, so their keyboard shortcuts still work.
+        NSArray<NSMenuItem *> *items = main.itemArray;
+        for (NSUInteger index = 1; index + 1 < items.count; ++index) {
+            items[index].hidden = YES;
+        }
+    }
 
     // The text size items are handled by the app delegate, not by the front window.
     for (NSMenuItem *item in view.itemArray) {

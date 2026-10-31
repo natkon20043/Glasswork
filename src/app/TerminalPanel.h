@@ -20,6 +20,8 @@ NS_ASSUME_NONNULL_BEGIN
 // ---- Properties
 @property (nonatomic, readonly) NSView *view;
 @property (nonatomic, readonly) NSUInteger terminalCount;
+/// Glasswork Bitmap: tabs and buttons in pixel text and the scheme's colors. Set again for new colors.
+@property (nonatomic) BOOL retro;
 /// New terminals start here.
 @property (nonatomic, copy, nullable) NSString *projectFolder;
 

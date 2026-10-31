@@ -305,6 +305,12 @@ TEST(schemeChoiceIsSavedInSettings) {
     CHECK_EQ(settings.bitmapColors, std::string("Low Tide"));
     CHECK_EQ(gw::parseSettings(gw::serializeSettings(settings), &error).bitmapColors, std::string("Low Tide"));
     CHECK_EQ(gw::parseSettings("{}", &error).bitmapColors, std::string("Turbo"));
+    // The bitmap app's font is its own: empty means the built-in pixel font.
+    gw::EditorSettings font = gw::parseSettings(R"({ "bitmap.font": "Terminess Nerd Font", "editor.fontFamily": "Menlo" })", &error);
+    CHECK_EQ(font.bitmapFont, std::string("Terminess Nerd Font"));
+    CHECK_EQ(font.fontFamily, std::string("Menlo"));
+    CHECK_EQ(gw::parseSettings(gw::serializeSettings(font), &error).bitmapFont, std::string("Terminess Nerd Font"));
+    CHECK(gw::parseSettings("{}", &error).bitmapFont.empty());
 }
 
 }  // namespace

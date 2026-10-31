@@ -581,18 +581,24 @@ std::optional<std::string> readFile(NSURL *url) {
     return gw::bitmap::schemeNamed(_settings.bitmapColors);
 }
 
+- (BOOL)usesPixelFont {
+    return _effective.bitmapMode && _settings.bitmapFont.empty();
+}
+
 - (NSFont *)editorFontBold:(BOOL)bold italic:(BOOL)italic {
-    if (_effective.bitmapMode) {
+    if (self.usesPixelFont) {
         return GWPixelFont(gw::bitmap::pixelSize(_settings.fontSize));  // one weight, upright
     }
+    // Glasswork Bitmap has a font setting of its own, so the two apps can differ.
+    const std::string &family = _effective.bitmapMode ? _settings.bitmapFont : _settings.fontFamily;
     CGFloat size = _settings.fontSize;
     NSFontWeight weight = bold ? NSFontWeightSemibold : NSFontWeightRegular;
 
     NSFont *font = nil;
-    if (!_settings.fontFamily.empty()) {
+    if (!family.empty()) {
         // A named family (e.g. "JetBrains Mono"), with the right weight if it has one.
         NSFontDescriptor *descriptor = [NSFontDescriptor fontDescriptorWithFontAttributes:@{
-            NSFontFamilyAttribute: StringFromUTF8(_settings.fontFamily),
+            NSFontFamilyAttribute: StringFromUTF8(family),
             NSFontTraitsAttribute: @{NSFontWeightTrait: @(weight)},
         }];
         font = [NSFont fontWithDescriptor:descriptor size:size];

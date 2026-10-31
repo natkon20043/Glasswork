@@ -254,8 +254,10 @@ std::optional<size_t> indentColumns(std::string_view text, size_t tabSize) {
 @property (nonatomic, readonly) NSColor *activeLineNumberColor;
 /// Behind the line numbers: the code's own color, or a band of its own in bitmap mode.
 @property (nonatomic, readonly) NSColor *gutterColor;
-/// Bitmap mode: pixel font, no smoothing, a hard shadow under the text.
+/// Bitmap mode: scheme colors, square shapes, a shadow under the text.
 @property (nonatomic, readonly) BOOL bitmap;
+/// Bitmap mode with its pixel font: no smoothing, every shape on whole font pixels.
+@property (nonatomic, readonly) BOOL crisp;
 /// One font pixel, in points (bitmap mode only).
 @property (nonatomic, readonly) CGFloat pixel;
 - (gw::Document *)document;
@@ -277,6 +279,7 @@ std::optional<size_t> indentColumns(std::string_view text, size_t tabSize) {
 - (const std::vector<gw::LineChange> &)lineChanges;
 - (const std::vector<gw::Section> &)sectionList;
 - (NSColor *)colorForScopes:(const gw::tm::ScopeNode *)scopes;
+- (NSColor *)colorForSeverity:(int)severity;
 @end
 
 // MARK: - Line numbers
@@ -313,7 +316,7 @@ static constexpr CGFloat kChangeBarClickWidth = 10;
     [editor.gutterColor setFill];
     NSRectFillUsingOperation(NSIntersectionRect(dirtyRect, self.bounds), NSCompositingOperationSourceOver);
     BOOL bitmap = editor.bitmap;
-    if (bitmap) {
+    if (editor.crisp) {
         CGContextSetShouldAntialias(NSGraphicsContext.currentContext.CGContext, false);
     }
     gw::Document *document = editor.document;
@@ -335,11 +338,16 @@ static constexpr CGFloat kChangeBarClickWidth = 10;
     NSDictionary *active = @{NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:editor.lineNumberFont.pointSize weight:NSFontWeightSemibold],
                              NSForegroundColorAttributeName: editor.activeLineNumberColor, NSParagraphStyleAttributeName: right};
     if (bitmap) {
-        // Plain pixel numbers with the same hard shadow as the code, and no bubbles.
+        // Plain numbers with the same shadow as the code, and no bubbles: in the pixel font, or in
+        // the font chosen for the code.
         NSMutableDictionary *pixelNormal = [GWPixelTextAttributes(editor.pixel, editor.lineNumberColor) mutableCopy];
         pixelNormal[NSParagraphStyleAttributeName] = right;
         NSMutableDictionary *pixelActive = [GWPixelTextAttributes(editor.pixel, editor.activeLineNumberColor) mutableCopy];
         pixelActive[NSParagraphStyleAttributeName] = right;
+        if (!editor.crisp) {
+            pixelNormal[NSFontAttributeName] = editor.lineNumberFont;
+            pixelActive[NSFontAttributeName] = editor.lineNumberFont;
+        }
         normal = pixelNormal;
         active = pixelActive;
     }
@@ -359,10 +367,10 @@ static constexpr CGFloat kChangeBarClickWidth = 10;
         NSRect bubble = NSMakeRect(bubbleRight - bubbleWidth, top + 3, bubbleWidth, lineHeight - 6);
         NSColor *bubbleColor = line == caretLine ? [NSColor.controlAccentColor colorWithAlphaComponent:0.38]
                                                  : [editor.lineNumberColor colorWithAlphaComponent:0.13];
-        if (bitmap) {
+        if (editor.crisp) {
             // The pixel font's line box is exactly one line, so the number sits in it like the code.
             label = NSMakeRect(0, top, NSWidth(self.bounds) - 26, lineHeight);
-        } else {
+        } else if (!bitmap) {
             [bubbleColor setFill];
             CGFloat bubbleRadius = NSHeight(bubble) / 2;
             [[NSBezierPath bezierPathWithRoundedRect:bubble xRadius:bubbleRadius yRadius:bubbleRadius] fill];
@@ -392,9 +400,13 @@ static constexpr CGFloat kChangeBarClickWidth = 10;
         }
         int severity = [editor diagnosticSeverityForLine:line];
         if (!hasBreakpoint && !isExecution && severity > 0 && severity <= 2) {
-            [(severity == 1 ? NSColor.systemRedColor : NSColor.systemOrangeColor) setFill];
+            [[editor colorForSeverity:severity] setFill];
             NSRect dot = NSMakeRect(10, top + (lineHeight - 6) / 2, 6, 6);
-            [[NSBezierPath bezierPathWithOvalInRect:dot] fill];
+            if (bitmap) {
+                NSRectFill(dot);  // a square dot, like the breakpoint
+            } else {
+                [[NSBezierPath bezierPathWithOvalInRect:dot] fill];
+            }
         }
         [self drawFoldMarkerForLine:line top:top lineHeight:lineHeight];
     }
@@ -411,6 +423,15 @@ static constexpr CGFloat kChangeBarClickWidth = 10;
         return;
     }
     NSColor *color = folded ? editor.activeLineNumberColor : editor.lineNumberColor;
+    if (editor.bitmap) {
+        // Pixel triangles instead of the system's chevrons.
+        GWPixelIcon icon = folded ? GWPixelIconRight : GWPixelIconDown;
+        CGFloat pixel = GWChromePixel();
+        NSSize size = GWPixelIconSize(icon, pixel);
+        NSPoint origin = NSMakePoint(NSWidth(self.bounds) - kFoldArrowInset, std::round(top + (lineHeight - size.height) / 2));
+        GWDrawPixelIcon(icon, origin, pixel, color, NO);
+        return;
+    }
     NSImageSymbolConfiguration *sizeConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:8.5 weight:NSFontWeightBold];
     NSImageSymbolConfiguration *colorConfiguration = [NSImageSymbolConfiguration configurationWithPaletteColors:@[color]];
     NSImage *image = [NSImage imageWithSystemSymbolName:folded ? @"chevron.right" : @"chevron.down" accessibilityDescription:nil];
@@ -476,7 +497,11 @@ static constexpr CGFloat kChangeBarClickWidth = 10;
         }
         [change.kind == gw::LineChangeKind::Added ? added : modified setFill];
         NSRect bar = NSMakeRect(barX, top + 1, 3, height - 2);
-        [[NSBezierPath bezierPathWithRoundedRect:bar xRadius:1.5 yRadius:1.5] fill];
+        if (self.editor.bitmap) {
+            NSRectFill(bar);
+        } else {
+            [[NSBezierPath bezierPathWithRoundedRect:bar xRadius:1.5 yRadius:1.5] fill];
+        }
     }
 }
 
@@ -959,6 +984,9 @@ static constexpr CGFloat kMiniChar = 1.25;
 /// How hints look: a little smaller than the code, muted.
 - (NSDictionary *)inlayHintAttributes {
     NSFont *font = _bitmap ? _font : [NSFont systemFontOfSize:std::max<CGFloat>(9, _font.pointSize - 2.5) weight:NSFontWeightRegular];
+    if (_bitmap) {
+        return @{NSFontAttributeName: font, NSForegroundColorAttributeName: GWColor(GWServices.shared.bitmapScheme.textDim)};
+    }
     return @{NSFontAttributeName: font,
              NSForegroundColorAttributeName: [NSColor.secondaryLabelColor colorWithAlphaComponent:0.95]};
 }
@@ -1043,8 +1071,9 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
             NSSize textSize = [label sizeWithAttributes:attributes];
             CGFloat top = [self yForLine:line];
             NSRect chip = NSMakeRect(x, top + 4, textSize.width + kInlayChipPadding * 2, _lineHeight - 8);
-            [[NSColor.secondaryLabelColor colorWithAlphaComponent:0.14] setFill];
-            [[NSBezierPath bezierPathWithRoundedRect:chip xRadius:4 yRadius:4] fill];
+            NSColor *chipColor = _bitmap ? GWColor(GWServices.shared.bitmapScheme.textDim) : NSColor.secondaryLabelColor;
+            [[chipColor colorWithAlphaComponent:0.14] setFill];
+            [[self boxPath:chip radius:4] fill];
             [label drawAtPoint:NSMakePoint(x + kInlayChipPadding, top + (_lineHeight - textSize.height) / 2) withAttributes:attributes];
         }
     }
@@ -1251,9 +1280,10 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     BOOL keepTopLine = clip != nil && _document != nullptr && _lineHeight > 0;
     size_t topLine = keepTopLine ? [self lineAtY:NSMinY(clip.bounds) subrow:nullptr] : 0;
     _bitmap = services.settings.bitmapMode;
+    _crisp = services.usesPixelFont;
     _font = [services editorFontBold:NO italic:NO];
     _charWidth = [@"0" sizeWithAttributes:@{NSFontAttributeName: _font}].width;
-    if (_bitmap) {
+    if (_crisp) {
         // Whole font pixels everywhere, so nothing lands between screen pixels.
         _pixel = gw::bitmap::pixelSize(services.settings.fontSize);
         _charWidth = gw::pixelfont::kAdvance * _pixel;
@@ -1406,6 +1436,11 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 }
 
 - (CGFloat)textLeft { return kTextInset; }
+
+/// A box behind text: rounded normally, square in bitmap mode.
+- (NSBezierPath *)boxPath:(NSRect)rect radius:(CGFloat)radius {
+    return _bitmap ? [NSBezierPath bezierPathWithRect:rect] : [NSBezierPath bezierPathWithRoundedRect:rect xRadius:radius yRadius:radius];
+}
 
 /// For messages at the ends of lines: a little smaller than the code, or the code's own pixel font.
 - (NSFont *)noteFont {
@@ -1883,7 +1918,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
                 [GWColor(*look.background) setFill];
                 CGFloat bandHeight = [self rowsForLine:line] * _lineHeight - 2;
                 NSRect band = NSMakeRect(NSMinX(visible) + 4, [self yForLine:line] + 1, NSWidth(visible) - 8, bandHeight);
-                [[NSBezierPath bezierPathWithRoundedRect:band xRadius:5 yRadius:5] fill];
+                [[self boxPath:band radius:5] fill];
                 continue;
             }
             if (!look.background && !look.border) {
@@ -1898,7 +1933,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
             [self enumerateSegmentsInLine:line fromByte:startByte toByte:endByte continuesPastEnd:NO
                                     block:^(CGFloat left, CGFloat right, CGFloat top) {
                 NSRect box = NSMakeRect(left - 1, top + 2, right - left + 2, self->_lineHeight - 4);
-                NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:box xRadius:3 yRadius:3];
+                NSBezierPath *path = [self boxPath:box radius:3];
                 if (look.background) {
                     [GWColor(*look.background) setFill];
                     [path fill];
@@ -2339,7 +2374,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         return;
     }
     CGContextRef context = NSGraphicsContext.currentContext.CGContext;
-    if (_bitmap) {
+    if (_crisp) {
         // Hard pixel edges: the font's squares and every band stay crisp.
         CGContextSetShouldAntialias(context, false);
         CGContextSetShouldSmoothFonts(context, false);
@@ -2379,7 +2414,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         if (_bitmap) {
             band = NSMakeRect(NSMinX(visible), [self yForPosition:caretPosition], NSWidth(visible), _lineHeight);
         }
-        [[NSBezierPath bezierPathWithRoundedRect:band xRadius:bandRadius yRadius:bandRadius] fill];
+        [[self boxPath:band radius:bandRadius] fill];
     }
 
     if (_executionLine >= 0 && static_cast<size_t>(_executionLine) >= first && static_cast<size_t>(_executionLine) <= last &&
@@ -2387,7 +2422,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         [[NSColor.systemYellowColor colorWithAlphaComponent:0.16] setFill];
         NSRect band = NSMakeRect(NSMinX(visible) + 4, [self yForLine:static_cast<size_t>(_executionLine)] + 1, NSWidth(visible) - 8,
                                  [self rowsForLine:static_cast<size_t>(_executionLine)] * _lineHeight - 2);
-        [[NSBezierPath bezierPathWithRoundedRect:band xRadius:bandRadius yRadius:bandRadius] fill];
+        [[self boxPath:band radius:bandRadius] fill];
     }
     [self drawLineTintsFromLine:first toLine:last];
     [self drawFindMatchesFromLine:first toLine:last];
@@ -2431,7 +2466,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
             [self enumerateSegmentsInLine:line fromByte:startByte toByte:endByte continuesPastEnd:continues
                                     block:^(CGFloat left, CGFloat right, CGFloat top) {
                 NSRect band = NSMakeRect(left, top + 1, std::max(0.0, right - left), self->_lineHeight - 2);
-                [[NSBezierPath bezierPathWithRoundedRect:band xRadius:4 yRadius:4] fill];
+                [[self boxPath:band radius:4] fill];
             }];
         }
         LineLayout *layout = [self layoutForLine:line];
@@ -2463,11 +2498,23 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         }
         NSRect bar = NSMakeRect(std::round([self xForPosition:at]) - 1, [self yForPosition:at] + 3, 2, _lineHeight - 6);
         [[_caretColor colorWithAlphaComponent:0.9] setFill];
-        [[NSBezierPath bezierPathWithRoundedRect:bar xRadius:1 yRadius:1] fill];
+        [[self boxPath:bar radius:1] fill];
     }
 
     // Matching brackets get a thin rounded outline.
-    if (auto match = [self bracketMatch]) {
+    if (auto match = [self bracketMatch]; match && _bitmap) {
+        // Bitmap mode marks the pair the way the old editors did: a solid block behind each bracket.
+        [[_matchColor colorWithAlphaComponent:0.45] setFill];
+        for (gw::Position at : {match->first, match->second}) {
+            if (at.line < first || at.line > last || [self isLineHidden:at.line]) {
+                continue;
+            }
+            [self enumerateSegmentsInLine:at.line fromByte:at.column toByte:at.column + 1 continuesPastEnd:NO
+                                    block:^(CGFloat left, CGFloat right, CGFloat top) {
+                NSRectFillUsingOperation(NSMakeRect(left, top, right - left, self->_lineHeight), NSCompositingOperationSourceOver);
+            }];
+        }
+    } else if (auto match = [self bracketMatch]) {
         [_matchColor setStroke];
         for (gw::Position at : {match->first, match->second}) {
             if (at.line < first || at.line > last || [self isLineHidden:at.line]) {
@@ -2517,6 +2564,10 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 }
 
 - (NSColor *)colorForSeverity:(int)severity {
+    if (_bitmap) {
+        const gw::bitmap::Scheme &colors = GWServices.shared.bitmapScheme;
+        return GWColor(severity == 1 ? colors.error : severity == 2 ? colors.warning : colors.info);
+    }
     switch (severity) {
         case 1: return NSColor.systemRedColor;
         case 2: return NSColor.systemOrangeColor;
@@ -2527,6 +2578,16 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 
 /// A wavy line under a stretch of text.
 - (void)drawSquiggleFrom:(CGFloat)left to:(CGFloat)right top:(CGFloat)top color:(NSColor *)color {
+    if (_bitmap) {
+        // A dashed line of pixels just under the text, instead of a smooth wave.
+        CGFloat pixel = std::max<CGFloat>(1, _pixel);
+        CGFloat y = std::round(top + _baseline + pixel);
+        [color setFill];
+        for (CGFloat x = left; x < std::max(right, left + _charWidth * 0.8); x += 3 * pixel) {
+            NSRectFill(NSMakeRect(x, y, 2 * pixel, pixel));
+        }
+        return;
+    }
     CGFloat baselineY = top + _baseline + 3;
     CGFloat width = std::max(right - left, _charWidth * 0.8);
     NSBezierPath *path = [NSBezierPath bezierPath];
@@ -2607,7 +2668,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     CGFloat top = [self yForLine:line];
     NSRect chip = NSMakeRect(left - 6, top + 3, width + 12, _lineHeight - 6);
     [[color colorWithAlphaComponent:0.10] setFill];
-    [[NSBezierPath bezierPathWithRoundedRect:chip xRadius:5 yRadius:5] fill];
+    [[self boxPath:chip radius:5] fill];
     NSRect textRect = NSMakeRect(left, top + (_lineHeight - size.height) / 2, width, size.height);
     [full drawWithRect:textRect
                options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
@@ -2935,7 +2996,7 @@ static bool isAccessLabel(std::string_view line) {
 - (void)drawFoldPillForLine:(size_t)line {
     NSRect pill = [self foldPillRectForLine:line];
     [[_foreground colorWithAlphaComponent:0.14] setFill];
-    [[NSBezierPath bezierPathWithRoundedRect:pill xRadius:5 yRadius:5] fill];
+    [[self boxPath:pill radius:5] fill];
     NSDictionary *attributes = @{NSFontAttributeName: _font, NSForegroundColorAttributeName: [_foreground colorWithAlphaComponent:0.7]};
     NSString *dots = @"\u2026";
     NSSize size = [dots sizeWithAttributes:attributes];
@@ -3096,6 +3157,11 @@ static bool isAccessLabel(std::string_view line) {
                                   [](const gw::Range &range, size_t line) { return range.end.line < line; });
     NSColor *matchColor = [NSColor.systemYellowColor colorWithAlphaComponent:0.28];
     NSColor *currentColor = [NSColor.systemOrangeColor colorWithAlphaComponent:0.55];
+    if (_bitmap) {
+        // The bitmap scheme's own find colors.
+        matchColor = [GWServices.shared color:@"editor.findMatchHighlightBackground" fallback:matchColor];
+        currentColor = [GWServices.shared color:@"editor.findMatchBackground" fallback:currentColor];
+    }
     for (auto match = begin; match != _findMatches.end() && match->start.line <= last; ++match) {
         if (match->start.line != match->end.line || [self isLineHidden:match->start.line]) {
             continue;
@@ -3105,10 +3171,10 @@ static bool isAccessLabel(std::string_view line) {
                                 block:^(CGFloat left, CGFloat right, CGFloat top) {
             NSRect box = NSMakeRect(left - 1, top + 2, std::max<CGFloat>(right - left, 3) + 2, self->_lineHeight - 4);
             [isCurrent ? currentColor : matchColor setFill];
-            [[NSBezierPath bezierPathWithRoundedRect:box xRadius:3 yRadius:3] fill];
-            if (isCurrent) {
+            [[self boxPath:box radius:3] fill];
+            if (isCurrent && !self->_bitmap) {
                 [[NSColor.systemOrangeColor colorWithAlphaComponent:0.9] setStroke];
-                NSBezierPath *outline = [NSBezierPath bezierPathWithRoundedRect:box xRadius:3 yRadius:3];
+                NSBezierPath *outline = [self boxPath:box radius:3];
                 outline.lineWidth = 1;
                 [outline stroke];
             }
@@ -3143,7 +3209,7 @@ static bool isAccessLabel(std::string_view line) {
                                     block:^(CGFloat left, CGFloat right, CGFloat top) {
                 NSRect box = NSMakeRect(left - 1, top + 2, right - left + 2, self->_lineHeight - 4);
                 [color setFill];
-                [[NSBezierPath bezierPathWithRoundedRect:box xRadius:3 yRadius:3] fill];
+                [[self boxPath:box radius:3] fill];
             }];
         }
     }
@@ -3174,7 +3240,7 @@ static bool isAccessLabel(std::string_view line) {
                 [self enumerateSegmentsInLine:line fromByte:found toByte:end continuesPastEnd:NO
                                         block:^(CGFloat left, CGFloat right, CGFloat top) {
                     NSRect box = NSMakeRect(left - 1, top + 2, right - left + 2, self->_lineHeight - 4);
-                    [[NSBezierPath bezierPathWithRoundedRect:box xRadius:3 yRadius:3] fill];
+                    [[self boxPath:box radius:3] fill];
                 }];
             }
             found = text.find(word, found + 1);

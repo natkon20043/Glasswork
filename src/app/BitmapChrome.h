@@ -79,6 +79,8 @@ typedef NS_ENUM(NSInteger, GWBitmapPanel) {
 - (NSRect)editorFrame;
 /// Empty while the side window is closed.
 - (NSRect)panelContentFrame;
+/// Inside the terminal's window under the code; empty while `terminalHeight` is 0.
+- (NSRect)terminalContentFrame;
 
 // ---- Menus and dialogs
 - (void)openMenuAtIndex:(NSInteger)index;
@@ -104,6 +106,8 @@ typedef NS_ENUM(NSInteger, GWBitmapPanel) {
 @property (nonatomic, weak, nullable) NSScrollView *scrollView;
 /// How far one click on a scroll arrow moves.
 @property (nonatomic) CGFloat lineScroll;
+/// The terminal's window under the code, frame included; 0 for none.
+@property (nonatomic) CGFloat terminalHeight;
 
 // ---- Callbacks
 @property (nonatomic, copy, nullable) void (^onSelectTab)(NSInteger index);

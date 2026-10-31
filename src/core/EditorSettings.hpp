@@ -33,6 +33,8 @@ struct EditorSettings {
     bool bitmapMode = false;
     /// Glasswork Bitmap's colors: "Turbo", "Low Tide" or "Phosphor".
     std::string bitmapColors = "Turbo";
+    /// Glasswork Bitmap's code font. Empty: its built-in pixel font (editor.fontFamily is Glasswork's).
+    std::string bitmapFont;
 
     // ---- Editor features
     bool highlightOccurrences = true;

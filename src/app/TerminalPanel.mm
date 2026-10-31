@@ -1,5 +1,7 @@
 #import "TerminalPanel.h"
 
+#import "PixelArt.h"
+#import "Services.h"
 #import "TerminalSession.h"
 #import "TerminalView.h"
 
@@ -9,6 +11,8 @@
 @interface GWTerminalTab : NSView
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic) BOOL selected;
+/// Square, pixel text, the bitmap scheme's selection.
+@property (nonatomic) BOOL retro;
 @property (nonatomic, copy, nullable) void (^onSelect)(void);
 @property (nonatomic, copy, nullable) void (^onClose)(void);
 @end
@@ -16,6 +20,7 @@
 @implementation GWTerminalTab {
     NSTextField *_label;
     NSButton *_close;
+    NSImageView *_icon;
     BOOL _hovered;
 }
 
@@ -33,6 +38,7 @@
         imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithPointSize:10.5 weight:NSFontWeightMedium]]];
     icon.contentTintColor = NSColor.secondaryLabelColor;
     icon.translatesAutoresizingMaskIntoConstraints = NO;
+    _icon = icon;
     _label = [NSTextField labelWithString:@""];
     _label.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
     _label.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -65,16 +71,50 @@
 
 - (void)setTitle:(NSString *)title {
     _title = [title copy];
-    _label.stringValue = title;
+    [self updateLabel];
 }
 
 - (void)setSelected:(BOOL)selected {
     _selected = selected;
-    _label.textColor = selected ? NSColor.labelColor : NSColor.secondaryLabelColor;
+    [self updateLabel];
     [self updateColors];
 }
 
+- (void)setRetro:(BOOL)retro {
+    _retro = retro;
+    self.layer.cornerRadius = retro ? 0 : 11;
+    _icon.hidden = retro;
+    [self updateLabel];
+    [self updateColors];
+}
+
+- (void)updateLabel {
+    NSString *title = _title ?: @"";
+    if (_retro) {
+        const gw::bitmap::Scheme &colors = GWServices.shared.bitmapScheme;
+        NSColor *color = GWColor(_selected ? colors.selectionText : colors.text);
+        NSMutableDictionary *attributes = [(_selected ? GWPixelPlainAttributes(GWChromePixel(), color)
+                                                      : GWPixelTextAttributes(GWChromePixel(), color)) mutableCopy];
+        NSMutableParagraphStyle *oneLine = [NSMutableParagraphStyle new];
+        oneLine.lineBreakMode = NSLineBreakByTruncatingHead;  // a long folder keeps its end, on one line
+        attributes[NSParagraphStyleAttributeName] = oneLine;
+        _label.attributedStringValue = [[NSAttributedString alloc] initWithString:title attributes:attributes];
+        _close.contentTintColor = color;
+        return;
+    }
+    _label.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
+    _label.stringValue = title;
+    _label.textColor = _selected ? NSColor.labelColor : NSColor.secondaryLabelColor;
+    _close.contentTintColor = NSColor.tertiaryLabelColor;
+}
+
 - (void)updateColors {
+    if (_retro) {
+        const gw::bitmap::Scheme &colors = GWServices.shared.bitmapScheme;
+        NSColor *band = GWColor(colors.selection);
+        self.layer.backgroundColor = (_selected ? band : _hovered ? [band colorWithAlphaComponent:0.4] : NSColor.clearColor).CGColor;
+        return;
+    }
     [self.effectiveAppearance performAsCurrentDrawingAppearance:^{
         CGFloat alpha = 0;
         if (self->_selected) {
@@ -136,6 +176,7 @@
     NSMutableArray<GWTerminalTab *> *_tabs;
     NSInteger _selected;
     NSTimer *_titleTimer;
+    NSArray<NSButton *> *_headerButtons;
 }
 
 - (instancetype)init {
@@ -158,6 +199,17 @@
 
 - (NSView *)view { return _view; }
 - (NSUInteger)terminalCount { return _sessions.count; }
+
+- (void)setRetro:(BOOL)retro {
+    _retro = retro;
+    for (GWTerminalTab *tab in _tabs) {
+        tab.retro = retro;
+    }
+    NSColor *tint = retro ? GWColor(GWServices.shared.bitmapScheme.text) : NSColor.secondaryLabelColor;
+    for (NSButton *button in _headerButtons) {
+        button.contentTintColor = tint;
+    }
+}
 
 - (NSButton *)headerButton:(NSString *)symbol tip:(NSString *)tip action:(SEL)action {
     NSImage *image = [[NSImage imageWithSystemSymbolName:symbol accessibilityDescription:tip]
@@ -185,6 +237,7 @@
     NSButton *hide = [self headerButton:@"chevron.down" tip:@"Hide the terminal  ⌃`" action:@selector(hideClicked:)];
     NSView *spacer = [NSView new];
     [spacer setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    _headerButtons = @[add, kill, hide];
     NSStackView *header = [NSStackView stackViewWithViews:@[_tabRow, add, spacer, kill, hide]];
     header.spacing = 4;
     header.translatesAutoresizingMaskIntoConstraints = NO;
@@ -247,6 +300,7 @@
     [_sessions addObject:session];
 
     GWTerminalTab *tab = [GWTerminalTab new];
+    tab.retro = _retro;
     tab.onSelect = ^{
         GWTerminalPanel *strongSelf = weakSelf;
         if (strongSelf == nil) {

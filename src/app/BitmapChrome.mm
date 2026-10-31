@@ -66,6 +66,8 @@ struct Geometry {
     NSRect track;
     NSRect panelWindow;
     NSRect panelContent;
+    NSRect terminalWindow;
+    NSRect terminalContent;
 };
 
 // ---- Drawing helpers
@@ -315,6 +317,14 @@ NSString *TitleWithoutHotkeyMark(NSString *marked, NSInteger *hotkey) {
                                     std::max(0.0, NSHeight(g.panelWindow) - 2 * line));
         right = NSMinX(g.panelWindow) - shadow - 2 * pixel;
     }
+    if (_terminalHeight > 0) {
+        // The terminal's own window under the code, keeping at least a few lines of code above it.
+        CGFloat height = Snap(std::min(_terminalHeight, std::max(0.0, bottom - top - 8 * line)));
+        g.terminalWindow = NSMakeRect(2 * pixel, bottom - height, std::max(0.0, right - 2 * pixel), height);
+        g.terminalContent = NSMakeRect(NSMinX(g.terminalWindow) + cell, NSMinY(g.terminalWindow) + line,
+                                       std::max(0.0, NSWidth(g.terminalWindow) - 2 * cell), std::max(0.0, height - 2 * line));
+        bottom = NSMinY(g.terminalWindow) - shadow - 2 * pixel;
+    }
     g.editorWindow = NSMakeRect(2 * pixel, top, std::max(0.0, right - 2 * pixel), std::max(0.0, bottom - top));
     NSRect window = g.editorWindow;
     g.editorContent = NSMakeRect(NSMinX(window) + cell, NSMinY(window) + line, std::max(0.0, NSWidth(window) - 2 * cell),
@@ -330,6 +340,14 @@ NSString *TitleWithoutHotkeyMark(NSString *marked, NSInteger *hotkey) {
 
 - (NSRect)editorFrame { return [self geometry].editorContent; }
 - (NSRect)panelContentFrame { return _panelOpen ? [self geometry].panelContent : NSZeroRect; }
+- (NSRect)terminalContentFrame { return _terminalHeight > 0 ? [self geometry].terminalContent : NSZeroRect; }
+
+- (void)setTerminalHeight:(CGFloat)terminalHeight {
+    if (_terminalHeight != terminalHeight) {
+        _terminalHeight = terminalHeight;
+        self.needsDisplay = YES;
+    }
+}
 
 - (void)setFrameSize:(NSSize)size {
     [super setFrameSize:size];
@@ -448,6 +466,9 @@ NSString *TitleWithoutHotkeyMark(NSString *marked, NSInteger *hotkey) {
     }
     if (_panelOpen && NSIntersectsRect(dirtyRect, NSInsetRect(g.panelWindow, -ShadowSize(), -ShadowSize()))) {
         [self drawPanelWindow:g];
+    }
+    if (_terminalHeight > 0 && NSIntersectsRect(dirtyRect, NSInsetRect(g.terminalWindow, -ShadowSize(), -ShadowSize()))) {
+        [self drawTerminalWindow:g];
     }
     if (NSIntersectsRect(dirtyRect, g.status)) {
         [self drawStatusLine:g];
@@ -641,6 +662,19 @@ NSString *TitleWithoutHotkeyMark(NSString *marked, NSInteger *hotkey) {
         _panelTabRects[index] = NSMakeRect(x, NSMinY(window), width, Line());
         x += width;
     }
+}
+
+/// The terminal under the code: a single-framed window titled Terminal, like the side window.
+- (void)drawTerminalWindow:(const Geometry &)g {
+    const gw::bitmap::Scheme &colors = Colors();
+    NSRect window = g.terminalWindow;
+    NSColor *blue = Palette(colors.window);
+    [NSColor.blackColor setFill];
+    NSRectFill(NSOffsetRect(window, ShadowSize(), ShadowSize()));
+    [blue setFill];
+    NSRectFill(window);
+    DrawFrame(window, Palette(colors.frameDim), NO);
+    DrawOnEdge(@" Terminal ", NSMinX(window) + Cell(), NSMinY(window), Palette(colors.text), blue, YES);
 }
 
 - (void)drawStatusLine:(const Geometry &)g {

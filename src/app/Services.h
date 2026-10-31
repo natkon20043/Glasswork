@@ -63,6 +63,8 @@ extern NSNotificationName const GWEditorSettingsDidChangeNotification;
 - (NSColor *)color:(NSString *)key fallback:(NSColor *)fallback;
 - (NSColor *)color:(NSString *)key;
 - (NSFont *)editorFontBold:(BOOL)bold italic:(BOOL)italic;
+/// Glasswork Bitmap with its built-in pixel font (not a font chosen in its Options menu).
+- (BOOL)usesPixelFont;
 /// Glasswork Bitmap's colors, as chosen in its Options menu.
 - (const gw::bitmap::Scheme &)bitmapScheme;
 

@@ -452,6 +452,8 @@ NSString *RealPath(NSString *path) {
 @property (nonatomic) BOOL bitmap;
 @property (nonatomic, strong, nullable) GWBitmapChrome *bitmapChrome;
 @property (nonatomic, strong, nullable) NSView *bitmapPanel;
+/// The terminal, taken out of its glass and placed in the chrome's terminal window.
+@property (nonatomic, strong, nullable) NSView *bitmapTerminal;
 @end
 
 @implementation GWRootView
@@ -541,15 +543,15 @@ NSString *RealPath(NSString *path) {
     GWBitmapChrome *chrome = self.bitmapChrome;
     chrome.hidden = NO;
     chrome.frame = self.bounds;
-    NSRect code = chrome.editorFrame;
-    self.bottom.hidden = !self.bottomVisible;
-    if (self.bottomVisible) {
-        CGFloat pixel = GWChromePixel();
-        CGFloat bottomHeight = MAX(120, MIN(self.bottomHeight, NSHeight(code) - 160));
-        self.bottom.frame = NSMakeRect(NSMinX(code), NSMaxY(code) - bottomHeight, NSWidth(code), bottomHeight);
-        code.size.height = MAX(0, NSHeight(code) - bottomHeight - pixel);
+    self.bottom.hidden = YES;  // the terminal's glass; the terminal itself moves into the chrome
+    NSView *terminal = self.bitmapTerminal;
+    BOOL showTerminal = self.bottomVisible && terminal != nil;
+    chrome.terminalHeight = showTerminal ? MAX(120, self.bottomHeight) : 0;
+    terminal.hidden = !showTerminal;
+    if (showTerminal) {
+        terminal.frame = chrome.terminalContentFrame;
     }
-    self.editorContent.frame = code;
+    self.editorContent.frame = chrome.editorFrame;
     NSRect panel = chrome.panelContentFrame;
     self.bitmapPanel.hidden = NSIsEmptyRect(panel);
     self.bitmapPanel.frame = panel;
@@ -4224,6 +4226,7 @@ static NSString *CompactCount(long count) {
     _debugPanel.retro = wanted;
     _findBar.retro = wanted;
     [self placeDebugPanel];
+    [self placeTerminal];
     [_suggestions hide];
     [self hideHint];
     [self updateBackdrop];
@@ -4364,6 +4367,14 @@ static NSString *CompactCount(long count) {
         [items addObject:scheme];
     }
     [items addObject:[GWBitmapMenuItem separator]];
+    GWBitmapMenuItem *pixelFont = [GWBitmapMenuItem itemWithTitle:@"Pi&xel Font" action:@selector(useBitmapPixelFont:) shortcut:@""];
+    pixelFont.checked = settings.bitmapFont.empty();
+    [items addObject:pixelFont];
+    NSString *otherTitle = settings.bitmapFont.empty() ? @"Other &Font…" : [NSString stringWithFormat:@"&Font: %@…", StringFromUTF8(settings.bitmapFont)];
+    GWBitmapMenuItem *otherFont = [GWBitmapMenuItem itemWithTitle:otherTitle action:@selector(chooseBitmapFont:) shortcut:@""];
+    otherFont.checked = !settings.bitmapFont.empty();
+    [items addObject:otherFont];
+    [items addObject:[GWBitmapMenuItem separator]];
     GWBitmapMenuItem *smear = [GWBitmapMenuItem itemWithTitle:@"Cursor S&mear" action:@selector(toggleCursorSmear:) shortcut:@""];
     smear.checked = settings.vimCursorSmear;
     [items addObject:smear];
@@ -4387,11 +4398,69 @@ static NSString *CompactCount(long count) {
     }];
 }
 
+/// Options > Pixel Font: back to the built-in pixel font.
+- (IBAction)useBitmapPixelFont:(id)sender {
+    [GWServices.shared updateSettings:^(gw::EditorSettings &settings) {
+        settings.bitmapFont.clear();
+    }];
+}
+
+/// Options > Other Font…: any installed code font for Glasswork Bitmap (Glasswork keeps its own).
+- (IBAction)chooseBitmapFont:(id)sender {
+    NSArray<NSString *> *families = [self monospacedFontFamilies];
+    NSString *current = StringFromUTF8(GWServices.shared.settings.bitmapFont);
+    [GWPalette.shared showOverWindow:self.window placeholder:@"Font for the code…" provider:^NSArray<GWPaletteItem *> *(NSString *query) {
+        NSMutableArray<GWPaletteItem *> *items = [NSMutableArray array];
+        for (NSString *family in families) {
+            if (query.length > 0 && [family rangeOfString:query options:NSCaseInsensitiveSearch].location == NSNotFound) {
+                continue;
+            }
+            GWPaletteItem *item = [GWPaletteItem new];
+            item.title = family;
+            item.subtitle = [family isEqualToString:current] ? @"in use" : nil;
+            item.symbol = @"textformat";
+            std::string chosen = family.UTF8String;
+            item.run = ^{
+                [GWServices.shared updateSettings:^(gw::EditorSettings &settings) {
+                    settings.bitmapFont = chosen;
+                }];
+            };
+            [items addObject:item];
+        }
+        return items;
+    }];
+}
+
 /// Options > Cursor Smear: the Vim cursor's trail, on or off.
 - (IBAction)toggleCursorSmear:(id)sender {
     [GWServices.shared updateSettings:^(gw::EditorSettings &settings) {
         settings.vimCursorSmear = !settings.vimCursorSmear;
     }];
+}
+
+/// The terminal sits in its glass panel normally, and in the chrome's terminal window in bitmap mode.
+- (void)placeTerminal {
+    NSView *view = _terminal.view;
+    if (view == nil || _root.bottom == nil) {
+        return;  // not built yet; building it calls applyTheme, which comes back here
+    }
+    if (_bitmapActive) {
+        if (_root.bottom.contentView == view) {
+            _root.bottom.contentView = nil;
+        }
+        if (view.superview != _root) {
+            [view removeFromSuperview];
+            view.translatesAutoresizingMaskIntoConstraints = YES;  // placed by frame, in layoutBitmap
+            [_root addSubview:view positioned:NSWindowAbove relativeTo:_root.bitmapPanel];
+        }
+        _root.bitmapTerminal = view;
+    } else if (_root.bottom.contentView != view) {
+        [view removeFromSuperview];
+        _root.bottom.contentView = view;
+        _root.bitmapTerminal = nil;
+    }
+    _terminal.retro = _bitmapActive;
+    _root.needsLayout = YES;
 }
 
 /// The colors (or the smear) changed: the chrome, the lists and the debugger take the new look.
@@ -4403,6 +4472,7 @@ static NSString *CompactCount(long count) {
     _bitmapList.needsDisplay = YES;
     [_debugPanel refreshLook];
     _findBar.retro = YES;  // picks up the new colors
+    [self placeTerminal];
     [self showBitmapPanelContent];
 }
 

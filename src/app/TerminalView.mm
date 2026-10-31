@@ -4,6 +4,9 @@
 #import "Services.h"
 #import "TerminalSession.h"
 
+#include "BitmapMode.hpp"
+#include "PixelFont.hpp"
+
 #import <CoreText/CoreText.h>
 #import <QuartzCore/QuartzCore.h>
 
@@ -271,6 +274,10 @@ static CGColorRef createRGB(uint8_t red, uint8_t green, uint8_t blue) {
         _fontSize = configuredSize;
     } else {
         _fontSize = MAX(10.0, services.settings.fontSize - 1);
+    }
+    if (services.usesPixelFont) {
+        // Whole font pixels, as in the editor, so the pixel font stays sharp.
+        _fontSize = gw::bitmap::pixelSize(_fontSize) * gw::pixelfont::kPixelsPerEm;
     }
     NSFont *regular = [services editorFontBold:NO italic:NO];
     NSFont *bold = [services editorFontBold:YES italic:NO];
