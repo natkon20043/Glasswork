@@ -2,6 +2,7 @@
 
 #import <AppKit/AppKit.h>
 
+#include "BitmapMode.hpp"
 #include "EditorSettings.hpp"
 #include "Extensions.hpp"
 #include "Styling.hpp"
@@ -62,6 +63,8 @@ extern NSNotificationName const GWEditorSettingsDidChangeNotification;
 - (NSColor *)color:(NSString *)key fallback:(NSColor *)fallback;
 - (NSColor *)color:(NSString *)key;
 - (NSFont *)editorFontBold:(BOOL)bold italic:(BOOL)italic;
+/// Glasswork Bitmap's colors, as chosen in its Options menu.
+- (const gw::bitmap::Scheme &)bitmapScheme;
 
 // ---- Properties
 /// ~/Library/Application Support/Glasswork/settings.json

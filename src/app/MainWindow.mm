@@ -1,6 +1,7 @@
 #import "MainWindow.h"
 #import "Strings.h"
 
+#import "BitmapChrome.h"
 #import "ChangePopover.h"
 #import "ChatPanel.h"
 #import "ColorInspector.h"
@@ -18,7 +19,9 @@
 #import "ExtensionHostService.h"
 #import "KeybindingService.h"
 
+#include "BitmapMode.hpp"
 #include "CssColor.hpp"
+#include "PixelFont.hpp"
 #include "RemoteHost.hpp"
 #import "MarkdownView.h"
 #import "CompletionPopup.h"
@@ -156,6 +159,13 @@ bool looksBinary(const char *path) {
     return false;
 }
 
+/// The path with symbolic links resolved the way file system events report it. Foundation's own
+/// resolving drops a leading "/private", so files under /tmp never matched their events.
+NSString *RealPath(NSString *path) {
+    char resolved[PATH_MAX];
+    return realpath(path.fileSystemRepresentation, resolved) != nullptr ? @(resolved) : path;
+}
+
 }  // namespace
 
 // MARK: - Aurora
@@ -280,6 +290,8 @@ bool looksBinary(const char *path) {
 /// Holds an extension's webview; shown (instead of the scroll view above) for a webview tab.
 @property (nonatomic, strong) NSView *webviewHolder;
 @property (nonatomic) BOOL webviewMode;
+/// Bitmap mode: no breadcrumb bar (the window's frame shows the tabs instead).
+@property (nonatomic) BOOL bitmap;
 @end
 
 @implementation GWEditorCard
@@ -310,7 +322,8 @@ bool looksBinary(const char *path) {
 - (void)layoutParts {
     CGFloat width = NSWidth(self.bounds), height = NSHeight(self.bounds);
     self.breadcrumbBar.frame = NSMakeRect(0, 0, width, kBreadcrumbHeight);
-    CGFloat top = kBreadcrumbHeight;
+    self.breadcrumbBar.hidden = self.bitmap;
+    CGFloat top = self.bitmap ? 0 : kBreadcrumbHeight;
     CGFloat gutter = self.editor.gutterWidth;
     BOOL showMinimap = GWServices.shared.settings.showMinimap;
     CGFloat minimapWidth = showMinimap ? kMinimapWidth : 0;
@@ -434,6 +447,11 @@ bool looksBinary(const char *path) {
 /// Thin strips you drag to resize the chat and the terminal.
 @property (nonatomic, strong) NSView *chatHandle;
 @property (nonatomic, strong) NSView *bottomHandle;
+/// Bitmap mode: the retro chrome fills the window instead of the glass, with the code, the
+/// terminal and the side panel's content placed in it.
+@property (nonatomic) BOOL bitmap;
+@property (nonatomic, strong, nullable) GWBitmapChrome *bitmapChrome;
+@property (nonatomic, strong, nullable) NSView *bitmapPanel;
 @end
 
 @implementation GWRootView
@@ -452,6 +470,15 @@ bool looksBinary(const char *path) {
 
 - (void)layout {
     [super layout];
+    if (self.bitmap) {
+        [self layoutBitmap];
+        return;
+    }
+    self.bitmapChrome.hidden = YES;
+    self.bitmapPanel.hidden = YES;
+    self.aurora.hidden = NO;
+    self.tabs.hidden = NO;
+    self.status.hidden = NO;
     NSRect bounds = self.bounds;
     CGFloat width = NSWidth(bounds), height = NSHeight(bounds);
     self.backdrop.frame = bounds;
@@ -500,6 +527,32 @@ bool looksBinary(const char *path) {
     welcome.width = std::max(welcome.width, 460.0);
     self.welcome.frame = NSMakeRect(std::round(NSMidX(card) - welcome.width / 2), std::round(NSMidY(card) - welcome.height / 2 - 20),
                                     welcome.width, welcome.height);
+}
+
+/// Bitmap mode: none of the glass, just the chrome, with the code (and the terminal under it, when
+/// open) in its code area and the side panel's content beside the tool strip.
+- (void)layoutBitmap {
+    for (NSView *glass in @[self.backdrop, self.aurora, self.sidebar, self.tabs, self.status, self.editorCard, self.welcome]) {
+        glass.hidden = YES;
+    }
+    self.chat.hidden = YES;
+    self.chatHandle.hidden = YES;
+    self.bottomHandle.hidden = YES;
+    GWBitmapChrome *chrome = self.bitmapChrome;
+    chrome.hidden = NO;
+    chrome.frame = self.bounds;
+    NSRect code = chrome.editorFrame;
+    self.bottom.hidden = !self.bottomVisible;
+    if (self.bottomVisible) {
+        CGFloat pixel = GWChromePixel();
+        CGFloat bottomHeight = MAX(120, MIN(self.bottomHeight, NSHeight(code) - 160));
+        self.bottom.frame = NSMakeRect(NSMinX(code), NSMaxY(code) - bottomHeight, NSWidth(code), bottomHeight);
+        code.size.height = MAX(0, NSHeight(code) - bottomHeight - pixel);
+    }
+    self.editorContent.frame = code;
+    NSRect panel = chrome.panelContentFrame;
+    self.bitmapPanel.hidden = NSIsEmptyRect(panel);
+    self.bitmapPanel.frame = panel;
 }
 
 @end
@@ -582,6 +635,13 @@ bool looksBinary(const char *path) {
     BOOL _secondaryPanelsBuilt;
     uint64_t _nextTabIdentifier;
     NSUInteger _indexRebuildToken;
+
+    // Bitmap mode (built the first time it is switched on).
+    BOOL _bitmapActive;
+    NSToolbar *_glassToolbar;       // the window's toolbar, put back when bitmap mode ends
+    GWBitmapList *_bitmapList;      // files, problems or keys in the side panel
+    NSURL *_bitmapFolder;           // the folder the files list shows
+    NSString *_bitmapListedFile;    // the file in front when the list was made, to mark it
 }
 
 - (instancetype)init {
@@ -770,6 +830,9 @@ bool looksBinary(const char *path) {
         }
         strongSelf->_card.needsLayout = YES;
     };
+    _findBar.onClose = ^{
+        [weakSelf dropVimSearchSelection];  // leaving the find bar ends the search, as Return does in Vim
+    };
     _card.findBar = _findBar;
     [_card addSubview:_findBar];
     [self connectEditorCallbacks];
@@ -809,6 +872,12 @@ bool looksBinary(const char *path) {
     };
     _editorView.onInspectColors = ^{
         [weakSelf inspectColors:nil];
+    };
+    _editorView.onGoToDefinition = ^{
+        [weakSelf goToDefinition:nil];
+    };
+    _editorView.onFindReferences = ^{
+        [weakSelf findReferences:nil];
     };
     _editorView.onChangeMarkerClick = ^(size_t line, NSRect rect) {
         [weakSelf showChangeAtLine:line rect:rect];
@@ -1115,6 +1184,10 @@ bool looksBinary(const char *path) {
 
 - (void)applyTheme {
     GWServices *services = GWServices.shared;
+    [self applyBitmapMode];
+    if (_bitmapActive) {
+        [self restyleBitmap];
+    }
     _language.enabled = services.settings.languageServers;
     const gw::Theme &theme = services.theme;
     BOOL dark = theme.isDark();
@@ -1211,8 +1284,7 @@ bool looksBinary(const char *path) {
     tab->identifier = ++_nextTabIdentifier;
     tab->document = std::move(document);
     if (tab->document->path()) {
-        NSString *resolved = [StringFromUTF8(*tab->document->path()) stringByResolvingSymlinksInPath];
-        tab->realPath = resolved.UTF8String;
+        tab->realPath = RealPath(StringFromUTF8(*tab->document->path())).UTF8String;
     }
     if (configure) {
         configure(*tab);
@@ -1369,9 +1441,12 @@ bool looksBinary(const char *path) {
     _tabBar.items = items;
     _tabBar.selectedIndex = _selected;
     Tab *tab = [self currentTab];
-    _root.editorCard.hidden = tab == nullptr;
+    _root.editorCard.hidden = tab == nullptr || _bitmapActive;
     _root.editorContent.hidden = tab == nullptr;
-    _root.welcome.hidden = tab != nullptr;
+    _root.welcome.hidden = tab != nullptr || _bitmapActive;
+    if (_bitmapActive) {
+        [self refreshBitmapChromeWithTabs:items];
+    }
     if (!tab) {
         [self reloadRecents];
     }
@@ -2216,6 +2291,9 @@ static NSString *const kHighlightGroup = @"gw.documentHighlight";
 }
 
 - (void)updateStatus {
+    if (_bitmapActive) {
+        [self updateBitmapStatus];
+    }
     Tab *tab = [self currentTab];
     GWServices *services = GWServices.shared;
     NSDictionary *attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium],
@@ -3391,10 +3469,14 @@ static NSString *CompactCount(long count) {
     }
     _executionPath = frame.path;
     _executionLine = frame.line - 1;
-    if (!_root.sidebarVisible) {
-        [self toggleSidebar:nil];
+    if (_bitmapActive) {
+        [self openBitmapPanel:GWBitmapPanelDebug];
+    } else {
+        if (!_root.sidebarVisible) {
+            [self toggleSidebar:nil];
+        }
+        [self setSidebarMode:3];
     }
-    [self setSidebarMode:3];
     if (![[NSFileManager defaultManager] fileExistsAtPath:frame.path]) {
         return;
     }
@@ -4003,11 +4085,24 @@ static NSString *CompactCount(long count) {
             break;
         case gw::VimAction::SearchNext:
             [_findBar findNext];
+            [self dropVimSearchSelection];
             break;
         case gw::VimAction::SearchPrevious:
             [_findBar findPrevious];
+            [self dropVimSearchSelection];
             break;
     }
+}
+
+/// Find selects the match it lands on, but Vim's search only moves the cursor there: with the match
+/// left selected, Vim would take it as a visual selection and the next motion would grow it.
+- (void)dropVimSearchSelection {
+    Tab *tab = [self currentTab];
+    if (tab == nullptr || _editorView.vimStatus == nil || tab->document->selection.empty()) {
+        return;
+    }
+    gw::Position start = tab->document->selection.range().start;
+    [_editorView selectRange:gw::Range{start, start}];
 }
 
 - (IBAction)findNext:(id)sender { [_findBar findNext]; }
@@ -4094,6 +4189,558 @@ static NSString *CompactCount(long count) {
     [self.window makeFirstResponder:_editorView];
 }
 
+// MARK: - Bitmap mode
+
+/// Puts the window in the look of the app it runs in: bitmap mode's chrome in Glasswork Bitmap,
+/// the glass everywhere else.
+- (void)applyBitmapMode {
+    BOOL wanted = GWServices.shared.settings.bitmapMode;
+    if (wanted == _bitmapActive) {
+        return;
+    }
+    _bitmapActive = wanted;
+    NSWindow *window = self.window;
+    if (wanted) {
+        [self buildBitmapChromeIfNeeded];
+        // No toolbar, so the window buttons sit in the menu bar; an opaque window gets the
+        // system's own shadow and nothing behind it is blurred or bent.
+        _glassToolbar = window.toolbar;
+        window.toolbar = nil;
+        window.opaque = YES;
+        window.backgroundColor = NSColor.blackColor;
+        window.hasShadow = YES;
+    } else {
+        window.toolbar = _glassToolbar;
+        window.toolbarStyle = NSWindowToolbarStyleUnified;
+        window.titlebarSeparatorStyle = NSTitlebarSeparatorStyleNone;
+        window.opaque = NO;
+        window.backgroundColor = NSColor.clearColor;
+        window.hasShadow = NO;
+    }
+    _card.layer.cornerRadius = wanted ? 0 : 20;
+    _card.bitmap = wanted;
+    _card.scrollView.hasVerticalScroller = !wanted;  // the window's frame has its own scrollbar
+    _root.bitmap = wanted;
+    _debugPanel.retro = wanted;
+    _findBar.retro = wanted;
+    [self placeDebugPanel];
+    [_suggestions hide];
+    [self hideHint];
+    [self updateBackdrop];
+    [self refresh];
+    if (wanted) {
+        [self showBitmapPanelContent];
+    }
+    _root.needsLayout = YES;
+    _card.needsLayout = YES;
+}
+
+- (void)buildBitmapChromeIfNeeded {
+    if (_root.bitmapChrome != nil) {
+        return;
+    }
+    __weak GWMainWindowController *weakSelf = self;
+    GWBitmapChrome *chrome = [GWBitmapChrome new];
+    chrome.menus = [self bitmapMenus];
+    chrome.scrollView = _card.scrollView;
+    chrome.lineScroll = 3 * gw::pixelfont::kLineHeight * gw::bitmap::pixelSize(GWServices.shared.settings.fontSize);
+    chrome.onSelectTab = ^(NSInteger index) { [weakSelf selectTab:index]; };
+    chrome.onCloseTab = ^(NSInteger index) { [weakSelf closeTabAtIndex:index]; };
+    chrome.onChoosePanel = ^(GWBitmapPanel panel) { [weakSelf openBitmapPanel:panel]; };
+    chrome.onTogglePanel = ^{ [weakSelf toggleSidebar:nil]; };
+    // Over the backdrop and aurora, under the code, the terminal and the panels.
+    [_root addSubview:chrome positioned:NSWindowAbove relativeTo:_root.aurora];
+    _root.bitmapChrome = chrome;
+
+    NSView *panel = [NSView new];
+    [_root addSubview:panel positioned:NSWindowAbove relativeTo:chrome];
+    _root.bitmapPanel = panel;
+    _bitmapList = [GWBitmapList new];
+    _bitmapList.onChoose = ^(GWBitmapRow *row) { [weakSelf chooseBitmapRow:row]; };
+    NSScrollView *scroll = _bitmapList.scrollView;
+    scroll.frame = panel.bounds;
+    scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    [panel addSubview:scroll];
+}
+
+/// The menu bar's menus. Each item runs the same action as the real menu bar's, through the
+/// responder chain, so it does exactly what that menu item does (and is greyed out when it can't).
+- (NSArray<GWBitmapMenu *> *)bitmapMenus {
+    auto item = ^GWBitmapMenuItem *(NSString *title, NSString *action, NSString *shortcut) {
+        return [GWBitmapMenuItem itemWithTitle:title action:NSSelectorFromString(action) shortcut:shortcut];
+    };
+    GWBitmapMenuItem *line = [GWBitmapMenuItem separator];
+    return @[
+        [GWBitmapMenu menuWithTitle:@"≡" items:@[
+            item(@"&About Glasswork Bitmap", @"orderFrontStandardAboutPanel:", @""),
+            item(@"Open in &Glasswork", @"openInOtherApp:", @"⌃⌘B"),
+            line,
+            item(@"&Settings…", @"openSettings:", @"⌘,"),
+            item(@"&Quit", @"terminate:", @"⌘Q"),
+        ]],
+        [GWBitmapMenu menuWithTitle:@"&File" items:@[
+            item(@"&New", @"newDocument:", @"⌘N"),
+            item(@"&Open…", @"openDocument:", @"⌘O"),
+            item(@"Open &Folder…", @"openFolder:", @"⇧⌘O"),
+            item(@"&Quick Open…", @"quickOpen:", @"⌘P"),
+            line,
+            item(@"&Save", @"saveDocument:", @"⌘S"),
+            item(@"Save &As…", @"saveDocumentAs:", @"⇧⌘S"),
+            item(@"Save A&ll", @"saveAllDocuments:", @"⌥⌘S"),
+            line,
+            item(@"&Close Tab", @"closeTab:", @"⌘W"),
+            item(@"&Reopen Tab", @"reopenClosedTab:", @"⇧⌘T"),
+        ]],
+        [GWBitmapMenu menuWithTitle:@"&Edit" items:@[
+            item(@"&Undo", @"undo:", @"⌘Z"),
+            item(@"&Redo", @"redo:", @"⇧⌘Z"),
+            line,
+            item(@"Cu&t", @"cut:", @"⌘X"),
+            item(@"&Copy", @"copy:", @"⌘C"),
+            item(@"&Paste", @"paste:", @"⌘V"),
+            item(@"Select &All", @"selectAll:", @"⌘A"),
+            line,
+            item(@"Toggle Co&mment", @"toggleLineComment:", @"⌘/"),
+        ]],
+        [GWBitmapMenu menuWithTitle:@"&Search" items:@[
+            item(@"&Find…", @"showFind:", @"⌘F"),
+            item(@"&Replace…", @"showFindAndReplace:", @"⌥⌘F"),
+            item(@"Find &Next", @"findNext:", @"⌘G"),
+            item(@"Find &Previous", @"findPrevious:", @"⇧⌘G"),
+            line,
+            item(@"&Go to Line…", @"goToLine:", @"⌃G"),
+            item(@"&Symbol…", @"goToSymbolInFile:", @"⌘R"),
+            item(@"&Definition", @"goToDefinition:", @"⌃⌘D"),
+        ]],
+        [GWBitmapMenu menuWithTitle:@"&Run" items:@[
+            item(@"&Run File", @"runCurrentFile:", @"⌥⌘R"),
+            item(@"&Build", @"buildProject:", @"⇧⌘B"),
+            item(@"Run &Task…", @"runTask:", @"⌥⌘B"),
+            line,
+            item(@"T&erminal", @"toggleTerminal:", @"⌃`"),
+        ]],
+        [GWBitmapMenu menuWithTitle:@"&Debug" items:@[
+            item(@"&Start / Continue", @"startDebugging:", @"F5"),
+            item(@"S&top", @"stopDebugging:", @"⇧F5"),
+            line,
+            item(@"Step &Over", @"debugStepOver:", @"F10"),
+            item(@"Step &Into", @"debugStepInto:", @"F11"),
+            item(@"Step O&ut", @"debugStepOut:", @"⇧F11"),
+            line,
+            item(@"Toggle &Breakpoint", @"toggleBreakpoint:", @"F9"),
+            item(@"&Clear Breakpoints", @"removeAllBreakpoints:", @""),
+            line,
+            item(@"Debug &Executable…", @"debugExecutable:", @""),
+        ]],
+        [GWBitmapMenu menuWithTitle:@"&View" items:@[
+            item(@"&Files", @"showExplorer:", @"⇧⌘E"),
+            item(@"&Issues", @"showBitmapIssues:", @""),
+            item(@"&Debugger", @"showDebugPanel:", @"⇧⌘D"),
+            item(@"&Side Window", @"toggleSidebar:", @"⌘B"),
+            line,
+            item(@"&Bigger Text", @"increaseFontSize:", @"⌘="),
+            item(@"S&maller Text", @"decreaseFontSize:", @"⌘-"),
+            item(@"&Word Wrap", @"toggleWordWrap:", @"⌥Z"),
+        ]],
+        [GWBitmapMenu menuWithTitle:@"&Options" items:[self bitmapOptionsItems]],
+        [GWBitmapMenu menuWithTitle:@"&Help" items:@[
+            item(@"&Keys", @"showBitmapKeys:", @""),
+            item(@"&About", @"orderFrontStandardAboutPanel:", @""),
+        ]],
+    ];
+}
+
+/// Options: the color schemes (the chosen one has a bullet), the smear, and the settings files.
+- (NSArray<GWBitmapMenuItem *> *)bitmapOptionsItems {
+    const gw::EditorSettings &settings = GWServices.shared.settings;
+    NSMutableArray<GWBitmapMenuItem *> *items = [NSMutableArray array];
+    const auto &schemes = gw::bitmap::schemes();
+    NSString *const hotkeys[] = {@"&Turbo", @"&Low Tide", @"&Phosphor"};
+    for (size_t index = 0; index < schemes.size(); ++index) {
+        NSString *title = index < std::size(hotkeys) ? hotkeys[index] : StringFromUTF8(schemes[index].name);
+        GWBitmapMenuItem *scheme = [GWBitmapMenuItem itemWithTitle:title action:@selector(chooseBitmapColors:) shortcut:@""];
+        scheme.tag = static_cast<NSInteger>(index);
+        scheme.checked = schemes[index].name == GWServices.shared.bitmapScheme.name;
+        [items addObject:scheme];
+    }
+    [items addObject:[GWBitmapMenuItem separator]];
+    GWBitmapMenuItem *smear = [GWBitmapMenuItem itemWithTitle:@"Cursor S&mear" action:@selector(toggleCursorSmear:) shortcut:@""];
+    smear.checked = settings.vimCursorSmear;
+    [items addObject:smear];
+    [items addObject:[GWBitmapMenuItem separator]];
+    [items addObject:[GWBitmapMenuItem itemWithTitle:@"&Settings…" action:@selector(openSettings:) shortcut:@"⌘,"]];
+    [items addObject:[GWBitmapMenuItem itemWithTitle:@"&Keyboard…" action:@selector(openKeybindings:) shortcut:@""]];
+    [items addObject:[GWBitmapMenuItem itemWithTitle:@"&Commands…" action:@selector(showCommandPalette:) shortcut:@"⇧⌘P"]];
+    return items;
+}
+
+/// Options > Turbo, Low Tide or Phosphor: the item's tag is the scheme's place in the list.
+- (IBAction)chooseBitmapColors:(id)sender {
+    NSInteger index = [sender respondsToSelector:@selector(tag)] ? [sender tag] : 0;
+    const auto &schemes = gw::bitmap::schemes();
+    if (index < 0 || static_cast<size_t>(index) >= schemes.size()) {
+        return;
+    }
+    std::string name = schemes[static_cast<size_t>(index)].name;
+    [GWServices.shared updateSettings:^(gw::EditorSettings &settings) {
+        settings.bitmapColors = name;
+    }];
+}
+
+/// Options > Cursor Smear: the Vim cursor's trail, on or off.
+- (IBAction)toggleCursorSmear:(id)sender {
+    [GWServices.shared updateSettings:^(gw::EditorSettings &settings) {
+        settings.vimCursorSmear = !settings.vimCursorSmear;
+    }];
+}
+
+/// The colors (or the smear) changed: the chrome, the lists and the debugger take the new look.
+- (void)restyleBitmap {
+    GWBitmapChrome *chrome = _root.bitmapChrome;
+    chrome.menus = [self bitmapMenus];
+    chrome.lineScroll = 3 * gw::pixelfont::kLineHeight * gw::bitmap::pixelSize(GWServices.shared.settings.fontSize);
+    chrome.needsDisplay = YES;
+    _bitmapList.needsDisplay = YES;
+    [_debugPanel refreshLook];
+    _findBar.retro = YES;  // picks up the new colors
+    [self showBitmapPanelContent];
+}
+
+/// Help > Keys: the keys bitmap mode is used with, in a dialog.
+- (IBAction)showBitmapKeys:(id)sender {
+    [_root.bitmapChrome showDialogWithTitle:@"Keys" lines:@[
+        @"i a o    insert         F5    run, continue",
+        @"esc      normal         ⇧F5   stop",
+        @"v V      visual         F9    breakpoint",
+        @"hjkl w b move           F10   step over",
+        @"x dd     delete         F11   step into",
+        @"yy p     copy, paste    ⇧F11  step out",
+        @"u ⌃R     undo, redo",
+        @"/ n N    search         ⌘P    open a file",
+        @":w :q    save, quit     ⇧⌘P   commands",
+    ]];
+}
+
+/// View > Open Menu Bar: the window's own menu bar from the keyboard (arrows move, Return runs).
+- (IBAction)openBitmapMenuBar:(id)sender {
+    [_root.bitmapChrome openMenuAtIndex:1];  // File, after the ≡ menu
+}
+
+- (IBAction)showBitmapIssues:(id)sender {
+    [self openBitmapPanel:GWBitmapPanelIssues];
+}
+
+/// View > Open in Glasswork Bitmap (or in Glasswork): the folder (or the file) in the other app.
+- (IBAction)openInOtherApp:(id)sender {
+    BOOL bitmap = GWServices.shared.settings.bitmapMode;
+    NSString *identifier = bitmap ? @"dev.glasswork.Glasswork" : @"dev.glasswork.GlassworkBitmap";
+    NSString *name = bitmap ? @"Glasswork" : @"Glasswork Bitmap";
+    NSURL *app = [NSWorkspace.sharedWorkspace URLForApplicationWithBundleIdentifier:identifier];
+    if (app == nil) {
+        [self showErrorTitle:[NSString stringWithFormat:@"%@ isn't installed", name]
+                     message:@"Install both apps with scripts/install.sh."];
+        return;
+    }
+    NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+    NSURL *folder = _fileTree.rootURL;
+    if (folder != nil && !GWIsRemoteURL(folder)) {
+        [urls addObject:folder];
+    }
+    Tab *tab = [self currentTab];
+    if (tab != nullptr && tab->document->path() && tab->remoteURL.empty()) {
+        [urls addObject:[NSURL fileURLWithPath:StringFromUTF8(*tab->document->path())]];
+    }
+    NSWorkspaceOpenConfiguration *configuration = [NSWorkspaceOpenConfiguration configuration];
+    if (urls.count == 0) {
+        [NSWorkspace.sharedWorkspace openApplicationAtURL:app configuration:configuration completionHandler:nil];
+    } else {
+        [NSWorkspace.sharedWorkspace openURLs:urls withApplicationAtURL:app configuration:configuration completionHandler:nil];
+    }
+}
+
+/// The debug panel lives in the glass sidebar, or in bitmap mode's side window while that is on.
+- (void)placeDebugPanel {
+    NSView *view = _debugPanel.view;
+    if (view == nil) {
+        return;  // built with the other secondary panels, which put it in place themselves
+    }
+    NSView *target = _bitmapActive ? _root.bitmapPanel : _sidebarContainer;
+    if (view.superview != target) {
+        [view removeFromSuperview];
+        if (_bitmapActive) {
+            view.translatesAutoresizingMaskIntoConstraints = NO;
+            [target addSubview:view];
+            [NSLayoutConstraint activateConstraints:@[
+                [view.topAnchor constraintEqualToAnchor:target.topAnchor],
+                [view.bottomAnchor constraintEqualToAnchor:target.bottomAnchor],
+                [view.leadingAnchor constraintEqualToAnchor:target.leadingAnchor],
+                [view.trailingAnchor constraintEqualToAnchor:target.trailingAnchor],
+            ]];
+        } else {
+            [self addSidebarPanel:view];
+        }
+    }
+    _debugPanel.retro = _bitmapActive;
+    view.hidden = _bitmapActive ? _root.bitmapChrome.panel != GWBitmapPanelDebug : _sidebarMode != 3;
+}
+
+/// Opens the side window on a tab (files, issues or the debugger).
+- (void)openBitmapPanel:(GWBitmapPanel)panel {
+    if (!_bitmapActive) {
+        return;
+    }
+    if (panel == GWBitmapPanelDebug) {
+        [self buildSecondaryPanels];  // makes the debugger and its panel
+    }
+    GWBitmapChrome *chrome = _root.bitmapChrome;
+    chrome.panel = panel;
+    chrome.panelOpen = YES;
+    [self placeDebugPanel];
+    [self showBitmapPanelContent];
+    _root.needsLayout = YES;
+}
+
+/// Fills the side window for the tab chosen: a list, or the debugger.
+- (void)showBitmapPanelContent {
+    GWBitmapChrome *chrome = _root.bitmapChrome;
+    if (chrome == nil) {
+        return;
+    }
+    BOOL debug = chrome.panel == GWBitmapPanelDebug;
+    _bitmapList.scrollView.hidden = debug;
+    if (_debugPanel.view.superview == _root.bitmapPanel) {
+        _debugPanel.view.hidden = !debug;
+    }
+    if (!chrome.panelOpen) {
+        return;
+    }
+    switch (chrome.panel) {
+        case GWBitmapPanelFiles:
+            [self reloadBitmapFiles];
+            break;
+        case GWBitmapPanelIssues:
+            [self reloadBitmapProblems];
+            break;
+        case GWBitmapPanelDebug:
+            [_debugPanel reload];
+            break;
+    }
+}
+
+/// Tabs, title and the file the list marks follow the window (called from `refresh`).
+- (void)refreshBitmapChromeWithTabs:(NSArray<GWTabItem *> *)items {
+    GWBitmapChrome *chrome = _root.bitmapChrome;
+    NSURL *root = _fileTree.rootURL;
+    chrome.title = root.lastPathComponent ?: @"";
+    chrome.tabs = items;
+    chrome.selectedTab = _selected;
+    Tab *tab = [self currentTab];
+    chrome.hasFile = tab != nullptr;
+    if (!chrome.panelOpen) {
+        return;
+    }
+    NSString *file = tab != nullptr && tab->document->path() ? StringFromUTF8(*tab->document->path()) : nil;
+    BOOL fileChanged = !(file == _bitmapListedFile || [file isEqualToString:_bitmapListedFile]);
+    BOOL folderChanged = root == nil || _bitmapFolder == nil || ![self bitmapFolderIsInside:root];
+    if (chrome.panel == GWBitmapPanelFiles && (fileChanged || folderChanged)) {
+        [self reloadBitmapFiles];
+    } else if (chrome.panel == GWBitmapPanelIssues) {
+        [self reloadBitmapProblems];
+    }
+}
+
+/// The caret's place and Vim's mode (or the command being typed) in the code window's frame, and
+/// problems and server news in the status line.
+- (void)updateBitmapStatus {
+    GWBitmapChrome *chrome = _root.bitmapChrome;
+    Tab *tab = [self currentTab];
+    NSMutableArray<NSString *> *news = [NSMutableArray array];
+    NSUInteger errors = [_language errorCount], warnings = [_language warningCount];
+    if (errors > 0) {
+        [news addObject:[NSString stringWithFormat:@"%lu error%@", (unsigned long)errors, errors == 1 ? @"" : @"s"]];
+    }
+    if (warnings > 0) {
+        [news addObject:[NSString stringWithFormat:@"%lu warning%@", (unsigned long)warnings, warnings == 1 ? @"" : @"s"]];
+    }
+    for (NSString *token in [_serverProgress.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        [news addObject:_serverProgress[token]];
+    }
+    if (_extensionStatusMessage.length > 0) {
+        [news addObject:_extensionStatusMessage];
+    }
+    chrome.message = news.count > 0 ? [news componentsJoinedByString:@"  "] : (tab != nullptr ? @"Ready" : @"");
+    if (tab == nullptr) {
+        chrome.position = @"";
+        chrome.mode = @"";
+        return;
+    }
+    const gw::Document &document = *tab->document;
+    gw::Position caret = document.selection.caret;
+    std::string_view line = document.buffer().line(caret.line);
+    NSString *prefix = [[NSString alloc] initWithBytes:line.data()
+                                                length:std::min(caret.column, line.size())
+                                              encoding:NSUTF8StringEncoding];
+    chrome.position = [NSString stringWithFormat:@"%zu:%lu", caret.line + 1, (unsigned long)prefix.length + 1];
+    chrome.mode = _editorView.vimStatus ?: @"";
+}
+
+// ---- The side window's lists
+
+- (BOOL)bitmapFolderIsInside:(NSURL *)root {
+    NSString *folder = _bitmapFolder.path;
+    return [folder isEqualToString:root.path] || [folder hasPrefix:[root.path stringByAppendingString:@"/"]];
+}
+
+/// The folder's files under its path, folders first; ".." goes up, "new" makes a file.
+- (void)reloadBitmapFiles {
+    NSURL *root = _fileTree.rootURL;
+    Tab *tab = [self currentTab];
+    _bitmapListedFile = tab != nullptr && tab->document->path() ? StringFromUTF8(*tab->document->path()) : nil;
+    const gw::bitmap::Scheme &colors = GWServices.shared.bitmapScheme;
+    NSColor *yellow = GWColor(colors.folder);
+    NSColor *white = GWColor(colors.file);
+    NSColor *grey = GWColor(colors.textDim);
+    NSColor *cyan = GWColor(colors.link);
+    if (root == nil || GWIsRemoteURL(root)) {
+        NSString *hint = root == nil ? @"No folder open." : @"A remote folder:";
+        NSString *how = root == nil ? @"File > Open Folder" : @"use File > Quick Open";
+        _bitmapList.rows = @[[GWBitmapRow rowWithText:hint color:grey], [GWBitmapRow rowWithText:how color:grey]];
+        return;
+    }
+    if (_bitmapFolder == nil || ![self bitmapFolderIsInside:root]) {
+        _bitmapFolder = root;
+    }
+    NSArray<NSURL *> *contents = [NSFileManager.defaultManager contentsOfDirectoryAtURL:_bitmapFolder
+                                                            includingPropertiesForKeys:@[NSURLIsDirectoryKey]
+                                                                               options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                                                 error:nil] ?: @[];
+    NSMutableArray<NSURL *> *folders = [NSMutableArray array];
+    NSMutableArray<NSURL *> *files = [NSMutableArray array];
+    for (NSURL *url in contents) {
+        NSNumber *directory = nil;
+        [url getResourceValue:&directory forKey:NSURLIsDirectoryKey error:nil];
+        [(directory.boolValue ? folders : files) addObject:url];
+    }
+    NSComparator byName = ^NSComparisonResult(NSURL *a, NSURL *b) {
+        return [a.lastPathComponent localizedStandardCompare:b.lastPathComponent];
+    };
+    [folders sortUsingComparator:byName];
+    [files sortUsingComparator:byName];
+
+    NSMutableArray<GWBitmapRow *> *rows = [NSMutableArray array];
+    NSString *relative = [_bitmapFolder.path substringFromIndex:root.path.length];
+    [rows addObject:[GWBitmapRow rowWithText:[[root.lastPathComponent stringByAppendingString:relative] stringByAppendingString:@"/"]
+                                       color:cyan]];
+    if (![_bitmapFolder.path isEqualToString:root.path]) {
+        GWBitmapRow *up = [GWBitmapRow rowWithIcon:GWPixelIconFolder iconColor:yellow text:@".."];
+        up.representedObject = @"..";
+        [rows addObject:up];
+    }
+    for (NSURL *folder in folders) {
+        GWBitmapRow *row = [GWBitmapRow rowWithIcon:GWPixelIconFolder iconColor:yellow text:folder.lastPathComponent];
+        row.representedObject = folder;
+        [rows addObject:row];
+    }
+    for (NSURL *file in files) {
+        GWBitmapRow *row = [GWBitmapRow rowWithIcon:GWPixelIconFile iconColor:white text:file.lastPathComponent];
+        row.representedObject = file;
+        row.highlighted = [file.path isEqualToString:_bitmapListedFile];
+        [rows addObject:row];
+    }
+    GWBitmapRow *add = [GWBitmapRow rowWithIcon:GWPixelIconPlus iconColor:GWColor(colors.add) text:@"new"];
+    add.representedObject = @"+new";
+    [rows addObject:add];
+    _bitmapList.rows = rows;
+}
+
+/// The front file's problems by line; choosing one goes there.
+- (void)reloadBitmapProblems {
+    Tab *tab = [self currentTab];
+    const gw::bitmap::Scheme &colors = GWServices.shared.bitmapScheme;
+    if (tab == nullptr) {
+        _bitmapList.rows = @[[GWBitmapRow rowWithText:@"No file open." color:GWColor(colors.textDim)]];
+        return;
+    }
+    std::vector<GWDiagnostic> diagnostics = [_language diagnosticsForDocument:tab->document.get()];
+    std::stable_sort(diagnostics.begin(), diagnostics.end(), [](const GWDiagnostic &a, const GWDiagnostic &b) {
+        return a.range.start.line < b.range.start.line;
+    });
+    NSMutableArray<GWBitmapRow *> *rows = [NSMutableArray array];
+    for (const GWDiagnostic &diagnostic : diagnostics) {
+        gw::Color color = diagnostic.severity == 1 ? colors.error : diagnostic.severity == 2 ? colors.warning : colors.info;
+        NSString *message = StringFromUTF8(diagnostic.message);
+        message = [message componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet].firstObject ?: @"";
+        NSString *text = [NSString stringWithFormat:@"%zu %@", diagnostic.range.start.line + 1, message];
+        GWBitmapRow *row = [GWBitmapRow rowWithIcon:GWPixelIconAlert iconColor:GWColor(color) text:text];
+        row.representedObject = @[@(diagnostic.range.start.line), @(diagnostic.range.start.column)];
+        [rows addObject:row];
+    }
+    if (rows.count == 0) {
+        [rows addObject:[GWBitmapRow rowWithText:@"No problems." color:GWColor(colors.good)]];
+    }
+    _bitmapList.rows = rows;
+}
+
+- (void)chooseBitmapRow:(GWBitmapRow *)row {
+    id target = row.representedObject;
+    if ([target isKindOfClass:NSArray.class]) {
+        NSArray<NSNumber *> *place = target;
+        [_editorView jumpToPosition:gw::Position{place[0].unsignedLongValue, place[1].unsignedLongValue}];
+        [self.window makeFirstResponder:_editorView];
+    } else if ([target isEqual:@".."]) {
+        _bitmapFolder = _bitmapFolder.URLByDeletingLastPathComponent;
+        [self reloadBitmapFiles];
+    } else if ([target isEqual:@"+new"]) {
+        [self askForNewBitmapFile];
+    } else if ([target isKindOfClass:NSURL.class]) {
+        NSURL *url = target;
+        NSNumber *directory = nil;
+        [url getResourceValue:&directory forKey:NSURLIsDirectoryKey error:nil];
+        if (directory.boolValue) {
+            _bitmapFolder = url;
+            [self reloadBitmapFiles];
+        } else {
+            [self openURL:url];
+            [self.window makeFirstResponder:_editorView];
+        }
+    }
+}
+
+/// "new" in the files list: makes an empty file in the folder shown, and opens it.
+- (void)askForNewBitmapFile {
+    NSURL *folder = _bitmapFolder;
+    if (folder == nil) {
+        return;
+    }
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = [NSString stringWithFormat:@"New file in “%@”", folder.lastPathComponent];
+    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
+    field.placeholderString = @"main.lua";
+    alert.accessoryView = field;
+    alert.window.initialFirstResponder = field;
+    [alert addButtonWithTitle:@"Create"];
+    [alert addButtonWithTitle:@"Cancel"];
+    __weak GWMainWindowController *weakSelf = self;
+    [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+        NSString *name = [field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (response != NSAlertFirstButtonReturn || name.length == 0) {
+            return;
+        }
+        if ([name containsString:@"/"] || [name isEqualToString:@"."] || [name isEqualToString:@".."]) {
+            [weakSelf showErrorTitle:@"Couldn't make the file" message:@"A file name can't contain “/”."];
+            return;
+        }
+        NSURL *url = [folder URLByAppendingPathComponent:name isDirectory:NO];
+        NSError *error = nil;
+        if (![[NSData data] writeToURL:url options:NSDataWritingWithoutOverwriting error:&error]) {
+            [weakSelf showErrorTitle:@"Couldn't make the file" message:error.localizedDescription ?: @""];
+            return;
+        }
+        [weakSelf reloadBitmapFiles];
+        [weakSelf openURL:url];
+    }];
+}
+
 // MARK: - Panels built after the window appears
 
 /// Puts a panel into the sidebar, filling it.
@@ -4163,6 +4810,9 @@ static NSString *CompactCount(long count) {
     _search.view.hidden = _sidebarMode != 2;
     _debugPanel.view.hidden = _sidebarMode != 3;
     _search.rootFolder = _fileTree.rootURL.path;
+    if (_bitmapActive) {
+        [self placeDebugPanel];
+    }
 
     // The chat with Claude, on the right.
     _chat = [GWChatPanel new];
@@ -4206,6 +4856,13 @@ static NSString *CompactCount(long count) {
 }
 
 - (void)revealSidebarMode:(NSInteger)mode {
+    if (_bitmapActive) {
+        // Bitmap mode's panel has the files and the debugger; the other sidebar modes aren't in it.
+        if (mode == 0 || mode == 3) {
+            [self openBitmapPanel:mode == 0 ? GWBitmapPanelFiles : GWBitmapPanelDebug];
+        }
+        return;
+    }
     if (!_root.sidebarVisible) {
         [self toggleSidebar:nil];
     }
@@ -4265,7 +4922,7 @@ static NSString *CompactCount(long count) {
             continue;
         }
         tab->document->movedTo(std::filesystem::path(newPath.UTF8String));
-        tab->realPath = [newPath stringByResolvingSymlinksInPath].UTF8String;
+        tab->realPath = RealPath(newPath).UTF8String;
         tab->headLoaded = false;
         [_language documentDidMove:tab->document.get() fromPath:tabPath];
         [self configureLanguageForTab:*tab];
@@ -4915,6 +5572,10 @@ static double timed(void (^work)(void)) {
     for (NSString *folderPath in changedFolders) {
         [_fileTree reloadDirectory:[NSURL fileURLWithPath:folderPath isDirectory:YES]];
     }
+    if (_bitmapActive && _bitmapFolder != nil && [changedFolders containsObject:_bitmapFolder.path] &&
+        _root.bitmapChrome.panel == GWBitmapPanelFiles) {
+        [self reloadBitmapFiles];
+    }
     for (auto &tab : _tabs) {
         if (!tab->realPath.empty() && [changed containsObject:StringFromUTF8(tab->realPath)]) {
             [self checkExternalChangeForTab:tab.get()];
@@ -5186,6 +5847,9 @@ static double timed(void (^work)(void)) {
     Tab *tab = [self currentTab];
     if (tab != nullptr && tab->document.get() == document) {
         [_editorView setDiagnostics:[_language diagnosticsForDocument:document]];
+        if (_bitmapActive && _root.bitmapChrome.panel == GWBitmapPanelIssues) {
+            [self reloadBitmapProblems];
+        }
     }
     [self updateStatus];
 }
@@ -5872,7 +6536,7 @@ static NSString *commitCharactersOf(const gw::lsp::Json &item) {
     [alert beginSheetModalForWindow:self.window completionHandler:nil];
 }
 
-/// A document the language server can work with, or nil (with a message) if there is none.
+/// A document the language server can work with, or nullptr (with a message) if there is none.
 - (gw::Document *)documentForLanguageCommand {
     Tab *tab = [self currentTab];
     if (tab == nullptr || !tab->document->path()) {
@@ -7226,6 +7890,12 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
 }
 
 - (IBAction)toggleSidebar:(id)sender {
+    if (_bitmapActive) {
+        _root.bitmapChrome.panelOpen = !_root.bitmapChrome.panelOpen;
+        [self showBitmapPanelContent];
+        _root.needsLayout = YES;
+        return;
+    }
     _root.sidebarVisible = !_root.sidebarVisible;
     [_extensionViews sidebarVisibilityChanged:_sidebarMode == 4 && _root.sidebarVisible];
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
@@ -7238,6 +7908,23 @@ static gw::lsp::Json editInCommandArguments(const gw::lsp::Json &action) {
 
 - (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item {
     SEL action = item.action;
+    if (action == @selector(openBitmapMenuBar:) || action == @selector(showBitmapIssues:) || action == @selector(showBitmapKeys:)) {
+        return _bitmapActive;
+    }
+    if (_bitmapActive) {
+        // The lighter bitmap mode has no chat, source control, project search or extension views.
+        static const SEL unavailable[] = {
+            @selector(toggleChat:), @selector(newClaudeChat:), @selector(askClaudeAboutSelection:),
+            @selector(explainSelectionWithClaude:), @selector(findProblemsWithClaude:), @selector(fixProblemsWithClaude:),
+            @selector(writeTestsWithClaude:), @selector(improveWithClaude:), @selector(showSourceControl:),
+            @selector(findInFiles:), @selector(showExtensionViews:),
+        };
+        for (SEL each : unavailable) {
+            if (action == each) {
+                return NO;
+            }
+        }
+    }
     if (action == @selector(saveDocument:) || action == @selector(saveDocumentAs:)) {
         Tab *tab = [self currentTab];
         return tab != nullptr && !tab->isVirtual;

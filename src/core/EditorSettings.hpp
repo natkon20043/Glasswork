@@ -28,6 +28,11 @@ struct EditorSettings {
     std::vector<std::string> disabledExtensions;
     /// Empty: built-in symbols.
     std::string iconTheme;
+    /// The pixel look, locked to Vim. Set by the Glasswork Bitmap app; never read from or written
+    /// to settings.json, so both apps share one settings file.
+    bool bitmapMode = false;
+    /// Glasswork Bitmap's colors: "Turbo", "Low Tide" or "Phosphor".
+    std::string bitmapColors = "Turbo";
 
     // ---- Editor features
     bool highlightOccurrences = true;

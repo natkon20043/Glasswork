@@ -1,5 +1,8 @@
 #import "Services.h"
+#import "PixelArt.h"
 #import "Strings.h"
+
+#include "BitmapMode.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -141,7 +144,9 @@ std::optional<std::string> readFile(NSURL *url) {
     std::vector<std::string> _appliedDisabledExtensions;  // what the extension manager was last given
     std::unique_ptr<gw::Theme> _theme;
     std::unique_ptr<gw::Stylist> _stylist;
-    gw::EditorSettings _settings;
+    gw::EditorSettings _settings;   // as saved in settings.json
+    gw::EditorSettings _effective;  // what applies: the saved settings with bitmap mode's locks
+    BOOL _bitmapApp;                // this is Glasswork Bitmap (GWBitmapMode in Info.plist)
     dispatch_source_t _settingsWatcher;
     std::string _lastWrittenSettings;  // to ignore the watcher firing for our own saves
 }
@@ -176,6 +181,7 @@ std::optional<std::string> readFile(NSURL *url) {
     _grammars = std::make_unique<gw::GrammarRegistry>(*_extensions);
     _theme = gw::Theme::parse(kFallbackTheme, true);
     _themeLabel = @"Glasswork Dark";
+    _bitmapApp = [[NSBundle.mainBundle objectForInfoDictionaryKey:@"GWBitmapMode"] boolValue];
 
     [self loadOrCreateSettings];
     [self rebuildStylist];
@@ -187,7 +193,7 @@ std::optional<std::string> readFile(NSURL *url) {
 - (gw::GrammarRegistry &)grammars { return *_grammars; }
 - (const gw::Theme &)theme { return *_theme; }
 - (gw::Stylist &)stylist { return *_stylist; }
-- (const gw::EditorSettings &)settings { return _settings; }
+- (const gw::EditorSettings &)settings { return _effective; }
 
 // MARK: Settings
 
@@ -199,6 +205,7 @@ std::optional<std::string> readFile(NSURL *url) {
         if (!error.empty()) {
             NSLog(@"Glasswork: %s", error.c_str());
         }
+        [self refreshEffectiveSettings];
         return;
     }
 
@@ -214,7 +221,15 @@ std::optional<std::string> readFile(NSURL *url) {
     if (theme) {
         _settings.theme = theme.UTF8String;
     }
+    [self refreshEffectiveSettings];
     [self writeSettings];
+}
+
+/// The settings that apply: the file's, in bitmap mode for Glasswork Bitmap, with what that mode locks.
+- (void)refreshEffectiveSettings {
+    gw::EditorSettings settings = _settings;
+    settings.bitmapMode = _bitmapApp;
+    _effective = gw::bitmap::withLocks(std::move(settings));
 }
 
 - (void)writeSettings {
@@ -226,9 +241,10 @@ std::optional<std::string> readFile(NSURL *url) {
 
 - (void)updateSettings:(void (^)(gw::EditorSettings &))change {
     std::string previousTheme = _settings.theme;
+    std::string previousColors = _settings.bitmapColors;
     change(_settings);
     [self writeSettings];
-    [self settingsDidChangeFromTheme:previousTheme];
+    [self settingsDidChangeFromTheme:previousTheme colors:previousColors];
 }
 
 - (void)reloadSettings {
@@ -237,24 +253,28 @@ std::optional<std::string> readFile(NSURL *url) {
         return;  // missing, or just our own save
     }
     std::string previousTheme = _settings.theme;
+    std::string previousColors = _settings.bitmapColors;
     std::string error;
     _settings = gw::parseSettings(*text, &error);
     if (!error.empty()) {
         NSLog(@"Glasswork: %s", error.c_str());
     }
     _lastWrittenSettings = *text;
-    [self settingsDidChangeFromTheme:previousTheme];
+    [self settingsDidChangeFromTheme:previousTheme colors:previousColors];
 }
 
-- (void)settingsDidChangeFromTheme:(const std::string &)previousTheme {
+- (void)settingsDidChangeFromTheme:(const std::string &)previousTheme colors:(const std::string &)previousColors {
+    [self refreshEffectiveSettings];
     if (_settings.disabledExtensions != _appliedDisabledExtensions) {
         // Extensions were switched on or off: read them again with the new list.
         _appliedDisabledExtensions = _settings.disabledExtensions;
         _extensions->setDisabled(std::set<std::string>(_appliedDisabledExtensions.begin(), _appliedDisabledExtensions.end()));
         [self extensionsChanged];
     }
-    if (_settings.theme != previousTheme) {
-        [self loadTheme:StringFromUTF8(_settings.theme)];  // posts the theme notification itself
+    // The code's theme: the chosen theme normally, the chosen scheme's own in Glasswork Bitmap.
+    bool themeChanged = _effective.bitmapMode ? _settings.bitmapColors != previousColors : _settings.theme != previousTheme;
+    if (themeChanged) {
+        [self applySavedTheme];  // posts the theme notification itself
     }
     [self reloadIconTheme];
     [self rebuildStylist];
@@ -291,7 +311,7 @@ std::optional<std::string> readFile(NSURL *url) {
 }
 
 - (void)rebuildStylist {
-    _stylist = std::make_unique<gw::Stylist>(*_theme, _settings.colors);
+    _stylist = std::make_unique<gw::Stylist>(*_theme, _effective.colors);
 }
 
 // MARK: Extensions
@@ -470,6 +490,10 @@ std::optional<std::string> readFile(NSURL *url) {
 }
 
 - (void)applySavedTheme {
+    if (_effective.bitmapMode) {
+        [self loadBitmapTheme];
+        return;
+    }
     if ([self loadTheme:StringFromUTF8(_settings.theme)]) {
         return;
     }
@@ -477,6 +501,21 @@ std::optional<std::string> readFile(NSURL *url) {
         return;
     }
     [self loadTheme:@"Dark+"];
+}
+
+/// Bitmap mode's own colors, built in, whichever theme is chosen for the normal look.
+- (void)loadBitmapTheme {
+    const gw::bitmap::Scheme &scheme = self.bitmapScheme;
+    std::string error;
+    auto theme = gw::Theme::parse(scheme.themeJson, true, &error);
+    if (!theme) {
+        NSLog(@"Glasswork: the bitmap theme %s failed: %s", scheme.name.c_str(), error.c_str());
+        return;
+    }
+    _theme = std::move(theme);
+    _themeLabel = StringFromUTF8(scheme.name);
+    [self rebuildStylist];
+    [NSNotificationCenter.defaultCenter postNotificationName:GWThemeDidChangeNotification object:self];
 }
 
 - (void)selectThemeNamed:(NSString *)label {
@@ -523,7 +562,7 @@ std::optional<std::string> readFile(NSURL *url) {
 
 // MARK: Editor settings shortcuts
 
-- (CGFloat)editorOpacity { return _settings.editorOpacity; }
+- (CGFloat)editorOpacity { return _effective.editorOpacity; }
 - (CGFloat)fontSize { return _settings.fontSize; }
 
 - (void)setEditorOpacity:(CGFloat)editorOpacity {
@@ -538,7 +577,14 @@ std::optional<std::string> readFile(NSURL *url) {
     }];
 }
 
+- (const gw::bitmap::Scheme &)bitmapScheme {
+    return gw::bitmap::schemeNamed(_settings.bitmapColors);
+}
+
 - (NSFont *)editorFontBold:(BOOL)bold italic:(BOOL)italic {
+    if (_effective.bitmapMode) {
+        return GWPixelFont(gw::bitmap::pixelSize(_settings.fontSize));  // one weight, upright
+    }
     CGFloat size = _settings.fontSize;
     NSFontWeight weight = bold ? NSFontWeightSemibold : NSFontWeightRegular;
 

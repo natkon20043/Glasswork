@@ -137,6 +137,7 @@ EditorSettings parseSettings(const std::string& jsonc, std::string* error) {
     readValue(document, "window.glassStyle", settings.glassStyle);
     readValue(document, "workbench.colorTheme", settings.theme);
     readValue(document, "workbench.iconTheme", settings.iconTheme);
+    readValue(document, "bitmap.colors", settings.bitmapColors);
     if (document.contains("extensions.disabled") && document["extensions.disabled"].is_array()) {
         for (const auto& id : document["extensions.disabled"]) {
             if (id.is_string()) {
@@ -245,6 +246,8 @@ std::string serializeSettings(const EditorSettings& settings) {
         << "  \"window.frostedBackdrop\": " << boolean(settings.frostedBackdrop)
         << ",  // false: the desktop shows through sharply and the glass bends it\n"
         << "  \"window.glassStyle\": " << json(settings.glassStyle).dump() << ",  // \"regular\" or \"clear\" for the sidebar and bars\n"
+        << "  \"bitmap.colors\": " << json(settings.bitmapColors).dump()
+        << ",  // Glasswork Bitmap's colors: \"Turbo\", \"Low Tide\" or \"Phosphor\" (Options menu)\n"
         << "  \"editor.minimap\": " << boolean(settings.showMinimap) << ",\n"
         << "  \"editor.vim\": " << boolean(settings.vimMode) << ",  // Vim keys: modes, motions, operators (View > Vim Mode)\n"
         << "  \"editor.vimCursorSmear\": " << boolean(settings.vimCursorSmear) << ",  // the Vim cursor leaves a trail when it jumps\n"

@@ -155,6 +155,10 @@ struct GWDecoration {
 @property (nonatomic, copy, nullable) void (^onSectionsChange)(void);
 /// Right-click: inspect or recolor code.
 @property (nonatomic, copy, nullable) void (^onInspectColors)(void);
+/// Right-click: jump to where the name at the caret is defined.
+@property (nonatomic, copy, nullable) void (^onGoToDefinition)(void);
+/// Right-click: list every use of the name at the caret.
+@property (nonatomic, copy, nullable) void (^onFindReferences)(void);
 /// A change bar was clicked; `rect` is the bar in the view.
 @property (nonatomic, copy, nullable) void (^onChangeMarkerClick)(size_t line, NSRect rect);
 /// The pointer rested on a word starting at `position`; answer by showing something near it.
