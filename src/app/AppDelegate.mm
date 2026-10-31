@@ -294,17 +294,18 @@ static NSString *SpecialKey(unichar key) {
 
 /// The Glasswork menu: about, settings, hide, quit.
 - (void)addAppMenuTo:(NSMenu *)main {
-    [self submenu:@"Glasswork" items:@[
-        [self item:@"About Glasswork" action:@selector(orderFrontStandardAboutPanel:) key:@""],
+    NSString *name = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleName"] ?: @"Glasswork";
+    [self submenu:name items:@[
+        [self item:[@"About " stringByAppendingString:name] action:@selector(orderFrontStandardAboutPanel:) key:@""],
         NSMenuItem.separatorItem,
         [self item:@"Settings…" action:@selector(openSettings:) key:@","],
         [self item:@"Keyboard Shortcuts (JSON)…" action:@selector(openKeybindings:) key:@""],
         NSMenuItem.separatorItem,
-        [self item:@"Hide Glasswork" action:@selector(hide:) key:@"h"],
+        [self item:[@"Hide " stringByAppendingString:name] action:@selector(hide:) key:@"h"],
         [self item:@"Hide Others" action:@selector(hideOtherApplications:) key:@"h" modifiers:kCommand | kOption],
         [self item:@"Show All" action:@selector(unhideAllApplications:) key:@""],
         NSMenuItem.separatorItem,
-        [self item:@"Quit Glasswork" action:@selector(terminate:) key:@"q"],
+        [self item:[@"Quit " stringByAppendingString:name] action:@selector(terminate:) key:@"q"],
     ] parent:main];
 }
 
@@ -412,7 +413,12 @@ static NSString *SpecialKey(unichar key) {
         [self settingToggle:@"Minimap" tag:GWSettingMinimap],
         [self settingToggle:@"Vim Mode" tag:GWSettingVim],
         NSMenuItem.separatorItem,
+        [self otherAppItem],
+        NSMenuItem.separatorItem,
     ] parent:main];
+    if ([[NSBundle.mainBundle objectForInfoDictionaryKey:@"GWBitmapMode"] boolValue]) {
+        [view addItem:[self item:@"Open Menu Bar" action:NSSelectorFromString(@"openBitmapMenuBar:") key:@""]];
+    }
     return view;
 }
 
@@ -646,6 +652,14 @@ static NSString *SpecialKey(unichar key) {
     return nullptr;
 }
 
+/// View > Open in Glasswork Bitmap (⌃⌘B), or Open in Glasswork from the bitmap app: the same folder
+/// in the other look.
+- (NSMenuItem *)otherAppItem {
+    BOOL bitmapApp = [[NSBundle.mainBundle objectForInfoDictionaryKey:@"GWBitmapMode"] boolValue];
+    NSString *title = bitmapApp ? @"Open in Glasswork" : @"Open in Glasswork Bitmap";
+    return [self item:title action:NSSelectorFromString(@"openInOtherApp:") key:@"b" modifiers:kCommand | kControl];
+}
+
 - (void)toggleSetting:(NSMenuItem *)sender {
     GWSettingToggle tag = static_cast<GWSettingToggle>(sender.tag);
     [GWServices.shared updateSettings:^(gw::EditorSettings &settings) {
@@ -661,6 +675,8 @@ static NSString *SpecialKey(unichar key) {
         gw::EditorSettings settings = GWServices.shared.settings;
         bool *value = [self settingForToggle:static_cast<GWSettingToggle>(item.tag) in:settings];
         item.state = value && *value ? NSControlStateValueOn : NSControlStateValueOff;
+        // Bitmap mode decides these (Vim on, the extra drawing off), so they can't be changed in it.
+        return !settings.bitmapMode || item.tag == GWSettingOccurrences;
     }
     return YES;
 }

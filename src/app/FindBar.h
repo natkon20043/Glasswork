@@ -26,6 +26,9 @@ NS_ASSUME_NONNULL_BEGIN
 // ---- Properties
 @property (nonatomic, weak, nullable) GWEditorView *editor;
 @property (nonatomic, readonly) CGFloat preferredHeight;
+/// Bitmap mode: a grey box of pixel text in the scheme's colors instead of glass. Setting it again
+/// picks up changed colors.
+@property (nonatomic) BOOL retro;
 
 // ---- Callbacks
 /// The bar closed itself (Escape or the close button).

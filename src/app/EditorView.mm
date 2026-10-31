@@ -4,6 +4,7 @@
 #include "SelectionExpand.hpp"
 #include "TextTransforms.hpp"
 
+#import "PixelArt.h"
 #import "Services.h"
 #import "StartupTiming.h"
 
@@ -18,7 +19,9 @@
 #include <optional>
 #include <unordered_map>
 
+#include "BitmapMode.hpp"
 #include "CursorSmear.hpp"
+#include "PixelFont.hpp"
 #include "Folding.hpp"
 #include "RowMap.hpp"
 #include "Wrap.hpp"
@@ -43,6 +46,11 @@ namespace {
 /// Lines of tokenizing allowed per call while drawing; beyond it, lines draw plain and
 /// the highlighter catches up over the next frames instead of stalling the UI.
 constexpr size_t kHighlightBudget = 400;
+/// Lines tokenized per idle step below the colored part, so the minimap fills in without scrolling.
+/// Kept under Highlighter::kNearLines so each step extends the main run instead of an island.
+constexpr size_t kHighlightAheadLines = 300;
+/// Files longer than this are only colored where they are viewed, to keep memory in check.
+constexpr size_t kHighlightAheadMaxLines = 200000;
 /// Padding between the line-number ruler and the text.
 constexpr CGFloat kTextInset = 14;
 
@@ -244,6 +252,12 @@ std::optional<size_t> indentColumns(std::string_view text, size_t tabSize) {
 @property (nonatomic, readonly) NSColor *backgroundColor;
 @property (nonatomic, readonly) NSColor *lineNumberColor;
 @property (nonatomic, readonly) NSColor *activeLineNumberColor;
+/// Behind the line numbers: the code's own color, or a band of its own in bitmap mode.
+@property (nonatomic, readonly) NSColor *gutterColor;
+/// Bitmap mode: pixel font, no smoothing, a hard shadow under the text.
+@property (nonatomic, readonly) BOOL bitmap;
+/// One font pixel, in points (bitmap mode only).
+@property (nonatomic, readonly) CGFloat pixel;
 - (gw::Document *)document;
 - (gw::Highlighter *)highlighter;
 - (CGFloat)yForLine:(size_t)line;
@@ -296,8 +310,12 @@ static constexpr CGFloat kChangeBarClickWidth = 10;
 
 - (void)drawRect:(NSRect)dirtyRect {
     GWEditorView *editor = self.editor;
-    [editor.backgroundColor setFill];
+    [editor.gutterColor setFill];
     NSRectFillUsingOperation(NSIntersectionRect(dirtyRect, self.bounds), NSCompositingOperationSourceOver);
+    BOOL bitmap = editor.bitmap;
+    if (bitmap) {
+        CGContextSetShouldAntialias(NSGraphicsContext.currentContext.CGContext, false);
+    }
     gw::Document *document = editor.document;
     if (!document) {
         return;
@@ -316,6 +334,15 @@ static constexpr CGFloat kChangeBarClickWidth = 10;
                              NSParagraphStyleAttributeName: right};
     NSDictionary *active = @{NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:editor.lineNumberFont.pointSize weight:NSFontWeightSemibold],
                              NSForegroundColorAttributeName: editor.activeLineNumberColor, NSParagraphStyleAttributeName: right};
+    if (bitmap) {
+        // Plain pixel numbers with the same hard shadow as the code, and no bubbles.
+        NSMutableDictionary *pixelNormal = [GWPixelTextAttributes(editor.pixel, editor.lineNumberColor) mutableCopy];
+        pixelNormal[NSParagraphStyleAttributeName] = right;
+        NSMutableDictionary *pixelActive = [GWPixelTextAttributes(editor.pixel, editor.activeLineNumberColor) mutableCopy];
+        pixelActive[NSParagraphStyleAttributeName] = right;
+        normal = pixelNormal;
+        active = pixelActive;
+    }
     CGFloat textHeight = editor.lineNumberFont.ascender - editor.lineNumberFont.descender;
     for (size_t line = first; line <= last && first < count; ++line) {
         if ([editor isLineHidden:line]) {
@@ -332,15 +359,25 @@ static constexpr CGFloat kChangeBarClickWidth = 10;
         NSRect bubble = NSMakeRect(bubbleRight - bubbleWidth, top + 3, bubbleWidth, lineHeight - 6);
         NSColor *bubbleColor = line == caretLine ? [NSColor.controlAccentColor colorWithAlphaComponent:0.38]
                                                  : [editor.lineNumberColor colorWithAlphaComponent:0.13];
-        [bubbleColor setFill];
-        CGFloat bubbleRadius = NSHeight(bubble) / 2;
-        [[NSBezierPath bezierPathWithRoundedRect:bubble xRadius:bubbleRadius yRadius:bubbleRadius] fill];
+        if (bitmap) {
+            // The pixel font's line box is exactly one line, so the number sits in it like the code.
+            label = NSMakeRect(0, top, NSWidth(self.bounds) - 26, lineHeight);
+        } else {
+            [bubbleColor setFill];
+            CGFloat bubbleRadius = NSHeight(bubble) / 2;
+            [[NSBezierPath bezierPathWithRoundedRect:bubble xRadius:bubbleRadius yRadius:bubbleRadius] fill];
+        }
         [number drawInRect:label withAttributes:numberAttributes];
         BOOL hasBreakpoint = [editor hasBreakpointAtLine:line];
         BOOL isExecution = [editor isExecutionLine:line];
         if (hasBreakpoint) {
             [NSColor.systemRedColor setFill];
-            [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(3, top + (lineHeight - 10) / 2, 10, 10)] fill];
+            if (bitmap) {
+                CGFloat pixel = editor.pixel;
+                NSRectFill(NSMakeRect(2 * pixel, top + std::round((lineHeight - 5 * pixel) / 2), 5 * pixel, 5 * pixel));
+            } else {
+                [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(3, top + (lineHeight - 10) / 2, 10, 10)] fill];
+            }
         }
         if (isExecution) {
             // A yellow arrow, drawn over the breakpoint dot if there is one.
@@ -921,7 +958,8 @@ static constexpr CGFloat kMiniChar = 1.25;
 
 /// How hints look: a little smaller than the code, muted.
 - (NSDictionary *)inlayHintAttributes {
-    return @{NSFontAttributeName: [NSFont systemFontOfSize:std::max<CGFloat>(9, _font.pointSize - 2.5) weight:NSFontWeightRegular],
+    NSFont *font = _bitmap ? _font : [NSFont systemFontOfSize:std::max<CGFloat>(9, _font.pointSize - 2.5) weight:NSFontWeightRegular];
+    return @{NSFontAttributeName: font,
              NSForegroundColorAttributeName: [NSColor.secondaryLabelColor colorWithAlphaComponent:0.95]};
 }
 
@@ -1212,11 +1250,22 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     NSClipView *clip = self.enclosingScrollView.contentView;
     BOOL keepTopLine = clip != nil && _document != nullptr && _lineHeight > 0;
     size_t topLine = keepTopLine ? [self lineAtY:NSMinY(clip.bounds) subrow:nullptr] : 0;
+    _bitmap = services.settings.bitmapMode;
     _font = [services editorFontBold:NO italic:NO];
     _charWidth = [@"0" sizeWithAttributes:@{NSFontAttributeName: _font}].width;
-    _lineHeight = std::ceil(_font.pointSize * 1.65);
-    _baseline = std::round((_lineHeight - (_font.ascender - _font.descender)) / 2 + _font.ascender);
-    _lineNumberFont = [NSFont monospacedDigitSystemFontOfSize:_font.pointSize - 1.5 weight:NSFontWeightRegular];
+    if (_bitmap) {
+        // Whole font pixels everywhere, so nothing lands between screen pixels.
+        _pixel = gw::bitmap::pixelSize(services.settings.fontSize);
+        _charWidth = gw::pixelfont::kAdvance * _pixel;
+        _lineHeight = gw::pixelfont::kLineHeight * _pixel;
+        _baseline = gw::pixelfont::kBaseline * _pixel;
+        _lineNumberFont = _font;
+    } else {
+        _pixel = 1;
+        _lineHeight = std::ceil(_font.pointSize * 1.65);
+        _baseline = std::round((_lineHeight - (_font.ascender - _font.descender)) / 2 + _font.ascender);
+        _lineNumberFont = [NSFont monospacedDigitSystemFontOfSize:_font.pointSize - 1.5 weight:NSFontWeightRegular];
+    }
 
     CGFloat opacity = services.editorOpacity;
     const gw::Theme &theme = services.theme;
@@ -1236,7 +1285,13 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     _caretColor = [services color:@"editorCursor.foreground" fallback:NSColor.controlAccentColor];
     // Line numbers look the same in every theme: only light versus dark decides the color, so
     // switching themes never changes how readable they are.
-    if (theme.isDark()) {
+    _gutterColor = _backgroundColor;
+    if (_bitmap) {
+        const gw::bitmap::Scheme &scheme = services.bitmapScheme;
+        _gutterColor = GWColor(scheme.gutter);
+        _lineNumberColor = GWColor(scheme.lineNumber);
+        _activeLineNumberColor = GWColor(scheme.lineNumberActive);
+    } else if (theme.isDark()) {
         _lineNumberColor = [NSColor colorWithSRGBRed:0.92 green:0.93 blue:0.96 alpha:1];
         _activeLineNumberColor = NSColor.whiteColor;
     } else {
@@ -1261,6 +1316,9 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 
     _caretLayer.backgroundColor = _caretColor.CGColor;
     _caretLayer.shadowColor = _caretColor.CGColor;
+    // A hard-edged caret in bitmap mode: no glow, no rounding.
+    _caretLayer.shadowOpacity = _bitmap ? 0 : 0.9;
+    _caretLayer.cornerRadius = _bitmap ? 0 : 1;
 
     NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
     paragraph.defaultTabInterval = _charWidth * _tabSize;
@@ -1348,6 +1406,11 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
 }
 
 - (CGFloat)textLeft { return kTextInset; }
+
+/// For messages at the ends of lines: a little smaller than the code, or the code's own pixel font.
+- (NSFont *)noteFont {
+    return _bitmap ? _font : [NSFont systemFontOfSize:_font.pointSize - 1.5];
+}
 
 - (void)updateFrameSize {
     NSScrollView *scrollView = self.enclosingScrollView;
@@ -1886,7 +1949,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
                 continue;
             }
             NSColor *color = entry.look.afterColor ? GWColor(*entry.look.afterColor) : [NSColor.secondaryLabelColor colorWithAlphaComponent:0.9];
-            NSDictionary *attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:_font.pointSize - 1.5],
+            NSDictionary *attributes = @{NSFontAttributeName: self.noteFont,
                                          NSForegroundColorAttributeName: color};
             NSSize size = [note sizeWithAttributes:attributes];
             CGFloat top = [self yForLine:line];
@@ -1952,6 +2015,30 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     _minimap.needsDisplay = YES;
 }
 
+/// Runs once the editor has been idle briefly; scrolling or typing pushes it back.
+- (void)scheduleHighlightAhead {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(highlightAhead) object:nil];
+    [self performSelector:@selector(highlightAhead) withObject:nil afterDelay:0.05];
+}
+
+/// Colors the next stretch of the file below what has been viewed, then comes back for more.
+- (void)highlightAhead {
+    if (!_document || !_highlighter || !_highlighter->grammar()) {
+        return;
+    }
+    const auto &buffer = _document->buffer();
+    size_t count = buffer.lineCount();
+    size_t valid = _highlighter->validLines();
+    if (valid >= count || count > kHighlightAheadMaxLines) {
+        return;
+    }
+    _highlighter->tokens(buffer, std::min(count - 1, valid + kHighlightAheadLines - 1), kHighlightAheadLines);
+    _minimap.needsDisplay = YES;
+    if (_highlighter->validLines() < count) {
+        [self scheduleHighlightAhead];
+    }
+}
+
 - (CGFloat)xForPosition:(gw::Position)position {
     LineLayout *layout = [self layoutForLine:position.line];
     return self.textLeft + layout->offsetForUnit(layout->unitForByte(position.column));
@@ -1997,6 +2084,16 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     }
     gw::Position caret = _document->selection.caret;
     return NSMakeRect(std::round([self xForPosition:caret]) - 1, [self yForPosition:caret] + 3, 2, _lineHeight - 6);
+}
+
+/// Where the caret layer goes: the caret, except while typing in bitmap mode, where it is an
+/// underscore under the next character like a DOS text cursor.
+- (NSRect)caretLayerRect {
+    if (!_bitmap || self.vimBlockCursor) {
+        return self.caretRect;
+    }
+    gw::Position caret = _document->selection.caret;
+    return NSMakeRect(std::round([self xForPosition:caret]), [self yForPosition:caret] + _baseline + _pixel, _charWidth, 2 * _pixel);
 }
 
 // MARK: Rows (soft wrap and folding)
@@ -2241,7 +2338,15 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     if (!_document) {
         return;
     }
+    CGContextRef context = NSGraphicsContext.currentContext.CGContext;
+    if (_bitmap) {
+        // Hard pixel edges: the font's squares and every band stay crisp.
+        CGContextSetShouldAntialias(context, false);
+        CGContextSetShouldSmoothFonts(context, false);
+    }
+    CGFloat bandRadius = _bitmap ? 0 : 7;
     _highlightBlocked = false;
+    [self scheduleHighlightAhead];
 
     const auto &buffer = _document->buffer();
     size_t count = buffer.lineCount();
@@ -2271,7 +2376,10 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     if (selection.empty() && !hasExtraCursors && caretLine >= first && caretLine <= last) {
         [_lineHighlight setFill];
         NSRect band = NSMakeRect(NSMinX(visible) + 4, [self yForPosition:caretPosition] + 1, NSWidth(visible) - 8, _lineHeight - 2);
-        [[NSBezierPath bezierPathWithRoundedRect:band xRadius:7 yRadius:7] fill];
+        if (_bitmap) {
+            band = NSMakeRect(NSMinX(visible), [self yForPosition:caretPosition], NSWidth(visible), _lineHeight);
+        }
+        [[NSBezierPath bezierPathWithRoundedRect:band xRadius:bandRadius yRadius:bandRadius] fill];
     }
 
     if (_executionLine >= 0 && static_cast<size_t>(_executionLine) >= first && static_cast<size_t>(_executionLine) <= last &&
@@ -2279,7 +2387,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         [[NSColor.systemYellowColor colorWithAlphaComponent:0.16] setFill];
         NSRect band = NSMakeRect(NSMinX(visible) + 4, [self yForLine:static_cast<size_t>(_executionLine)] + 1, NSWidth(visible) - 8,
                                  [self rowsForLine:static_cast<size_t>(_executionLine)] * _lineHeight - 2);
-        [[NSBezierPath bezierPathWithRoundedRect:band xRadius:7 yRadius:7] fill];
+        [[NSBezierPath bezierPathWithRoundedRect:band xRadius:bandRadius yRadius:bandRadius] fill];
     }
     [self drawLineTintsFromLine:first toLine:last];
     [self drawFindMatchesFromLine:first toLine:last];
@@ -2303,8 +2411,9 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         markedFirstDraw = YES;
         GWStartupMark(@"first code drawn");
     }
-    CGContextRef context = NSGraphicsContext.currentContext.CGContext;
     CGContextSetTextMatrix(context, CGAffineTransformMakeScale(1, -1));  // flipped view
+    // Bitmap mode puts a black pixel shadow under the text (right and down: the offset is unflipped).
+    CGColorRef textShadow = _bitmap ? CGColorGetConstantColor(kCGColorBlack) : nullptr;
     for (size_t line = first; line <= last; ++line) {
         if ([self isLineHidden:line]) {
             continue;
@@ -2327,9 +2436,15 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
         }
         LineLayout *layout = [self layoutForLine:line];
         size_t rows = layout->rowCount();
+        if (textShadow != nullptr) {
+            CGContextSetShadowWithColor(context, CGSizeMake(_pixel, -_pixel), GWPixelShadowBlur(_pixel), textShadow);
+        }
         for (size_t row = 0; row < rows; ++row) {
             CGContextSetTextPosition(context, self.textLeft + layout->indentForRow(row), y + row * _lineHeight + _baseline);
             CTLineDraw(layout->lineForRow(row), context);
+        }
+        if (textShadow != nullptr) {
+            CGContextSetShadowWithColor(context, CGSizeZero, 0, nullptr);
         }
         if (_folds.isFoldHeader(line)) {
             [self drawFoldPillForLine:line];
@@ -2485,7 +2600,7 @@ static constexpr CGFloat kInlayGap = 3;          // between the chip and the cod
     if (available < 60) {
         return;
     }
-    NSDictionary *attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:_font.pointSize - 1.5],
+    NSDictionary *attributes = @{NSFontAttributeName: self.noteFont,
                                  NSForegroundColorAttributeName: [color colorWithAlphaComponent:0.85]};
     NSSize size = [full sizeWithAttributes:attributes];
     CGFloat width = std::min(size.width, available);
@@ -3211,6 +3326,9 @@ static bool isAccessLabel(std::string_view line) {
     std::string word = [self wordAtCaret];
     if (!word.empty()) {
         NSString *name = StringFromUTF8(word);
+        [menu addItemWithTitle:@"Go to Definition" action:@selector(goToDefinition:) keyEquivalent:@""];
+        [menu addItemWithTitle:@"Find References…" action:@selector(findReferences:) keyEquivalent:@""];
+        [menu addItem:NSMenuItem.separatorItem];
         [menu addItemWithTitle:[NSString stringWithFormat:@"Color “%@”…", name] action:@selector(inspectColors:) keyEquivalent:@""];
         [menu addItemWithTitle:[NSString stringWithFormat:@"Highlight Every “%@”", name]
                         action:@selector(highlightName:)
@@ -3239,6 +3357,18 @@ static bool isAccessLabel(std::string_view line) {
 - (IBAction)inspectColors:(id)sender {
     if (self.onInspectColors) {
         self.onInspectColors();
+    }
+}
+
+- (IBAction)goToDefinition:(id)sender {
+    if (self.onGoToDefinition) {
+        self.onGoToDefinition();
+    }
+}
+
+- (IBAction)findReferences:(id)sender {
+    if (self.onFindReferences) {
+        self.onFindReferences();
     }
 }
 
@@ -3284,7 +3414,7 @@ static bool isAccessLabel(std::string_view line) {
     BOOL show = _document && self.window.isKeyWindow && self.window.firstResponder == self && !_markedText.length;
     [_blinkTimer invalidate];
     _blinkTimer = nil;
-    NSRect target = show ? self.caretRect : NSZeroRect;
+    NSRect target = show ? self.caretLayerRect : NSZeroRect;
     // The Vim cursor smears when it moves: the block glides to its new place with a trail behind it.
     BOOL block = self.vimBlockCursor;
     if (show && _hasLastCaretRect && block != _lastCaretWasBlock) {
@@ -3329,11 +3459,14 @@ static bool isAccessLabel(std::string_view line) {
         return;
     }
 
-    // Blink with a gentle fade, twice a second; the text itself is never redrawn for it.
+    // Blink with a gentle fade, twice a second (a hard on and off in bitmap mode); the text itself
+    // is never redrawn for it.
     __weak CALayer *caret = _caretLayer;
+    BOOL hardBlink = _bitmap;
     _blinkTimer = [NSTimer scheduledTimerWithTimeInterval:0.55 repeats:YES block:^(NSTimer *timer) {
         [CATransaction begin];
         [CATransaction setAnimationDuration:0.18];
+        [CATransaction setDisableActions:hardBlink];
         caret.opacity = caret.opacity > 0.5 ? 0 : 1;
         [CATransaction commit];
     }];

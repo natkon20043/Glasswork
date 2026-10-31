@@ -1,5 +1,7 @@
 #import "Palette.h"
 
+#import "PixelArt.h"
+#import "Services.h"
 #import "ShadowedGlass.h"
 
 @implementation GWPaletteItem
@@ -36,6 +38,23 @@
 
 @end
 
+/// Glasswork Bitmap's rows: a flat band of the scheme's highlight.
+@interface GWRetroPaletteRowView : NSTableRowView
+@end
+
+@implementation GWRetroPaletteRowView
+
+- (void)drawSelectionInRect:(NSRect)dirtyRect {
+    [GWColor(GWServices.shared.bitmapScheme.barHighlight) setFill];
+    NSRectFill(self.bounds);
+}
+
+- (BOOL)isEmphasized {
+    return NO;
+}
+
+@end
+
 /// A borderless panel that can still take keyboard focus (for the search field).
 @interface GWPalettePanel : NSPanel
 @end
@@ -55,6 +74,7 @@
     NSTableView *_table;
     NSArray<GWPaletteItem *> *(^_provider)(NSString *);
     NSArray<GWPaletteItem *> *_items;
+    BOOL _retro;  // built for Glasswork Bitmap: a grey box of pixel text instead of glass
 }
 
 static const CGFloat kPaletteWidth = 640;
@@ -72,10 +92,27 @@ static const NSUInteger kVisibleRows = 10;
 
 // MARK: Building
 
+/// The colors of Glasswork Bitmap's chosen scheme.
+static const gw::bitmap::Scheme &RetroColors() {
+    return GWServices.shared.bitmapScheme;
+}
+
+/// The margin around the visible box: the glass's soft shadow, or the bitmap box's hard one (which
+/// only hangs off the right and bottom, so the box is placed by its top left all the same).
+- (CGFloat)padding {
+    return _retro ? 0 : GWShadowedGlass.padding;
+}
+
+- (CGFloat)rowHeight {
+    return _retro ? 12 * GWChromePixel() : kRowHeight;
+}
+
 - (void)buildPanel {
-    CGFloat height = 56 + kRowHeight * kVisibleRows + 10;
-    CGFloat pad = GWShadowedGlass.padding;
-    _panel = [[GWPalettePanel alloc] initWithContentRect:NSMakeRect(0, 0, kPaletteWidth + 2 * pad, height + 2 * pad)
+    _retro = GWServices.shared.settings.bitmapMode;
+    CGFloat height = 56 + self.rowHeight * kVisibleRows + 10;
+    CGFloat pad = self.padding;
+    CGFloat extra = _retro ? GWRetroBox.shadowSize : 0;
+    _panel = [[GWPalettePanel alloc] initWithContentRect:NSMakeRect(0, 0, kPaletteWidth + 2 * pad + extra, height + 2 * pad + extra)
                                                styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
                                                  backing:NSBackingStoreBuffered
                                                    defer:NO];
@@ -112,7 +149,7 @@ static const NSUInteger kVisibleRows = 10;
     column.width = kPaletteWidth - 24;
     [_table addTableColumn:column];
     _table.headerView = nil;
-    _table.rowHeight = kRowHeight;
+    _table.rowHeight = self.rowHeight;
     _table.backgroundColor = NSColor.clearColor;
     _table.style = NSTableViewStylePlain;
     _table.intercellSpacing = NSMakeSize(0, 0);
@@ -149,6 +186,23 @@ static const NSUInteger kVisibleRows = 10;
         [scroll.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-8],
     ]];
 
+    if (_retro) {
+        const gw::bitmap::Scheme &colors = RetroColors();
+        CGFloat pixel = GWChromePixel();
+        magnifier.hidden = YES;
+        separator.hidden = YES;
+        _search.font = GWPixelFont(pixel);
+        _search.textColor = GWColor(colors.barText);
+        GWRetroBox *box = [[GWRetroBox alloc] initWithFrame:NSMakeRect(0, 0, kPaletteWidth + extra, height + extra)];
+        box.fillColor = GWColor(colors.bar);
+        box.lineColor = GWColor(colors.barText);
+        content.translatesAutoresizingMaskIntoConstraints = YES;
+        content.frame = box.contentRect;
+        content.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [box addSubview:content];
+        _panel.contentView = box;
+        return;
+    }
     GWShadowedGlass *container = [[GWShadowedGlass alloc] initWithCornerRadius:24];
     container.glass.contentView = content;
     _panel.contentView = container;
@@ -159,18 +213,32 @@ static const NSUInteger kVisibleRows = 10;
 - (void)showOverWindow:(NSWindow *)window
            placeholder:(NSString *)placeholder
               provider:(NSArray<GWPaletteItem *> *(^)(NSString *))provider {
+    if (_panel != nil && _retro != GWServices.shared.settings.bitmapMode) {
+        _panel = nil;  // built for the other look
+    }
     if (!_panel) {
         [self buildPanel];
     }
     _provider = [provider copy];
-    _search.placeholderString = placeholder;
+    if (_retro) {
+        // Rebuilt each time, so a newly chosen color scheme shows straight away.
+        GWRetroBox *box = (GWRetroBox *)_panel.contentView;
+        box.fillColor = GWColor(RetroColors().bar);
+        box.lineColor = GWColor(RetroColors().barText);
+        box.needsDisplay = YES;
+        _search.textColor = GWColor(RetroColors().barText);
+        _search.placeholderAttributedString = [[NSAttributedString alloc]
+            initWithString:placeholder attributes:GWPixelPlainAttributes(GWChromePixel(), GWColor(RetroColors().barDim))];
+    } else {
+        _search.placeholderString = placeholder;
+    }
     _search.stringValue = @"";
     _panel.appearance = window.effectiveAppearance;
     [self reload];
 
     // Centered horizontally, near the top of the window, like VS Code and Zed.
     NSRect frame = window.frame;
-    CGFloat pad = GWShadowedGlass.padding;
+    CGFloat pad = self.padding;
     NSPoint topLeft = NSMakePoint(NSMidX(frame) - kPaletteWidth / 2 - pad, NSMaxY(frame) - 70 + pad);
     [_panel setFrameTopLeftPoint:topLeft];
     [window addChildWindow:_panel ordered:NSWindowAbove];
@@ -284,7 +352,18 @@ static const NSUInteger kVisibleRows = 10;
 }
 
 - (NSTableRowView *)tableView:(NSTableView *)tableView rowViewForRow:(NSInteger)row {
-    return [GWPaletteRowView new];
+    return _retro ? [GWRetroPaletteRowView new] : [GWPaletteRowView new];
+}
+
+- (void)tableViewSelectionDidChange:(NSNotification *)notification {
+    if (!_retro) {
+        return;
+    }
+    // The selected row's text takes the highlight's color, so the visible rows are redrawn.
+    NSRange visible = [_table rowsInRect:_table.visibleRect];
+    if (visible.length > 0) {
+        [_table reloadDataForRowIndexes:[NSIndexSet indexSetWithIndexesInRange:visible] columnIndexes:[NSIndexSet indexSetWithIndex:0]];
+    }
 }
 
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
@@ -332,9 +411,40 @@ static const NSUInteger kVisibleRows = 10;
     cell.imageView.image = [[NSImage imageWithSystemSymbolName:item.symbol accessibilityDescription:nil]
                             imageWithSymbolConfiguration:configuration];
     cell.imageView.contentTintColor = item.symbolColor;
+    cell.imageView.hidden = _retro;
+    if (_retro) {
+        BOOL selected = row == tableView.selectedRow;
+        cell.textField.attributedStringValue = [self retroTitleFor:item selected:selected];
+        const gw::bitmap::Scheme &colors = RetroColors();
+        shortcut.attributedStringValue = [[NSAttributedString alloc]
+            initWithString:item.shortcut ?: @""
+                attributes:GWPixelPlainAttributes(GWChromePixel(), GWColor(selected ? colors.barHighlightText : colors.barDim))];
+        return cell;
+    }
     cell.textField.attributedStringValue = [self attributedTitleFor:item];
     shortcut.stringValue = item.shortcut ?: @"";
     return cell;
+}
+
+/// Pixel text: matched letters in the hotkey color, like the menus' hotkeys, and the subtitle dimmed.
+- (NSAttributedString *)retroTitleFor:(GWPaletteItem *)item selected:(BOOL)selected {
+    const gw::bitmap::Scheme &colors = RetroColors();
+    CGFloat pixel = GWChromePixel();
+    NSColor *ink = GWColor(selected ? colors.barHighlightText : colors.barText);
+    NSMutableAttributedString *text = [[NSMutableAttributedString alloc] initWithString:item.title
+                                                                             attributes:GWPixelPlainAttributes(pixel, ink)];
+    NSColor *hotkey = GWColor(colors.barHotkey);
+    [item.matchedIndexes enumerateIndexesUsingBlock:^(NSUInteger index, BOOL *stop) {
+        if (index < item.title.length) {
+            [text addAttribute:NSForegroundColorAttributeName value:hotkey range:NSMakeRange(index, 1)];
+        }
+    }];
+    if (item.subtitle.length > 0) {
+        NSString *subtitle = [@"  " stringByAppendingString:item.subtitle];
+        NSColor *dim = GWColor(selected ? colors.barHighlightText : colors.barDim);
+        [text appendAttributedString:[[NSAttributedString alloc] initWithString:subtitle attributes:GWPixelPlainAttributes(pixel, dim)]];
+    }
+    return text;
 }
 
 /// Title with the matched characters in bold accent color, then the subtitle, dimmed.

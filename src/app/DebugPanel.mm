@@ -1,6 +1,24 @@
 #import "DebugPanel.h"
 
 #import "Debugger.h"
+#import "PixelArt.h"
+#import "Services.h"
+
+#include "BitmapMode.hpp"
+
+/// The size of a font pixel in the retro panel: small, since the panel is narrow.
+static constexpr CGFloat kRetroPixel = 1.5;
+
+/// A row whose selection is a flat band of the bitmap scheme's selection color.
+@interface GWRetroDebugRowView : NSTableRowView
+@end
+
+@implementation GWRetroDebugRowView
+- (void)drawSelectionInRect:(NSRect)dirtyRect {
+    [GWColor(GWServices.shared.bitmapScheme.selection) setFill];
+    NSRectFill(self.bounds);
+}
+@end
 
 static NSButton *toolButton(NSString *symbol, NSString *tooltip, id target, SEL action) {
     NSButton *button = [NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:symbol accessibilityDescription:tooltip]
@@ -45,6 +63,8 @@ static NSTextField *sectionTitle(NSString *text) {
     NSTextField *_input;
     NSView *_sessionArea;   // everything below the toolbar, shown while debugging
     NSView *_startArea;     // the big Start button, shown when idle
+    NSTextField *_hint;
+    NSArray<NSTextField *> *_sectionTitles;
     NSInteger _variablesRequestFrame;
 }
 
@@ -106,11 +126,12 @@ static NSTextField *sectionTitle(NSString *text) {
     _startButton = [NSButton buttonWithTitle:@"Start Debugging" target:self action:@selector(startClicked:)];
     _startButton.bezelStyle = NSBezelStyleGlass;
     _startButton.translatesAutoresizingMaskIntoConstraints = NO;
-    NSTextField *hint = [NSTextField wrappingLabelWithString:@"Click the line numbers to set breakpoints. F5 builds and runs "
+    NSTextField *hint = [NSTextField wrappingLabelWithString:@"Click just left of the line numbers (or press F9) to set breakpoints. F5 builds and runs "
                                                              @"the current file (or the program you chose) under the debugger."];
     hint.font = [NSFont systemFontOfSize:11.5];
     hint.textColor = NSColor.tertiaryLabelColor;
     hint.translatesAutoresizingMaskIntoConstraints = NO;
+    _hint = hint;
     [_startArea addSubview:_startButton];
     [_startArea addSubview:hint];
     [_view addSubview:_startArea];
@@ -172,6 +193,7 @@ static NSTextField *sectionTitle(NSString *text) {
     for (NSView *view in @[stackTitle, stackScroll, variablesTitle, variablesScroll, consoleTitle, consoleScroll, _input]) {
         [_sessionArea addSubview:view];
     }
+    _sectionTitles = @[title, stackTitle, variablesTitle, consoleTitle];
 
     NSDictionary *views = NSDictionaryOfVariableBindings(title, _statusLabel, _toolbar, _startArea, _sessionArea);
     (void)views;
@@ -224,6 +246,81 @@ static NSTextField *sectionTitle(NSString *text) {
         [_input.bottomAnchor constraintEqualToAnchor:_sessionArea.bottomAnchor constant:-10],
     ]];
     [self reload];
+}
+
+// ---------------------------------------------------------------------------
+// MARK: Look
+
+- (void)setRetro:(BOOL)retro {
+    if (_retro == retro) {
+        return;
+    }
+    _retro = retro;
+    [self applyLook];
+}
+
+- (void)refreshLook {
+    if (_retro) {
+        [self applyLook];
+    }
+}
+
+/// The scheme's colors in the retro look, or the system's in the glass one.
+- (const gw::bitmap::Scheme &)colors {
+    return GWServices.shared.bitmapScheme;
+}
+
+- (void)applyLook {
+    BOOL retro = _retro;
+    const gw::bitmap::Scheme &colors = self.colors;
+    NSColor *white = GWColor(colors.text);
+    for (NSTextField *title in _sectionTitles) {
+        NSString *text = title.stringValue;
+        if (retro) {
+            title.attributedStringValue = [[NSAttributedString alloc] initWithString:text attributes:GWPixelTextAttributes(kRetroPixel, GWColor(colors.textAccent))];
+        } else {
+            title.attributedStringValue = sectionTitle(text).attributedStringValue;
+        }
+    }
+    _statusLabel.font = retro ? GWPixelFont(kRetroPixel) : [NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium];
+    _statusLabel.textColor = retro ? white : NSColor.secondaryLabelColor;
+    _hint.font = retro ? GWPixelFont(kRetroPixel) : [NSFont systemFontOfSize:11.5];
+    _hint.textColor = retro ? GWColor(colors.textDim) : NSColor.tertiaryLabelColor;
+    for (NSButton *button in @[_resumeButton, _pauseButton, _overButton, _intoButton, _outButton]) {
+        button.contentTintColor = retro ? white : NSColor.secondaryLabelColor;
+    }
+    _startButton.bordered = !retro;
+    if (retro) {
+        _startButton.attributedTitle = [[NSAttributedString alloc] initWithString:@"→ Start Debugging"
+                                                                       attributes:GWPixelTextAttributes(GWChromePixel(), white)];
+    } else {
+        _startButton.title = @"Start Debugging";
+        _startButton.bezelStyle = NSBezelStyleGlass;
+    }
+
+    NSFont *consoleFont = retro ? GWPixelFont(kRetroPixel) : [NSFont monospacedSystemFontOfSize:11.5 weight:NSFontWeightRegular];
+    _console.font = consoleFont;
+    [_console.textStorage addAttribute:NSFontAttributeName value:consoleFont range:NSMakeRange(0, _console.textStorage.length)];
+    _input.font = consoleFont;
+    _input.bezeled = !retro;
+    _input.drawsBackground = retro;
+    _input.backgroundColor = GWColor(colors.input);
+    _input.textColor = retro ? GWColor(colors.inputText) : NSColor.labelColor;
+    if (!retro) {
+        _input.bezelStyle = NSTextFieldRoundedBezel;
+    }
+    // Source lists re-font their cells for the row size and paint a sidebar backdrop; the retro look
+    // wants its own pixel text on the panel's color.
+    for (NSTableView *table in @[_stackTable, _variablesOutline]) {
+        table.style = retro ? NSTableViewStylePlain : NSTableViewStyleSourceList;
+        table.rowSizeStyle = retro ? NSTableViewRowSizeStyleCustom : NSTableViewRowSizeStyleDefault;
+        table.backgroundColor = NSColor.clearColor;
+    }
+    _variablesOutline.rowHeight = 22;
+    _variablesOutline.tableColumns.firstObject.width = retro ? 130 : 100;  // pixel names are wider
+    _stackTable.rowHeight = retro ? 40 : 34;
+    [_stackTable reloadData];
+    [_variablesOutline reloadData];
 }
 
 // ---------------------------------------------------------------------------
@@ -284,11 +381,11 @@ static NSTextField *sectionTitle(NSString *text) {
 // MARK: Console
 
 - (void)appendConsole:(NSString *)text category:(NSString *)category {
-    NSColor *color = NSColor.labelColor;
+    NSColor *color = _retro ? GWColor(self.colors.text) : NSColor.labelColor;
     if ([category isEqualToString:@"stderr"]) {
-        color = NSColor.systemRedColor;
+        color = _retro ? GWColor(self.colors.error) : NSColor.systemRedColor;
     } else if ([category isEqualToString:@"console"]) {
-        color = NSColor.secondaryLabelColor;
+        color = _retro ? GWColor(self.colors.textDim) : NSColor.secondaryLabelColor;
     }
     NSAttributedString *piece = [[NSAttributedString alloc] initWithString:text attributes:@{
         NSFontAttributeName: _console.font,
@@ -360,19 +457,33 @@ static NSTextField *sectionTitle(NSString *text) {
             [label.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
         ]];
     }
-    NSMutableAttributedString *text = [[NSMutableAttributedString alloc] initWithString:frame.name attributes:@{
+    NSDictionary *nameAttributes = @{
         NSFontAttributeName: [NSFont systemFontOfSize:12.5 weight:NSFontWeightMedium],
         NSForegroundColorAttributeName: NSColor.labelColor,
-    }];
+    };
+    NSDictionary *placeAttributes = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:11],
+        NSForegroundColorAttributeName: NSColor.tertiaryLabelColor,
+    };
+    if (_retro) {
+        nameAttributes = GWPixelTextAttributes(kRetroPixel, GWColor(self.colors.text));
+        placeAttributes = GWPixelTextAttributes(kRetroPixel, GWColor(self.colors.textDim));
+    }
+    NSMutableAttributedString *text = [[NSMutableAttributedString alloc] initWithString:frame.name attributes:nameAttributes];
     if (frame.path.length > 0) {
         NSString *place = [NSString stringWithFormat:@"\n%@:%ld", frame.path.lastPathComponent, (long)frame.line];
-        [text appendAttributedString:[[NSAttributedString alloc] initWithString:place attributes:@{
-            NSFontAttributeName: [NSFont systemFontOfSize:11],
-            NSForegroundColorAttributeName: NSColor.tertiaryLabelColor,
-        }]];
+        [text appendAttributedString:[[NSAttributedString alloc] initWithString:place attributes:placeAttributes]];
     }
     cell.textField.attributedStringValue = text;
     return cell;
+}
+
+- (NSTableRowView *)tableView:(NSTableView *)tableView rowViewForRow:(NSInteger)row {
+    return _retro ? [GWRetroDebugRowView new] : nil;
+}
+
+- (NSTableRowView *)outlineView:(NSOutlineView *)outlineView rowViewForItem:(id)item {
+    return _retro ? [GWRetroDebugRowView new] : nil;
 }
 
 - (void)tableViewSelectionDidChange:(NSNotification *)notification {
@@ -441,6 +552,19 @@ static NSTextField *sectionTitle(NSString *text) {
         cell.textField.stringValue = item.value ?: @"";
         cell.textField.textColor = NSColor.systemTealColor;
         cell.textField.toolTip = item.type.length > 0 ? [NSString stringWithFormat:@"%@ — %@", item.type, item.value] : item.value;
+    }
+    if (_retro) {
+        // Names white (scopes yellow), values in the code's string cyan.
+        BOOL isScope = item.value.length == 0 && item.type.length == 0;
+        const gw::bitmap::Scheme &colors = self.colors;
+        gw::Color color = isName ? (isScope ? colors.textAccent : colors.text) : colors.link;
+        NSMutableDictionary *attributes = [GWPixelTextAttributes(kRetroPixel, GWColor(color)) mutableCopy];
+        NSMutableParagraphStyle *oneLine = [NSMutableParagraphStyle new];
+        oneLine.lineBreakMode = NSLineBreakByTruncatingTail;  // a long name is cut, never wrapped
+        attributes[NSParagraphStyleAttributeName] = oneLine;
+        cell.textField.attributedStringValue = [[NSAttributedString alloc] initWithString:cell.textField.stringValue attributes:attributes];
+    } else {
+        cell.textField.font = isName ? [NSFont systemFontOfSize:12.5] : [NSFont monospacedSystemFontOfSize:11.5 weight:NSFontWeightRegular];
     }
     return cell;
 }

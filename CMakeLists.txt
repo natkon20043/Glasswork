@@ -79,6 +79,8 @@ add_library(glasswork_core STATIC
     src/core/RemoteHost.cpp
     src/core/Vim.cpp
     src/core/CursorSmear.cpp
+    src/core/PixelFont.cpp
+    src/core/BitmapMode.cpp
     src/core/Extensions.cpp)
 target_include_directories(glasswork_core PUBLIC src/core)
 target_link_libraries(glasswork_core PUBLIC nlohmann_json::nlohmann_json onig CURL::libcurl)
@@ -129,6 +131,9 @@ add_test(NAME remote COMMAND glasswork_remote_tests)
 add_executable(glasswork_cursor_smear_tests tests/cursor_smear_tests.cpp)
 target_link_libraries(glasswork_cursor_smear_tests PRIVATE glasswork_core)
 add_test(NAME cursor_smear COMMAND glasswork_cursor_smear_tests)
+add_executable(glasswork_bitmap_tests tests/bitmap_tests.cpp)
+target_link_libraries(glasswork_bitmap_tests PRIVATE glasswork_core)
+add_test(NAME bitmap COMMAND glasswork_bitmap_tests)
 add_executable(glasswork_vim_tests tests/vim_tests.cpp)
 target_link_libraries(glasswork_vim_tests PRIVATE glasswork_core)
 add_test(NAME vim COMMAND glasswork_vim_tests)
@@ -175,6 +180,8 @@ add_executable(Glasswork MACOSX_BUNDLE
     src/app/CompletionPopup.mm
     src/app/Debugger.mm
     src/app/ShadowedGlass.mm
+    src/app/PixelArt.mm
+    src/app/BitmapChrome.mm
     src/app/DebugPanel.mm
     src/app/FileIcons.mm
     src/app/ColorInspector.mm
@@ -212,6 +219,8 @@ target_compile_definitions(Glasswork PRIVATE GLASSWORK_SOURCE_DIR="${CMAKE_SOURC
 add_custom_command(TARGET Glasswork POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E remove_directory $<TARGET_BUNDLE_CONTENT_DIR:Glasswork>/Resources/ExtensionHost
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/host $<TARGET_BUNDLE_CONTENT_DIR:Glasswork>/Resources/ExtensionHost
-    COMMAND ${CMAKE_COMMAND} -E remove_directory $<TARGET_BUNDLE_CONTENT_DIR:Glasswork>/Resources/ExtensionHost/tools)
+    COMMAND ${CMAKE_COMMAND} -E remove_directory $<TARGET_BUNDLE_CONTENT_DIR:Glasswork>/Resources/ExtensionHost/tools
+    # Glasswork Bitmap: the same program as a second app that starts in bitmap mode.
+    COMMAND ${CMAKE_SOURCE_DIR}/scripts/make_bitmap_app.sh $<TARGET_BUNDLE_DIR:Glasswork>)
 target_link_libraries(Glasswork PRIVATE glasswork_core
     "-framework AppKit" "-framework CoreText" "-framework QuartzCore" "-framework CoreServices" "-framework WebKit" "-framework UniformTypeIdentifiers")

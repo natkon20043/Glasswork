@@ -2,9 +2,12 @@
 #import "Strings.h"
 
 #import "EditorView.h"
+#import "PixelArt.h"
+#import "Services.h"
 
 #include "ProjectSearch.hpp"
 
+#include <cmath>
 #include <memory>
 #include <vector>
 
@@ -12,6 +15,8 @@
 // A small on/off button that lights up when on
 
 @interface GWOptionButton : NSButton
+/// Pixel text, lit with the bitmap scheme's highlight.
+@property (nonatomic) BOOL retro;
 @end
 
 @implementation GWOptionButton
@@ -32,6 +37,19 @@
 
 - (void)drawRect:(NSRect)dirtyRect {
     BOOL on = self.state == NSControlStateValueOn;
+    if (_retro) {
+        const gw::bitmap::Scheme &colors = GWServices.shared.bitmapScheme;
+        if (on) {
+            [GWColor(colors.barHighlight) setFill];
+            NSRectFill(self.bounds);
+        }
+        CGFloat pixel = GWChromePixel();
+        CGFloat width = GWPixelTextWidth(self.title, pixel);
+        CGFloat line = 12 * pixel;
+        NSPoint origin = NSMakePoint(std::floor((NSWidth(self.bounds) - width) / 2), std::floor((NSHeight(self.bounds) - line) / 2));
+        GWDrawPixelText(self.title, origin, pixel, GWColor(on ? colors.barHighlightText : colors.barText), NO);
+        return;
+    }
     if (on) {
         [[NSColor.controlAccentColor colorWithAlphaComponent:0.30] setFill];
         [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 1, 1) xRadius:6 yRadius:6] fill];
@@ -62,6 +80,10 @@
     GWOptionButton *_wordButton;
     GWOptionButton *_regexButton;
     NSButton *_toggleReplace;
+    NSArray<NSButton *> *_iconButtons;
+    NSArray<NSButton *> *_replaceButtons;
+    NSStackView *_stack;
+    GWRetroBox *_retroBox;
     NSStackView *_replaceRow;
     NSLayoutConstraint *_replaceRowHeight;
     BOOL _replaceVisible;
@@ -163,6 +185,9 @@
     [findRow.widthAnchor constraintEqualToAnchor:stack.widthAnchor constant:-18].active = YES;
     [_replaceRow.widthAnchor constraintEqualToAnchor:stack.widthAnchor constant:-18].active = YES;
     _glass.contentView = stack;
+    _stack = stack;
+    _iconButtons = @[_toggleReplace, previous, next, close];
+    _replaceButtons = @[replace, replaceAll];
 
     [self addSubview:_glass];
     [NSLayoutConstraint activateConstraints:@[
@@ -173,7 +198,97 @@
     ]];
 }
 
-- (CGFloat)preferredHeight { return _replaceVisible ? 78 : 44; }
+/// The match count's color: `glass` normally, the box's own text (hotkey color for a problem) in bitmap mode.
+- (NSColor *)countColor:(NSColor *)glass {
+    if (!_retro) {
+        return glass;
+    }
+    const gw::bitmap::Scheme &colors = GWServices.shared.bitmapScheme;
+    BOOL problem = glass == NSColor.systemRedColor || glass == NSColor.systemOrangeColor;
+    return GWColor(problem ? colors.barHotkey : colors.barText);
+}
+
+- (CGFloat)preferredHeight {
+    CGFloat extra = _retro ? GWRetroBox.shadowSize : 0;  // the box's shadow is part of the bar
+    return (_replaceVisible ? 78 : 44) + extra;
+}
+
+// ---------------------------------------------------------------------------
+// MARK: Look
+
+- (void)setRetro:(BOOL)retro {
+    _retro = retro;
+    const gw::bitmap::Scheme &colors = GWServices.shared.bitmapScheme;
+    CGFloat pixel = GWChromePixel();
+    [_stack removeFromSuperview];
+    if (retro) {
+        if (_retroBox == nil) {
+            _retroBox = [GWRetroBox new];
+            _retroBox.translatesAutoresizingMaskIntoConstraints = NO;
+            [self addSubview:_retroBox];
+            [NSLayoutConstraint activateConstraints:@[
+                [_retroBox.topAnchor constraintEqualToAnchor:self.topAnchor],
+                [_retroBox.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+                [_retroBox.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+                [_retroBox.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+            ]];
+        }
+        _retroBox.fillColor = GWColor(colors.bar);
+        _retroBox.lineColor = GWColor(colors.barText);
+        _retroBox.needsDisplay = YES;
+        _glass.contentView = nil;
+        [_retroBox addSubview:_stack];
+        CGFloat shadow = GWRetroBox.shadowSize;
+        [NSLayoutConstraint activateConstraints:@[
+            [_stack.topAnchor constraintEqualToAnchor:_retroBox.topAnchor],
+            [_stack.bottomAnchor constraintEqualToAnchor:_retroBox.bottomAnchor constant:-shadow],
+            [_stack.leadingAnchor constraintEqualToAnchor:_retroBox.leadingAnchor],
+            [_stack.trailingAnchor constraintEqualToAnchor:_retroBox.trailingAnchor constant:-shadow],
+        ]];
+    } else {
+        _glass.contentView = _stack;
+    }
+    _glass.hidden = retro;
+    _retroBox.hidden = !retro;
+
+    NSColor *ink = retro ? GWColor(colors.barText) : NSColor.labelColor;
+    for (NSTextField *field in @[_findField, _replaceField]) {
+        field.font = retro ? GWPixelFont(pixel) : [NSFont systemFontOfSize:13];
+        field.textColor = ink;
+        NSString *placeholder = field.placeholderString ?: field.placeholderAttributedString.string ?: @"";
+        if (retro) {
+            field.placeholderAttributedString = [[NSAttributedString alloc] initWithString:placeholder
+                                                                                attributes:GWPixelPlainAttributes(pixel, GWColor(colors.barDim))];
+        } else {
+            field.placeholderAttributedString = nil;
+            field.placeholderString = placeholder;
+        }
+    }
+    _countLabel.font = retro ? GWPixelFont(pixel) : [NSFont monospacedDigitSystemFontOfSize:11.5 weight:NSFontWeightMedium];
+    _countLabel.textColor = [self countColor:NSColor.secondaryLabelColor];
+    for (GWOptionButton *button in @[_caseButton, _wordButton, _regexButton]) {
+        button.retro = retro;
+        button.needsDisplay = YES;
+    }
+    for (NSButton *button in _iconButtons) {
+        button.contentTintColor = retro ? ink : NSColor.secondaryLabelColor;
+    }
+    for (NSButton *button in _replaceButtons) {
+        NSString *title = button.title.length > 0 ? button.title : button.attributedTitle.string;
+        title = [title stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"[] "]];
+        button.bordered = !retro;
+        if (retro) {
+            button.attributedTitle = [[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"[%@]", title]
+                                                                     attributes:GWPixelPlainAttributes(pixel, ink)];
+        } else {
+            button.title = title;
+            button.bezelStyle = NSBezelStyleGlass;
+        }
+    }
+    if (self.onResize) {
+        self.onResize();
+    }
+}
 
 // ---------------------------------------------------------------------------
 // MARK: Showing
@@ -251,13 +366,13 @@
 
     if (document == nullptr || pattern.length == 0) {
         _countLabel.stringValue = @"";
-        _countLabel.textColor = NSColor.secondaryLabelColor;
+        _countLabel.textColor = [self countColor:NSColor.secondaryLabelColor];
         [_editor setFindMatches:{} current:-1];
         return;
     }
     if (!_matcher->valid()) {
         _countLabel.stringValue = @"Invalid";
-        _countLabel.textColor = NSColor.systemRedColor;
+        _countLabel.textColor = [self countColor:NSColor.systemRedColor];
         _countLabel.toolTip = StringFromUTF8(_matcher->error());
         [_editor setFindMatches:{} current:-1];
         return;
@@ -294,12 +409,12 @@
 - (void)updateCount {
     if (_matches.empty()) {
         _countLabel.stringValue = @"No results";
-        _countLabel.textColor = NSColor.systemOrangeColor;
+        _countLabel.textColor = [self countColor:NSColor.systemOrangeColor];
         return;
     }
     NSString *total = _matches.size() >= 50000 ? @"50000+" : [NSString stringWithFormat:@"%zu", _matches.size()];
     _countLabel.stringValue = [NSString stringWithFormat:@"%ld of %@", _current + 1, total];
-    _countLabel.textColor = NSColor.secondaryLabelColor;
+    _countLabel.textColor = [self countColor:NSColor.secondaryLabelColor];
 }
 
 - (void)step:(int)direction {

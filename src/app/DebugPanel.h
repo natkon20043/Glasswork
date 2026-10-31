@@ -19,9 +19,13 @@ NS_ASSUME_NONNULL_BEGIN
 /// `category` is "stdout", "stderr" or "console".
 - (void)appendConsole:(NSString *)text category:(NSString *)category;
 - (void)clearConsole;
+/// Bitmap mode's colors changed: restyle with the new ones.
+- (void)refreshLook;
 
 // ---- Properties
 @property (nonatomic, readonly) NSView *view;
+/// Pixel text, light on bitmap mode's blue panel.
+@property (nonatomic) BOOL retro;
 
 // ---- Callbacks
 /// "Start Debugging" pressed with no session yet.
