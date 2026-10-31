@@ -70,7 +70,7 @@ typedef NS_ENUM(NSInteger, GWBitmapPanel) {
 /// "Where Glasswork Bitmap's look comes from" in the README), with Picotron's pixel font and text shadow:
 /// a grey menu bar with drop-down menus, the code in a
 /// blue window with a double frame (its tabs in the top edge, a scrollbar in the right one, the
-/// caret's place in the bottom one), a side window for files, issues and the debugger, and a status
+/// caret's place and a sideways scrollbar in the bottom one), a side window for files, issues and the debugger, and a status
 /// line of keys. The code and the side window's content are separate views placed in `editorFrame`
 /// and `panelContentFrame`; the menus and dialogs float over everything.
 @interface GWBitmapChrome : NSView
@@ -102,7 +102,7 @@ typedef NS_ENUM(NSInteger, GWBitmapPanel) {
 @property (nonatomic) BOOL panelOpen;
 /// Without a file the code window shows how to open one.
 @property (nonatomic) BOOL hasFile;
-/// The code's scroll view, which the frame's scrollbar shows and moves.
+/// The code's scroll view, which the frame's two scrollbars show and move.
 @property (nonatomic, weak, nullable) NSScrollView *scrollView;
 /// How far one click on a scroll arrow moves.
 @property (nonatomic) CGFloat lineScroll;

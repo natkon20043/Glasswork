@@ -86,6 +86,7 @@ const IconArt &ArtFor(GWPixelIcon icon) {
     static const IconArt up = {"..#..", ".###.", "#####"};
     static const IconArt down = {"#####", ".###.", "..#.."};
     static const IconArt right = {"#..", "##.", "###", "##.", "#.."};
+    static const IconArt left = {"..#", ".##", "###", ".##", "..#"};
     switch (icon) {
         case GWPixelIconMenu: return menu;
         case GWPixelIconFolder: return folder;
@@ -95,6 +96,7 @@ const IconArt &ArtFor(GWPixelIcon icon) {
         case GWPixelIconUp: return up;
         case GWPixelIconDown: return down;
         case GWPixelIconRight: return right;
+        case GWPixelIconLeft: return left;
     }
     return menu;
 }

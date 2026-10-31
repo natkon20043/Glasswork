@@ -14,6 +14,7 @@ typedef NS_ENUM(NSInteger, GWPixelIcon) {
     GWPixelIconUp,
     GWPixelIconDown,
     GWPixelIconRight,
+    GWPixelIconLeft,
 };
 
 // ---- Fonts

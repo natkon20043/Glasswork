@@ -64,6 +64,9 @@ struct Geometry {
     NSRect upArrow;
     NSRect downArrow;
     NSRect track;
+    NSRect leftArrow;   // empty when the bottom edge has no room for the sideways scrollbar
+    NSRect rightArrow;
+    NSRect sideTrack;
     NSRect panelWindow;
     NSRect panelContent;
     NSRect terminalWindow;
@@ -335,7 +338,29 @@ NSString *TitleWithoutHotkeyMark(NSString *marked, NSInteger *hotkey) {
     g.upArrow = NSMakeRect(scrollLeft, NSMinY(g.editorContent), cell, cell);
     g.downArrow = NSMakeRect(scrollLeft, NSMaxY(g.editorContent) - cell, cell, cell);
     g.track = NSMakeRect(scrollLeft, NSMaxY(g.upArrow), cell, std::max(0.0, NSMinY(g.downArrow) - NSMaxY(g.upArrow)));
+    // The sideways scrollbar in the bottom edge, over its frame lines, between the caret's place and Vim's mode.
+    CGFloat barLeft = NSMinX(window) + 2 * cell + std::max(12 * cell, Snap(GWPixelTextWidth([self positionLabel], pixel)) + cell);
+    CGFloat barRight = [self modeLabel].length > 0 ? [self modeLeft:window] - cell : NSMaxX(window) - 3 * cell;
+    if (barRight - barLeft >= 4 * cell) {
+        CGFloat barTop = NSMaxY(window) - line / 2 - cell / 2;
+        g.leftArrow = NSMakeRect(barLeft, barTop, cell, cell);
+        g.rightArrow = NSMakeRect(barRight - cell, barTop, cell, cell);
+        g.sideTrack = NSMakeRect(NSMaxX(g.leftArrow), barTop, NSMinX(g.rightArrow) - NSMaxX(g.leftArrow), cell);
+    }
     return g;
+}
+
+- (NSString *)positionLabel {
+    return _position.length > 0 ? [NSString stringWithFormat:@" %@ ", _position] : @"";
+}
+
+- (NSString *)modeLabel {
+    return _mode.length > 0 ? [NSString stringWithFormat:@" %@ ", _mode] : @"";
+}
+
+/// Where Vim's mode starts in the code window's bottom edge.
+- (CGFloat)modeLeft:(NSRect)window {
+    return Snap(NSMaxX(window) - 3 * Cell() - GWPixelTextWidth([self modeLabel], Pixel()));
 }
 
 - (NSRect)editorFrame { return [self geometry].editorContent; }
@@ -439,6 +464,7 @@ NSString *TitleWithoutHotkeyMark(NSString *marked, NSInteger *hotkey) {
 - (void)scrollPositionChanged:(NSNotification *)notification {
     Geometry g = [self geometry];
     [self setNeedsDisplayInRect:NSUnionRect(g.upArrow, g.downArrow)];
+    [self setNeedsDisplayInRect:NSUnionRect(g.leftArrow, g.rightArrow)];
 }
 
 - (NSRect)editorTopEdge {
@@ -534,12 +560,10 @@ NSString *TitleWithoutHotkeyMark(NSString *marked, NSInteger *hotkey) {
     // Bottom edge: where the caret is, and Vim's mode.
     CGFloat bottomTop = NSMaxY(window) - line;
     if (_position.length > 0) {
-        DrawOnEdge([NSString stringWithFormat:@" %@ ", _position], NSMinX(window) + 2 * cell, bottomTop, white, blue, YES);
+        DrawOnEdge([self positionLabel], NSMinX(window) + 2 * cell, bottomTop, white, blue, YES);
     }
     if (_mode.length > 0) {
-        NSString *mode = [NSString stringWithFormat:@" %@ ", _mode];
-        CGFloat width = GWPixelTextWidth(mode, Pixel());
-        DrawOnEdge(mode, Snap(NSMaxX(window) - 3 * cell - width), bottomTop, Palette(colors.textAccent), blue, YES);
+        DrawOnEdge([self modeLabel], [self modeLeft:window], bottomTop, Palette(colors.textAccent), blue, YES);
     }
 
     [self drawScrollbar:g];
@@ -588,42 +612,53 @@ NSString *TitleWithoutHotkeyMark(NSString *marked, NSInteger *hotkey) {
     return [NSString stringWithFormat:@" %@%@ ", item.title, item.dirty ? @"*" : @""];
 }
 
-/// The scrollbar in the code window's right edge: arrows at the ends, a shaded track, the thumb.
+/// The scrollbars in the code window's right and bottom edges: arrows at the ends, a shaded track, the thumb.
 - (void)drawScrollbar:(const Geometry &)g {
+    [self drawScrollbar:g vertical:YES];
+    if (!NSIsEmptyRect(g.sideTrack)) {
+        [self drawScrollbar:g vertical:NO];
+    }
+}
+
+- (void)drawScrollbar:(const Geometry &)g vertical:(BOOL)vertical {
     CGFloat pixel = Pixel();
     const gw::bitmap::Scheme &colors = Colors();
     [Checker(colors.window, colors.scrollTrack) setFill];
-    NSRectFill(g.track);
-    for (NSRect arrow : {g.upArrow, g.downArrow}) {
-        [Palette(colors.scrollButton) setFill];
-        NSRectFill(arrow);
-    }
-    GWPixelIcon up = GWPixelIconUp, down = GWPixelIconDown;
-    NSSize size = GWPixelIconSize(up, pixel);
-    auto centered = [&](NSRect box) {
-        return NSMakePoint(NSMinX(box) + Snap((NSWidth(box) - size.width) / 2), NSMinY(box) + Snap((NSHeight(box) - size.height) / 2));
+    NSRectFill(vertical ? g.track : g.sideTrack);
+    NSRect back = vertical ? g.upArrow : g.leftArrow, forward = vertical ? g.downArrow : g.rightArrow;
+    [Palette(colors.scrollButton) setFill];
+    NSRectFill(back);
+    NSRectFill(forward);
+    auto drawArrow = [&](GWPixelIcon icon, NSRect box) {
+        NSSize size = GWPixelIconSize(icon, pixel);
+        NSPoint origin = NSMakePoint(NSMinX(box) + Snap((NSWidth(box) - size.width) / 2), NSMinY(box) + Snap((NSHeight(box) - size.height) / 2));
+        GWDrawPixelIcon(icon, origin, pixel, Palette(colors.scrollArrow), NO);
     };
-    GWDrawPixelIcon(up, centered(g.upArrow), pixel, Palette(colors.scrollArrow), NO);
-    GWDrawPixelIcon(down, centered(g.downArrow), pixel, Palette(colors.scrollArrow), NO);
-    NSRect thumb = [self thumbRect:g];
+    drawArrow(vertical ? GWPixelIconUp : GWPixelIconLeft, back);
+    drawArrow(vertical ? GWPixelIconDown : GWPixelIconRight, forward);
+    NSRect thumb = [self thumbRect:g vertical:vertical];
     if (!NSIsEmptyRect(thumb)) {
         [Palette(colors.scrollThumb) setFill];
         NSRectFill(thumb);
     }
 }
 
-/// Where the thumb is in the track, from the scroll view; empty when everything fits.
-- (NSRect)thumbRect:(const Geometry &)g {
+/// Where the thumb is in a track, from the scroll view; empty when everything fits.
+- (NSRect)thumbRect:(const Geometry &)g vertical:(BOOL)vertical {
     NSScrollView *scroll = _scrollView;
-    CGFloat document = NSHeight(scroll.documentView.frame);
-    CGFloat visible = NSHeight(scroll.contentView.bounds);
-    if (scroll == nil || document <= visible + 1 || NSHeight(g.track) <= Cell()) {
+    NSRect track = vertical ? g.track : g.sideTrack;
+    NSRect visibleRect = scroll.contentView.bounds;
+    CGFloat document = vertical ? NSHeight(scroll.documentView.frame) : NSWidth(scroll.documentView.frame);
+    CGFloat visible = vertical ? NSHeight(visibleRect) : NSWidth(visibleRect);
+    CGFloat length = vertical ? NSHeight(track) : NSWidth(track);
+    if (scroll == nil || document <= visible + 1 || length <= Cell()) {
         return NSZeroRect;
     }
-    CGFloat height = std::max(Cell(), Snap(NSHeight(g.track) * visible / document));
-    CGFloat fraction = std::clamp(NSMinY(scroll.contentView.bounds) / (document - visible), 0.0, 1.0);
-    CGFloat y = NSMinY(g.track) + Snap((NSHeight(g.track) - height) * fraction);
-    return NSMakeRect(NSMinX(g.track), y, NSWidth(g.track), height);
+    CGFloat size = std::max(Cell(), Snap(length * visible / document));
+    CGFloat offset = vertical ? NSMinY(visibleRect) : NSMinX(visibleRect);
+    CGFloat start = Snap((length - size) * std::clamp(offset / (document - visible), 0.0, 1.0));
+    return vertical ? NSMakeRect(NSMinX(track), NSMinY(track) + start, NSWidth(track), size)
+                    : NSMakeRect(NSMinX(track) + start, NSMinY(track), size, NSHeight(track));
 }
 
 - (void)drawEmptyHint:(NSRect)area {
@@ -796,7 +831,9 @@ NSString *TitleWithoutHotkeyMark(NSString *marked, NSInteger *hotkey) {
         }
     }
     if (NSPointInRect(point, NSUnionRect(g.upArrow, g.downArrow))) {
-        [self scrollbarMouseDown:event geometry:g];
+        [self scrollbarMouseDown:event geometry:g vertical:YES];
+    } else if (!NSIsEmptyRect(g.sideTrack) && NSPointInRect(point, NSUnionRect(g.leftArrow, g.rightArrow))) {
+        [self scrollbarMouseDown:event geometry:g vertical:NO];
     }
 }
 
@@ -815,53 +852,58 @@ NSString *TitleWithoutHotkeyMark(NSString *marked, NSInteger *hotkey) {
 }
 
 /// Arrows and the track repeat while held; the thumb follows the pointer.
-- (void)scrollbarMouseDown:(NSEvent *)event geometry:(const Geometry &)g {
+- (void)scrollbarMouseDown:(NSEvent *)event geometry:(const Geometry &)g vertical:(BOOL)vertical {
     NSScrollView *scroll = _scrollView;
     if (scroll == nil) {
         return;
     }
     NSClipView *clip = scroll.contentView;
-    CGFloat document = NSHeight(scroll.documentView.frame);
-    CGFloat visible = NSHeight(clip.bounds);
-    auto scrollTo = ^(CGFloat y) {
-        CGFloat clamped = std::clamp(y, 0.0, std::max(0.0, document - visible));
-        [clip scrollToPoint:NSMakePoint(NSMinX(clip.bounds), clamped)];
+    // Everything below runs along the bar: y for the right edge's, x for the bottom edge's.
+    auto along = [vertical](NSPoint point) { return vertical ? point.y : point.x; };
+    auto start = [vertical](NSRect rect) { return vertical ? NSMinY(rect) : NSMinX(rect); };
+    auto length = [vertical](NSRect rect) { return vertical ? NSHeight(rect) : NSWidth(rect); };
+    NSRect track = vertical ? g.track : g.sideTrack;
+    CGFloat document = length(scroll.documentView.frame);
+    CGFloat visible = length(clip.bounds);
+    auto scrollTo = ^(CGFloat offset) {
+        CGFloat clamped = std::clamp(offset, 0.0, std::max(0.0, document - visible));
+        [clip scrollToPoint:vertical ? NSMakePoint(NSMinX(clip.bounds), clamped) : NSMakePoint(clamped, NSMinY(clip.bounds))];
         [scroll reflectScrolledClipView:clip];
     };
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
-    NSRect thumb = [self thumbRect:g];
+    NSRect thumb = [self thumbRect:g vertical:vertical];
     if (NSPointInRect(point, thumb)) {
-        CGFloat grab = point.y - NSMinY(thumb);
-        CGFloat room = NSHeight(g.track) - NSHeight(thumb);
+        CGFloat grab = along(point) - start(thumb);
+        CGFloat room = length(track) - length(thumb);
         while (true) {
             NSEvent *next = [self.window nextEventMatchingMask:NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp];
             if (next.type == NSEventTypeLeftMouseUp) {
                 break;
             }
-            CGFloat y = [self convertPoint:next.locationInWindow fromView:nil].y - grab - NSMinY(g.track);
-            scrollTo(room > 0 ? std::clamp(y / room, 0.0, 1.0) * (document - visible) : 0);
+            CGFloat offset = along([self convertPoint:next.locationInWindow fromView:nil]) - grab - start(track);
+            scrollTo(room > 0 ? std::clamp(offset / room, 0.0, 1.0) * (document - visible) : 0);
         }
         return;
     }
     CGFloat step = 0;
-    if (NSPointInRect(point, g.upArrow)) {
+    if (NSPointInRect(point, vertical ? g.upArrow : g.leftArrow)) {
         step = -_lineScroll;
-    } else if (NSPointInRect(point, g.downArrow)) {
+    } else if (NSPointInRect(point, vertical ? g.downArrow : g.rightArrow)) {
         step = _lineScroll;
-    } else if (NSPointInRect(point, g.track)) {
-        step = point.y < NSMinY(thumb) ? -(visible - _lineScroll) : visible - _lineScroll;
+    } else if (NSPointInRect(point, track)) {
+        step = along(point) < start(thumb) ? -(visible - _lineScroll) : visible - _lineScroll;
     }
     if (step == 0) {
         return;
     }
-    scrollTo(NSMinY(clip.bounds) + step);
+    scrollTo(start(clip.bounds) + step);
     [NSEvent startPeriodicEventsAfterDelay:0.35 withPeriod:0.05];
     while (true) {
         NSEvent *next = [self.window nextEventMatchingMask:NSEventMaskPeriodic | NSEventMaskLeftMouseUp];
         if (next.type == NSEventTypeLeftMouseUp) {
             break;
         }
-        scrollTo(NSMinY(clip.bounds) + step);
+        scrollTo(start(clip.bounds) + step);
     }
     [NSEvent stopPeriodicEvents];
 }
