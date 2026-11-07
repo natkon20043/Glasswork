@@ -412,9 +412,6 @@ static NSString *SpecialKey(unichar key) {
         [self settingToggle:@"Section Dividers" tag:GWSettingDividers],
         [self settingToggle:@"Minimap" tag:GWSettingMinimap],
         [self settingToggle:@"Vim Mode" tag:GWSettingVim],
-        NSMenuItem.separatorItem,
-        [self otherAppItem],
-        NSMenuItem.separatorItem,
     ] parent:main];
     if ([[NSBundle.mainBundle objectForInfoDictionaryKey:@"GWBitmapMode"] boolValue]) {
         [view addItem:[self item:@"Open Menu Bar" action:NSSelectorFromString(@"openBitmapMenuBar:") key:@""]];
@@ -658,14 +655,6 @@ static NSString *SpecialKey(unichar key) {
             return &settings.vimMode;
     }
     return nullptr;
-}
-
-/// View > Open in Glasswork Bitmap (⌃⌘B), or Open in Glasswork from the bitmap app: the same folder
-/// in the other look.
-- (NSMenuItem *)otherAppItem {
-    BOOL bitmapApp = [[NSBundle.mainBundle objectForInfoDictionaryKey:@"GWBitmapMode"] boolValue];
-    NSString *title = bitmapApp ? @"Open in Glasswork" : @"Open in Glasswork Bitmap";
-    return [self item:title action:NSSelectorFromString(@"openInOtherApp:") key:@"b" modifiers:kCommand | kControl];
 }
 
 - (void)toggleSetting:(NSMenuItem *)sender {

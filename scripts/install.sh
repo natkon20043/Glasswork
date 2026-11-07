@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds a release Glasswork and installs Glasswork.app and Glasswork Bitmap.app in /Applications.
+# Builds a release Glasswork and installs Glasswork.app in /Applications.
 #
 #   scripts/install.sh
 #
@@ -15,11 +15,9 @@ lsregister="/System/Library/Frameworks/CoreServices.framework/Versions/A/Framewo
 
 echo "Installing to /Applications..."
 osascript -e 'tell application id "dev.glasswork.Glasswork" to quit' >/dev/null 2>&1 || true
-osascript -e 'tell application id "dev.glasswork.GlassworkBitmap" to quit' >/dev/null 2>&1 || true
 sleep 1
-rm -rf /Applications/Glasswork.app "/Applications/Glasswork Bitmap.app"
+rm -rf /Applications/Glasswork.app
 ditto "$project_folder/build-release/app.noindex/Glasswork.app" /Applications/Glasswork.app
-ditto "$project_folder/build-release/app.noindex/Glasswork Bitmap.app" "/Applications/Glasswork Bitmap.app"
 
 echo "Hiding the development copies from Spotlight and Launchpad..."
 for folder in "$project_folder/build" "$project_folder/build-release" "$project_folder/dist"; do
@@ -35,6 +33,5 @@ done
 # An old location that no longer exists can still be remembered.
 "$lsregister" -u "$HOME/Glasswork/build/Glasswork.app" >/dev/null 2>&1 || true
 "$lsregister" -f /Applications/Glasswork.app >/dev/null 2>&1 || true
-"$lsregister" -f "/Applications/Glasswork Bitmap.app" >/dev/null 2>&1 || true
 
-echo "Done: /Applications/Glasswork.app and /Applications/Glasswork Bitmap.app"
+echo "Done: /Applications/Glasswork.app"

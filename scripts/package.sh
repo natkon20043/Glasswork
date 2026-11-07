@@ -1,6 +1,5 @@
 #!/bin/sh
-# Builds a release Glasswork.app and Glasswork Bitmap.app, signs them ad hoc and zips them into
-# dist/Glasswork.zip and dist/Glasswork Bitmap.zip.
+# Builds a release Glasswork.app, signs it ad hoc and zips it into dist/Glasswork.zip.
 #
 #   scripts/package.sh
 #
@@ -43,14 +42,9 @@ fi
 echo "Signing (ad hoc)..."
 codesign --force --deep --sign - "$app"
 
-echo "Making Glasswork Bitmap..."
-"$project_folder/scripts/make_bitmap_app.sh" "$app"
-bitmap_app="$build_folder/app.noindex/Glasswork Bitmap.app"
-
 echo "Zipping..."
 mkdir -p "$dist_folder"
-rm -f "$dist_folder/Glasswork.zip" "$dist_folder/Glasswork Bitmap.zip"
+rm -f "$dist_folder/Glasswork.zip"
 ditto -c -k --keepParent "$app" "$dist_folder/Glasswork.zip"
-ditto -c -k --keepParent "$bitmap_app" "$dist_folder/Glasswork Bitmap.zip"
 
-echo "Done: $dist_folder/Glasswork.zip and $dist_folder/Glasswork Bitmap.zip"
+echo "Done: $dist_folder/Glasswork.zip"

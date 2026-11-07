@@ -219,8 +219,6 @@ target_compile_definitions(Glasswork PRIVATE GLASSWORK_SOURCE_DIR="${CMAKE_SOURC
 add_custom_command(TARGET Glasswork POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E remove_directory $<TARGET_BUNDLE_CONTENT_DIR:Glasswork>/Resources/ExtensionHost
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/host $<TARGET_BUNDLE_CONTENT_DIR:Glasswork>/Resources/ExtensionHost
-    COMMAND ${CMAKE_COMMAND} -E remove_directory $<TARGET_BUNDLE_CONTENT_DIR:Glasswork>/Resources/ExtensionHost/tools
-    # Glasswork Bitmap: the same program as a second app that starts in bitmap mode.
-    COMMAND ${CMAKE_SOURCE_DIR}/scripts/make_bitmap_app.sh $<TARGET_BUNDLE_DIR:Glasswork>)
+    COMMAND ${CMAKE_COMMAND} -E remove_directory $<TARGET_BUNDLE_CONTENT_DIR:Glasswork>/Resources/ExtensionHost/tools)
 target_link_libraries(Glasswork PRIVATE glasswork_core
     "-framework AppKit" "-framework CoreText" "-framework QuartzCore" "-framework CoreServices" "-framework WebKit" "-framework UniformTypeIdentifiers")

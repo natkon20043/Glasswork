@@ -70,12 +70,10 @@ so after a crash or power cut the file holds the old or the new contents, never 
 - `Palette.mm`, `CompletionPopup.mm`, `ShadowedGlass.*` – floating panels (the shadow is drawn
   by `ShadowedGlass` so rounded corners have no outline).
 - `Services.mm` – settings, themes, extensions (shared by all windows).
-- Glasswork Bitmap is the same program in a second bundle (`scripts/make_bitmap_app.sh`), whose
-  `GWBitmapMode` Info.plist flag turns on bitmap mode: `core/PixelFont.*` draws a 5×9 pixel font and turns it
-  into a TrueType font in memory, `core/BitmapMode.*` holds the EGA palette, the theme and the settings the
-  mode locks (Vim on, smear and the extra drawing off; `Services` hands out the locked copy), `app/PixelArt.*`
-  has the font, pixel icons and popup boxes, and `app/BitmapChrome.*` the menu bar and its drop-down menus,
-  the framed code and side windows, the status line and the dialogs. Nothing of it is built in Glasswork itself.
+- Glasswork Bitmap, the DOS-style version, has moved to its own repository
+  ([Glasswork-Bitmap](https://github.com/natkon20043/Glasswork-Bitmap)) and runs on Windows and Linux.
+  The bitmap-mode code still here (`core/PixelFont.*`, `core/BitmapMode.*`, `app/PixelArt.*`,
+  `app/BitmapChrome.*` and the `GWBitmapMode` branches) is no longer reachable: nothing sets the flag.
 
 ## Ideas for further optimisation
 
